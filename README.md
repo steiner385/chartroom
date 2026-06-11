@@ -140,7 +140,7 @@ All fields are optional; the table shows default values.
 
 | Field | Default | Description |
 |---|---|---|
-| `owners` | `[]` | GitHub org/user logins whose PRs are shown. Empty → auto-derived from the token's `viewer.login`. |
+| `owners` | `[]` | GitHub org/user logins whose PRs are shown. Empty → auto-derived: App mode uses the installation account logins; `gh`/`env` use the token's `viewer.login`. |
 | `exclude` | `[]` | Repo full names (`"org/repo"`) to skip entirely. |
 | `port` | `4400` | HTTP port. Bound to `127.0.0.1` only (loopback-only by design — see Security). |
 | `retentionDays` | `7` | How many days of check-run history to keep in `data/history.db`. |
@@ -148,7 +148,7 @@ All fields are optional; the table shows default values.
 | `tokenSource` | `"gh"` | Where the GitHub token comes from. `"gh"` reads the `gh` CLI keyring (strips `GITHUB_TOKEN`). `"env"` reads `GITHUB_TOKEN`. `"app"` mints GitHub App installation tokens (see [GitHub App mode](#github-app-mode-pnpm-appsetup)). |
 | `app.appId` | — | **Required when `tokenSource` is `"app"`.** Numeric GitHub App id. File-only (never PUT-writable). |
 | `app.privateKeyPath` | — | **Required when `tokenSource` is `"app"`.** Path to the App's RSA private key PEM. File-only. |
-| `app.installationId` | auto-discovered | Installation to mint tokens for. Omit when the App has exactly one installation. File-only. |
+| `app.installationId` | all installations | Optional restriction: pin the dashboard to a single installation. Omit to watch repos across every account the App is installed on (see [Multi-installation](#multi-installation)). File-only. |
 | `webhooks.enabled` | `false` | Opt-in signed webhook receiver (see [Webhooks](#webhooks-optional)). File-only. |
 | `webhooks.secretPath` | — | **Required when webhooks are enabled.** Path to the shared webhook secret file (written by `pnpm app:setup`). File-only. |
 | `webhooks.path` | `"/api/webhooks/github"` | Route the receiver listens on. File-only. |
@@ -338,23 +338,36 @@ and setup completes automatically:
 
 At runtime the server mints short-lived installation tokens itself (App JWT →
 installation access token, cached and refreshed before expiry, built on
-`node:crypto` only). When the App has exactly one installation the
-`installationId` is auto-discovered; with multiple installations, startup fails
-with a list of ids to pin via `app.installationId`.
+`node:crypto` only). At startup it lists the App's installations and builds a
+per-owner client map; the list is refreshed every 24 hours, so new
+installations are picked up without a restart.
 
-### Limitations
+### Multi-installation
 
-**One installation per instance.** An installation token only sees the repos
-of the account it is installed on — repos under any other owner in your
-`owners` list are invisible to it: their sweep searches return nothing and
-detail/blob fetches resolve to `repository: null` (the server keeps
-last-known-good config for such repos and logs
-`owner '<owner>' appears inaccessible to the current token` when an owner is
-fully invisible). If you watch repos across multiple accounts, run **one
-instance per account** — distinct `PRDASH_CONFIG` / `PRDASH_DATA_DIR` / port,
-with the App installed on (and `app.installationId` pinned to) that account —
-until multi-installation support lands
-([#10](https://github.com/steiner385/pr-dashboard/issues/10)).
+**One instance watches repos across all of the App's installations.** Install
+the App on each account whose repos the dashboard should watch (the install
+URL again: `https://github.com/apps/<slug>/installations/new`). Every GitHub
+request is routed to the installation that covers the repo's owner — each
+installation gets its own token and its own rate-limit budget. An owner in
+your `owners` list that no installation covers is skipped with a one-time
+`owner '<owner>' has no installation — skipped` warning (it's a config
+mismatch, not an outage — the repo's data is never marked stale for it).
+
+With `tokenSource: "app"` and no `owners` configured, the owners list defaults
+to the installation account logins — installing the App on an account is
+enough to start watching it.
+
+`app.installationId` is an **optional restriction**: when set, the registry is
+pinned to that single installation and only its account's repos are visible.
+Use it when one App serves several dashboard instances and each should only
+see its own account.
+
+**Alternative pattern — one instance per account.** Instead of one instance
+spanning installations, you can still run a separate instance per account:
+distinct `PRDASH_CONFIG` / `PRDASH_DATA_DIR` / port, with `app.installationId`
+pinned to that account's installation. Useful when you want per-account
+isolation (separate ports, data dirs, lifecycles) rather than a single
+combined dashboard.
 
 ---
 
