@@ -1,7 +1,8 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { Poller, RetryThrottle, describeError, type DashboardState } from '../poller';
 import { HistoryStore } from '../history';
-import { RateLimitError } from '../github';
+import { RateLimitError, type GithubClient } from '../github';
+import { ClientRouter } from '../client-router';
 import { DEFAULTS, type AppConfig } from '../config';
 import type { DeployWatcher } from '../deploy-watcher';
 
@@ -94,6 +95,10 @@ function fakeDeploy(
 }
 const noDeploy = () => fakeDeploy({}, {});
 
+/** Router seam (multi-installation round 10): existing tests inject ONE fake
+ *  client that answers for every owner — exactly `ClientRouter.forSingle`. */
+const asRouter = (client: unknown) => ClientRouter.forSingle(client as GithubClient);
+
 let history: HistoryStore;
 beforeEach(() => {
   history = new HistoryStore(':memory:');
@@ -108,7 +113,7 @@ beforeEach(() => {
 
 describe('Poller', () => {
   it('sweep discovers PRs, detail fetch classifies + computes progress, durations are ingested', async () => {
-    const p = new Poller({ client: fakeClient() as never, history, deploy: noDeploy(),
+    const p = new Poller({ router: asRouter(fakeClient()), history, deploy: noDeploy(),
       config: CONFIG, now: () => NOW });
     await p.sweepOnce();
     await p.detailOnce();
@@ -130,7 +135,7 @@ describe('Poller', () => {
       { 'https://qa.widgets.example.com/health': 'deployedSha-qa', 'https://widgets.example.com/health': 'oldSha-prod' },
       { 'deployedSha-qa': 'yes', 'oldSha-prod': 'no' },
     );
-    const p = new Poller({ client: fakeClient() as never, history, deploy,
+    const p = new Poller({ router: asRouter(fakeClient()), history, deploy,
       config: CONFIG, now: () => NOW });
     await p.sweepOnce();
     await p.deployOnce();
@@ -149,7 +154,7 @@ describe('Poller', () => {
       { 'https://qa.widgets.example.com/health': 'deployedSha-qa' },
       { 'deployedSha-qa': 'yes' },
     );
-    const p = new Poller({ client: fakeClient() as never, history, deploy,
+    const p = new Poller({ router: asRouter(fakeClient()), history, deploy,
       config: CONFIG, now: () => NOW });
     await p.sweepOnce();
     await p.deployOnce();
@@ -163,7 +168,7 @@ describe('Poller', () => {
     let t = NOW.getTime();
     const shaBox: Record<string, string | null> = { 'https://qa.widgets.example.com/health': 'oldSha-qa' };
     const deploy = fakeDeploy(shaBox, { 'oldSha-qa': 'no', 'newSha-qa': 'yes' });
-    const p = new Poller({ client: fakeClient() as never, history, deploy,
+    const p = new Poller({ router: asRouter(fakeClient()), history, deploy,
       config: CONFIG, now: () => new Date(t) });
     await p.sweepOnce();
     await p.deployOnce();   // observed NOT live on qa
@@ -179,14 +184,14 @@ describe('Poller', () => {
 
   it('rate-limit floor degrades hot interval', () => {
     const c = fakeClient(); c.remaining = 500;
-    const p = new Poller({ client: c as never, history, deploy: noDeploy(),
+    const p = new Poller({ router: asRouter(c), history, deploy: noDeploy(),
       config: CONFIG, now: () => NOW });
     expect(p.effectiveHotMs()).toBe(60_000);
   });
 
   it('rateLimitFloor is configurable: a lower floor keeps normal intervals', () => {
     const c = fakeClient(); c.remaining = 500;
-    const p = new Poller({ client: c as never, history, deploy: noDeploy(),
+    const p = new Poller({ router: asRouter(c), history, deploy: noDeploy(),
       config: { ...CONFIG, rateLimitFloor: 400 }, now: () => NOW });
     expect(p.effectiveHotMs()).toBe(CONFIG.intervals.hotMs); // 500 ≥ 400 — not degraded
     expect(p.nextDelayMs('sweep')).toBe(CONFIG.intervals.sweepMs);
@@ -233,7 +238,7 @@ describe('Poller expectedSet staleness guard (no required marking)', () => {
   it('old completed checks + fat history expectedSet → ready, not stuck in ci', async () => {
     // newest completion 11:42, NOW 12:00 → 18 min > 10 min staleness threshold
     const client = fakeClient(staleSweep, staleDetail('2026-06-10T11:40:00Z', '2026-06-10T11:42:00Z'), 'pr8970: pullRequest');
-    const p = new Poller({ client: client as never, history, deploy: noDeploy(),
+    const p = new Poller({ router: asRouter(client), history, deploy: noDeploy(),
       config: NO_PREFIX_CONFIG, now: () => NOW });
     await p.sweepOnce();
     await p.detailOnce();
@@ -245,7 +250,7 @@ describe('Poller expectedSet staleness guard (no required marking)', () => {
   it('recent completions keep the full expectedSet → still ci (needs: chain may unlock more)', async () => {
     // newest completion 11:58 → only 2 min old: absent expected checks may still appear
     const client = fakeClient(staleSweep, staleDetail('2026-06-10T11:56:00Z', '2026-06-10T11:58:00Z'), 'pr8970: pullRequest');
-    const p = new Poller({ client: client as never, history, deploy: noDeploy(),
+    const p = new Poller({ router: asRouter(client), history, deploy: noDeploy(),
       config: NO_PREFIX_CONFIG, now: () => NOW });
     await p.sweepOnce();
     await p.detailOnce();
@@ -274,7 +279,7 @@ describe('Poller requiredCheckPrefixes (late-materializing required checks)', ()
 
   async function classifyMidRun(advisory: Record<string, unknown>) {
     const client = fakeClient(staleSweep, midRunDetail(advisory), 'pr8970: pullRequest');
-    const p = new Poller({ client: client as never, history, deploy: noDeploy(),
+    const p = new Poller({ router: asRouter(client), history, deploy: noDeploy(),
       config: PREFIX_CONFIG, now: () => NOW });
     await p.sweepOnce();
     await p.detailOnce();
@@ -290,7 +295,7 @@ describe('Poller requiredCheckPrefixes (late-materializing required checks)', ()
   it('prefix-matched FAILURE parks the PR', async () => {
     const client = fakeClient(staleSweep, midRunDetail({
       name: 'fast-checks / Type Check', conclusion: 'FAILURE' }), 'pr8970: pullRequest');
-    const p = new Poller({ client: client as never, history, deploy: noDeploy(),
+    const p = new Poller({ router: asRouter(client), history, deploy: noDeploy(),
       config: PREFIX_CONFIG, now: () => NOW });
     await p.sweepOnce();
     await p.detailOnce();
@@ -344,7 +349,7 @@ describe('Poller scheduling (warm tier + self-re-arming timers)', () => {
     // tick alone would never refresh it again.
     const client = fakeClient(staleSweep,
       staleDetail('2026-06-10T11:40:00Z', '2026-06-10T11:42:00Z'), 'pr8970: pullRequest');
-    const p = new Poller({ client: client as never, history, deploy: noDeploy(),
+    const p = new Poller({ router: asRouter(client), history, deploy: noDeploy(),
       config: CONFIG, now: () => NOW });
     p.start();
     await vi.advanceTimersByTimeAsync(0); // flush initial kick (sweep + full detail)
@@ -361,7 +366,7 @@ describe('Poller scheduling (warm tier + self-re-arming timers)', () => {
   it('stop() clears pending timeouts', async () => {
     vi.useFakeTimers();
     const client = fakeClient();
-    const p = new Poller({ client: client as never, history, deploy: noDeploy(),
+    const p = new Poller({ router: asRouter(client), history, deploy: noDeploy(),
       config: CONFIG, now: () => NOW });
     p.start();
     await vi.advanceTimersByTimeAsync(0);
@@ -372,7 +377,7 @@ describe('Poller scheduling (warm tier + self-re-arming timers)', () => {
   });
 
   it('normal delays follow configured intervals', () => {
-    const p = new Poller({ client: fakeClient() as never, history, deploy: noDeploy(),
+    const p = new Poller({ router: asRouter(fakeClient()), history, deploy: noDeploy(),
       config: CONFIG, now: () => NOW });
     expect(p.nextDelayMs('hot')).toBe(CONFIG.intervals.hotMs);
     expect(p.nextDelayMs('sweep')).toBe(CONFIG.intervals.sweepMs);
@@ -381,7 +386,7 @@ describe('Poller scheduling (warm tier + self-re-arming timers)', () => {
 
   it('sweep delay degrades to 5 min when remaining < 1000', () => {
     const c = fakeClient(); c.remaining = 500;
-    const p = new Poller({ client: c as never, history, deploy: noDeploy(),
+    const p = new Poller({ router: asRouter(c), history, deploy: noDeploy(),
       config: CONFIG, now: () => NOW });
     expect(p.nextDelayMs('sweep')).toBe(300_000);
     expect(p.nextDelayMs('hot')).toBe(60_000); // effectiveHotMs floor
@@ -391,7 +396,7 @@ describe('Poller scheduling (warm tier + self-re-arming timers)', () => {
     vi.spyOn(console, 'error').mockImplementation(() => {});
     const client = { remaining: 4000, resetAt: null,
       graphql: vi.fn(async () => { throw new RateLimitError(120); }) };
-    const p = new Poller({ client: client as never, history, deploy: noDeploy(),
+    const p = new Poller({ router: asRouter(client), history, deploy: noDeploy(),
       config: CONFIG, now: () => NOW });
     await p.sweepOnce();
     expect(p.nextDelayMs('hot')).toBeGreaterThanOrEqual(120_000);
@@ -411,7 +416,7 @@ describe('Poller cycle containment + re-entrancy', () => {
     const err = vi.spyOn(console, 'error').mockImplementation(() => {});
     const client = { remaining: 4000, resetAt: null,
       graphql: vi.fn(async () => { throw new TypeError('cannot read properties of undefined'); }) };
-    const p = new Poller({ client: client as never, history, deploy: noDeploy(),
+    const p = new Poller({ router: asRouter(client), history, deploy: noDeploy(),
       config: CONFIG, now: () => NOW });
     p.start();
     await vi.advanceTimersByTimeAsync(0);
@@ -425,7 +430,7 @@ describe('Poller cycle containment + re-entrancy', () => {
   it('a tick that fires while the same cycle is in flight is skipped', async () => {
     const client = { remaining: 4000, resetAt: null,
       graphql: vi.fn(() => new Promise(() => { /* never resolves */ })) };
-    const p = new Poller({ client: client as never, history, deploy: noDeploy(),
+    const p = new Poller({ router: asRouter(client), history, deploy: noDeploy(),
       config: CONFIG, now: () => NOW });
     void p.sweepOnce();        // hangs on the never-resolving fetch
     await p.sweepOnce();       // latched — resolves immediately, no second fetch
@@ -439,7 +444,7 @@ describe('Poller propagating ancestry state', () => {
       { 'https://qa.widgets.example.com/health': 'deployedSha-qa' },
       { 'deployedSha-qa': 'missing' },
     );
-    const p = new Poller({ client: fakeClient() as never, history, deploy,
+    const p = new Poller({ router: asRouter(fakeClient()), history, deploy,
       config: CONFIG, now: () => NOW });
     await p.sweepOnce();
     await p.deployOnce();
@@ -455,7 +460,7 @@ describe('Poller propagating ancestry state', () => {
       { 'https://qa.widgets.example.com/health': 'deployedSha-qa' },
       { 'deployedSha-qa': 'missing' },
     );
-    const p = new Poller({ client: fakeClient() as never, history, deploy,
+    const p = new Poller({ router: asRouter(fakeClient()), history, deploy,
       config: CONFIG, now: () => NOW });
     await p.sweepOnce();
     await p.deployOnce();
@@ -467,7 +472,7 @@ describe('Poller propagating ancestry state', () => {
     let t = NOW.getTime();
     const ancestry: Record<string, 'yes' | 'no' | 'missing'> = { 'deployedSha-qa': 'missing' };
     const deploy = fakeDeploy({ 'https://qa.widgets.example.com/health': 'deployedSha-qa' }, ancestry);
-    const p = new Poller({ client: fakeClient() as never, history, deploy,
+    const p = new Poller({ router: asRouter(fakeClient()), history, deploy,
       config: CONFIG, now: () => new Date(t) });
     await p.sweepOnce();
     await p.deployOnce();
@@ -488,7 +493,7 @@ describe('Poller propagating ancestry state', () => {
       { 'https://qa.widgets.example.com/health': 'deployedSha-qa' },
       { 'deployedSha-qa': 'yes' },
     );
-    const p = new Poller({ client: fakeClient() as never, history, deploy,
+    const p = new Poller({ router: asRouter(fakeClient()), history, deploy,
       config: CONFIG, now: () => NOW });
     await p.sweepOnce();
     await p.deployOnce();
@@ -509,7 +514,7 @@ describe('Poller cache pruning + sweep bookkeeping', () => {
         if (q.includes('pr8962: pullRequest')) return DETAIL_RESPONSE;
         throw new Error(`unexpected query: ${q.slice(0, 80)}`);
       }) };
-    const p = new Poller({ client: client as never, history, deploy: noDeploy(),
+    const p = new Poller({ router: asRouter(client), history, deploy: noDeploy(),
       config: CONFIG, now: () => NOW });
     await p.sweepOnce();
     await p.detailOnce();
@@ -536,7 +541,7 @@ describe('Poller cache pruning + sweep bookkeeping', () => {
       open0: { issueCount: 60, nodes: SWEEP_RESPONSE.open0.nodes },
       merged0: { issueCount: 99, nodes: SWEEP_RESPONSE.merged0.nodes },
     };
-    const p = new Poller({ client: fakeClient(sweep) as never, history, deploy: noDeploy(),
+    const p = new Poller({ router: asRouter(fakeClient(sweep)), history, deploy: noDeploy(),
       config: CONFIG, now: () => NOW });
     await p.sweepOnce();
     expect(warn).toHaveBeenCalledTimes(1);
@@ -551,7 +556,7 @@ describe('Poller cache pruning + sweep bookkeeping', () => {
         if (q.includes('open0: search')) return SWEEP_RESPONSE;
         throw new Error('unexpected');
       }) };
-    const p = new Poller({ client: client as never, history, deploy: noDeploy(),
+    const p = new Poller({ router: asRouter(client), history, deploy: noDeploy(),
       config: CONFIG, now: () => new Date(t) });
     await p.sweepOnce();
     expect(history.getMeta('lastSweep')).toBe(NOW.toISOString());
@@ -585,7 +590,7 @@ describe('Poller deep merged sweep pagination', () => {
 
   it('deep flag set → follows pagination and ingests all 120 merged PRs', async () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
-    const p = new Poller({ client: pagedClient() as never, history, deploy: noDeploy(),
+    const p = new Poller({ router: asRouter(pagedClient()), history, deploy: noDeploy(),
       config: CONFIG, now: () => NOW });
     await p.sweepOnce(true);
     expect(history.listTrackedMerged(7, NOW)).toHaveLength(120);
@@ -595,10 +600,11 @@ describe('Poller deep merged sweep pagination', () => {
   it('routine sweep (no deep flag) stays single-page and keeps the truncation warning', async () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const client = pagedClient();
-    const p = new Poller({ client: client as never, history, deploy: noDeploy(),
+    const p = new Poller({ router: asRouter(client), history, deploy: noDeploy(),
       config: CONFIG, now: () => NOW });
     await p.sweepOnce();
-    expect(client.graphql).toHaveBeenCalledTimes(1);
+    // one search request per owner (acme, octo) — and NO pagination follow-ups
+    expect(client.graphql).toHaveBeenCalledTimes(2);
     expect(history.listTrackedMerged(7, NOW)).toHaveLength(50);
     expect(warn).toHaveBeenCalledTimes(1);
     expect(String(warn.mock.calls[0])).toMatch(/truncated/);
@@ -607,7 +613,7 @@ describe('Poller deep merged sweep pagination', () => {
 
 describe('Poller state memoization', () => {
   it('cycles memoize state via emitUpdate; getState() returns the memoized object', async () => {
-    const p = new Poller({ client: fakeClient() as never, history, deploy: noDeploy(),
+    const p = new Poller({ router: asRouter(fakeClient()), history, deploy: noDeploy(),
       config: CONFIG, now: () => NOW });
     const seen: DashboardState[] = [];
     p.on('update', () => seen.push(p.getState()));
@@ -618,7 +624,7 @@ describe('Poller state memoization', () => {
   });
 
   it('getState() before any cycle falls back to a fresh build', () => {
-    const p = new Poller({ client: fakeClient() as never, history, deploy: noDeploy(),
+    const p = new Poller({ router: asRouter(fakeClient()), history, deploy: noDeploy(),
       config: CONFIG, now: () => NOW });
     expect(p.getState().repos).toEqual([]);
   });
@@ -674,7 +680,7 @@ describe('Poller queueAheadCount in PrView', () => {
   }
 
   it('queueAheadCount is non-null and equals entries ahead when stage is queue', async () => {
-    const p = new Poller({ client: queueClient() as never, history, deploy: noDeploy(),
+    const p = new Poller({ router: asRouter(queueClient()), history, deploy: noDeploy(),
       config: CONFIG, now: () => NOW });
     await p.sweepOnce();
     await p.detailOnce();
@@ -686,7 +692,7 @@ describe('Poller queueAheadCount in PrView', () => {
   });
 
   it('queueAheadCount is null for a non-queue stage (ci)', async () => {
-    const p = new Poller({ client: fakeClient() as never, history, deploy: noDeploy(),
+    const p = new Poller({ router: asRouter(fakeClient()), history, deploy: noDeploy(),
       config: CONFIG, now: () => NOW });
     await p.sweepOnce();
     await p.detailOnce();
@@ -764,7 +770,7 @@ describe('Poller observed group runs + queue waits', () => {
     const rollupBox = { current: rollupFailed as Record<string, unknown> };
     const recordSpy = vi.spyOn(history, 'recordGroupRun');
     const client = boxedClient(detailBox, rollupBox);
-    const p = new Poller({ client: client as never, history, deploy: noDeploy(),
+    const p = new Poller({ router: asRouter(client), history, deploy: noDeploy(),
       config: CONFIG, now: () => NOW });
     await p.sweepOnce();
     await p.detailOnce();
@@ -778,7 +784,7 @@ describe('Poller observed group runs + queue waits', () => {
     const rollupBox = { current: rollupRunning as Record<string, unknown> };
     const recordSpy = vi.spyOn(history, 'recordGroupRun');
     const client = boxedClient(detailBox, rollupBox);
-    const p = new Poller({ client: client as never, history, deploy: noDeploy(),
+    const p = new Poller({ router: asRouter(client), history, deploy: noDeploy(),
       config: CONFIG, now: () => NOW });
     await p.sweepOnce();
     await p.detailOnce();
@@ -794,7 +800,7 @@ describe('Poller observed group runs + queue waits', () => {
   });
 
   it('medianGroupSecs prefers the observed median over the longest-check proxy', async () => {
-    const p = new Poller({ client: fakeClient() as never, history, deploy: noDeploy(),
+    const p = new Poller({ router: asRouter(fakeClient()), history, deploy: noDeploy(),
       config: CONFIG, now: () => NOW });
     const internals = p as unknown as { medianGroupSecs(repo: string): number | null };
     // proxy only: longest merge_group check p50
@@ -811,7 +817,7 @@ describe('Poller observed group runs + queue waits', () => {
   it('records the queue wait when a queued PR transitions to merged', async () => {
     const detailBox = { current: queuedDetail() };
     const rollupBox = { current: rollupRunning as Record<string, unknown> };
-    const p = new Poller({ client: boxedClient(detailBox, rollupBox) as never, history,
+    const p = new Poller({ router: asRouter(boxedClient(detailBox, rollupBox)), history,
       deploy: noDeploy(), config: CONFIG, now: () => NOW });
     await p.sweepOnce();
     await p.detailOnce();               // captures enqueuedAt 11:30
@@ -827,7 +833,7 @@ describe('Poller observed group runs + queue waits', () => {
   it('a PR dequeued without merging records no queue wait and drops its enqueuedAt', async () => {
     const detailBox = { current: queuedDetail() };
     const rollupBox = { current: rollupRunning as Record<string, unknown> };
-    const p = new Poller({ client: boxedClient(detailBox, rollupBox) as never, history,
+    const p = new Poller({ router: asRouter(boxedClient(detailBox, rollupBox)), history,
       deploy: noDeploy(), config: CONFIG, now: () => NOW });
     await p.sweepOnce();
     await p.detailOnce();
@@ -839,7 +845,7 @@ describe('Poller observed group runs + queue waits', () => {
   });
 
   it('pruneCaches drops recordedGroups + queueEnqueuedAt entries for vanished subjects', async () => {
-    const p = new Poller({ client: fakeClient() as never, history, deploy: noDeploy(),
+    const p = new Poller({ router: asRouter(fakeClient()), history, deploy: noDeploy(),
       config: CONFIG, now: () => NOW });
     const internals = p as unknown as {
       recordedGroups: Set<string>;
@@ -877,7 +883,7 @@ describe('Poller wires history samples into computeProgress (conditional estimat
             { ...CHECK_RUNNING, startedAt: '2026-06-10T11:57:30Z' }] } } } }] },
       } },
     };
-    const p = new Poller({ client: fakeClient(SWEEP_RESPONSE, detail) as never, history,
+    const p = new Poller({ router: asRouter(fakeClient(SWEEP_RESPONSE, detail)), history,
       deploy: noDeploy(), config: CONFIG, now: () => NOW });
     await p.sweepOnce();
     await p.detailOnce();
@@ -927,7 +933,7 @@ describe('Poller wires history samples into computeProgress (conditional estimat
         throw new Error(`unexpected query: ${q.slice(0, 80)}`);
       }),
     };
-    const p = new Poller({ client: client as never, history, deploy: noDeploy(),
+    const p = new Poller({ router: asRouter(client), history, deploy: noDeploy(),
       config: CONFIG, now: () => NOW });
     await p.sweepOnce();
     await p.detailOnce();
@@ -972,7 +978,7 @@ describe('Poller derived required-check prefixes', () => {
   const client = () => fakeClient(staleSweep, midRunDetail, 'pr8970: pullRequest');
 
   it('derived prefixes flow into checkViews/required classification', async () => {
-    const p = new Poller({ client: client() as never, history, deploy: noDeploy(),
+    const p = new Poller({ router: asRouter(client()), history, deploy: noDeploy(),
       config: CONFIG, now: () => NOW });
     p.setDerivedPrefixes('acme/widgets', ['lighthouse']);
     const byName = await requiredByName(p);
@@ -983,7 +989,7 @@ describe('Poller derived required-check prefixes', () => {
   it('config requiredCheckPrefixes wins over derived prefixes', async () => {
     const config = { ...CONFIG,
       repos: { 'acme/widgets': { requiredCheckPrefixes: ['fast-checks /'] } } };
-    const p = new Poller({ client: client() as never, history, deploy: noDeploy(),
+    const p = new Poller({ router: asRouter(client()), history, deploy: noDeploy(),
       config, now: () => NOW });
     p.setDerivedPrefixes('acme/widgets', ['lighthouse']);
     const byName = await requiredByName(p);
@@ -995,7 +1001,7 @@ describe('Poller derived required-check prefixes', () => {
     // The hand-maintained FALLBACK list is gone — with neither config nor derived
     // prefixes, nothing is prefix-required (only GitHub's isRequired marking counts,
     // and these mid-run fixtures all carry isRequired: false).
-    const p = new Poller({ client: client() as never, history, deploy: noDeploy(),
+    const p = new Poller({ router: asRouter(client()), history, deploy: noDeploy(),
       config: CONFIG, now: () => NOW });
     const byName = await requiredByName(p);
     expect(byName['fast-checks / ESLint']).toBe(false);
@@ -1005,7 +1011,7 @@ describe('Poller derived required-check prefixes', () => {
 
   it('setDerivedPrefixes logs the derivation once', () => {
     const log = vi.spyOn(console, 'log').mockImplementation(() => {});
-    const p = new Poller({ client: fakeClient() as never, history, deploy: noDeploy(),
+    const p = new Poller({ router: asRouter(fakeClient()), history, deploy: noDeploy(),
       config: CONFIG, now: () => NOW });
     p.setDerivedPrefixes('acme/widgets', ['ci', 'build']);
     expect(log).toHaveBeenCalledTimes(1);
@@ -1024,7 +1030,7 @@ describe('Poller derived required-check prefixes', () => {
       readFileAtHead: vi.fn(async () => ciYaml),
     } as unknown as DeployWatcher;
     const log = vi.spyOn(console, 'log').mockImplementation(() => {});
-    const p = new Poller({ client: fakeClient() as never, history, deploy,
+    const p = new Poller({ router: asRouter(fakeClient()), history, deploy,
       config: CONFIG, now: () => new Date(t) });
     await p.deployOnce();
     expect(vi.mocked(deploy.readFileAtHead)).toHaveBeenCalledTimes(1);
@@ -1050,7 +1056,7 @@ describe('Poller derived required-check prefixes', () => {
     } as unknown as DeployWatcher;
     const log = vi.spyOn(console, 'log').mockImplementation(() => {});
     let t = NOW.getTime();
-    const p = new Poller({ client: client() as never, history, deploy,
+    const p = new Poller({ router: asRouter(client()), history, deploy,
       config: CONFIG, now: () => new Date(t) });
     p.setDerivedPrefixes('acme/widgets', ['fast-checks /']); // earlier successful derivation
     expect(log).toHaveBeenCalledTimes(1);
@@ -1066,7 +1072,7 @@ describe('Poller derived required-check prefixes', () => {
   });
 
   it('a deploy fake without readFileAtHead does not break the deploy cycle (best-effort)', async () => {
-    const p = new Poller({ client: fakeClient() as never, history, deploy: noDeploy(),
+    const p = new Poller({ router: asRouter(fakeClient()), history, deploy: noDeploy(),
       config: CONFIG, now: () => NOW });
     await expect(p.deployOnce()).resolves.toBeUndefined();
   });
@@ -1090,13 +1096,13 @@ describe('Poller derived needs graph (W1)', () => {
   ]);
 
   it('needsFor returns null without a derived graph', () => {
-    const p = new Poller({ client: fakeClient() as never, history, deploy: noDeploy(),
+    const p = new Poller({ router: asRouter(fakeClient()), history, deploy: noDeploy(),
       config: CONFIG, now: () => NOW });
     expect(p.needsFor('acme/widgets', 'ci')).toBeNull();
   });
 
   it('matches check names to graph nodes by the shared prefix semantics', () => {
-    const p = new Poller({ client: fakeClient() as never, history, deploy: noDeploy(),
+    const p = new Poller({ router: asRouter(fakeClient()), history, deploy: noDeploy(),
       config: CONFIG, now: () => NOW });
     p.setDerivedGraph('acme/widgets', nodeMap(WIDGETS_NEEDS));
     // exact node
@@ -1122,7 +1128,7 @@ describe('Poller derived needs graph (W1)', () => {
       readFileAtHead: vi.fn(async () => ciYaml),
     } as unknown as DeployWatcher;
     const log = vi.spyOn(console, 'log').mockImplementation(() => {});
-    const p = new Poller({ client: fakeClient() as never, history, deploy,
+    const p = new Poller({ router: asRouter(fakeClient()), history, deploy,
       config: CONFIG, now: () => NOW });
     await p.deployOnce();
     expect(p.needsFor('acme/widgets', 'ci')).toEqual(['lint']);
@@ -1131,7 +1137,7 @@ describe('Poller derived needs graph (W1)', () => {
   });
 
   it('needActiveFor evaluates the node activity per event, defaulting to true when unknown', () => {
-    const p = new Poller({ client: fakeClient() as never, history, deploy: noDeploy(),
+    const p = new Poller({ router: asRouter(fakeClient()), history, deploy: noDeploy(),
       config: CONFIG, now: () => NOW });
     // unknown repo/graph → true (never prune on missing knowledge)
     expect(p.needActiveFor('acme/widgets', 'android-smoke /', 'pull_request')).toBe(true);
@@ -1156,7 +1162,7 @@ describe('Poller derived needs graph (W1)', () => {
       readFileAtHead: vi.fn(async () => ciYaml),
     } as unknown as DeployWatcher;
     const log = vi.spyOn(console, 'log').mockImplementation(() => {});
-    const p = new Poller({ client: fakeClient() as never, history, deploy,
+    const p = new Poller({ router: asRouter(fakeClient()), history, deploy,
       config: CONFIG, now: () => NOW });
     await p.deployOnce();
     expect(p.needActiveFor('acme/widgets', 'mg-only', 'merge_group')).toBe(true);
@@ -1185,7 +1191,7 @@ describe('Poller runner waits (W2)', () => {
   };
 
   function pollerWith(detail: Record<string, unknown>) {
-    const p = new Poller({ client: fakeClient(SWEEP_RESPONSE, detail) as never, history,
+    const p = new Poller({ router: asRouter(fakeClient(SWEEP_RESPONSE, detail)), history,
       deploy: noDeploy(), config: CONFIG, now: () => NOW });
     p.setDerivedGraph('acme/widgets', nodeMap(NEEDS));
     return p;
@@ -1238,7 +1244,7 @@ describe('Poller runner waits (W2)', () => {
         throw new Error(`unexpected query: ${q.slice(0, 80)}`);
       }),
     };
-    const p = new Poller({ client: client as never, history, deploy: noDeploy(),
+    const p = new Poller({ router: asRouter(client), history, deploy: noDeploy(),
       config: CONFIG, now: () => NOW });
     p.setDerivedGraph('acme/widgets', nodeMap(NEEDS));
     await p.sweepOnce();
@@ -1275,11 +1281,11 @@ describe('Poller runner waits (W2)', () => {
     // `ci` needs fast-checks + android-smoke; android-smoke runs on merge_group only
     // so it never appears in a PR rollup. Without the activity gate `ci` would sit
     // "blocked on android-smoke /" forever.
-    const p = new Poller({ client: fakeClient(SWEEP_RESPONSE, detailWith([
+    const p = new Poller({ router: asRouter(fakeClient(SWEEP_RESPONSE, detailWith([
       { ...prepDone, completedAt: '2026-06-10T11:53:00Z' },
       CHECK_DONE, // fast-checks / ESLint completed 11:53
       { ...CHECK_DONE, name: 'ci', status: 'QUEUED', conclusion: null, startedAt: null, completedAt: null },
-    ])) as never, history, deploy: noDeploy(), config: CONFIG, now: () => NOW });
+    ]))), history, deploy: noDeploy(), config: CONFIG, now: () => NOW });
     p.setDerivedGraph('acme/widgets', new Map([
       ['ci', { needs: ['fast-checks /', 'android-smoke /'], activity: { mode: 'all' } }],
       ['fast-checks /', { needs: [PREPARE], activity: { mode: 'all' } }],
@@ -1383,7 +1389,7 @@ describe('Poller SSE diffing (emitUpdate deduplication)', () => {
         throw new Error(`unexpected: ${q.slice(0, 80)}`);
       }),
     };
-    const p = new Poller({ client: client as never, history, deploy: noDeploy(),
+    const p = new Poller({ router: asRouter(client), history, deploy: noDeploy(),
       config: CONFIG, now: () => NOW });
     let emitCount = 0;
     p.on('update', () => emitCount++);
@@ -1401,7 +1407,7 @@ describe('Poller SSE diffing (emitUpdate deduplication)', () => {
         throw new Error(`unexpected: ${q.slice(0, 80)}`);
       }),
     };
-    const p = new Poller({ client: client as never, history, deploy: noDeploy(),
+    const p = new Poller({ router: asRouter(client), history, deploy: noDeploy(),
       config: CONFIG, now: () => new Date(t) });
     await p.sweepOnce();                // t=NOW, emits
     const first = p.getState().generatedAt;
@@ -1420,7 +1426,7 @@ describe('Poller SSE diffing (emitUpdate deduplication)', () => {
         throw new Error(`unexpected: ${q.slice(0, 80)}`);
       }),
     };
-    const p = new Poller({ client: client as never, history, deploy: noDeploy(),
+    const p = new Poller({ router: asRouter(client), history, deploy: noDeploy(),
       config: CONFIG, now: () => new Date(t) });
     let emitCount = 0;
     p.on('update', () => emitCount++);
@@ -1448,7 +1454,7 @@ describe('Poller SSE diffing (emitUpdate deduplication)', () => {
         throw new Error(`unexpected: ${q.slice(0, 80)}`);
       }),
     };
-    const p = new Poller({ client: client as never, history, deploy: noDeploy(),
+    const p = new Poller({ router: asRouter(client), history, deploy: noDeploy(),
       config: CONFIG, now: () => NOW });
     let emitCount = 0;
     p.on('update', () => emitCount++);
@@ -1493,7 +1499,7 @@ describe('Poller ETA accuracy tracking', () => {
   it('ci→ready transition records predicted (first ETA) vs actual stage duration', async () => {
     let t = NOW.getTime();
     const detailBox = { current: DETAIL_RESPONSE as Record<string, unknown> };
-    const p = new Poller({ client: boxedClient(detailBox) as never, history,
+    const p = new Poller({ router: asRouter(boxedClient(detailBox)), history,
       deploy: noDeploy(), config: CONFIG, now: () => new Date(t) });
     await p.sweepOnce();    // PR enters ci; first non-null ETA = 600 (sum-shaped expected set)
     await p.detailOnce();
@@ -1517,7 +1523,7 @@ describe('Poller ETA accuracy tracking', () => {
     };
     const detailBox = { current: draftDetail as Record<string, unknown> };
     const recordSpy = vi.spyOn(history, 'recordEtaAccuracy');
-    const p = new Poller({ client: boxedClient(detailBox, { current: draftSweep }) as never,
+    const p = new Poller({ router: asRouter(boxedClient(detailBox, { current: draftSweep })),
       history, deploy: noDeploy(), config: CONFIG, now: () => new Date(t) });
     await p.sweepOnce();
     await p.detailOnce();   // parked (draft)
@@ -1555,7 +1561,7 @@ describe('Poller ETA accuracy tracking', () => {
         throw new Error(`unexpected query: ${q.slice(0, 80)}`);
       }),
     };
-    const p = new Poller({ client: client as never, history, deploy: noDeploy(),
+    const p = new Poller({ router: asRouter(client), history, deploy: noDeploy(),
       config: CONFIG, now: () => new Date(t) });
     await p.sweepOnce();
     await p.detailOnce();   // stage=queue, no entries yet → ETA still null
@@ -1570,7 +1576,7 @@ describe('Poller ETA accuracy tracking', () => {
 
   it('DashboardState repo groups expose accuracy only for stages with data', async () => {
     history.recordEtaAccuracy('acme/widgets', 'ci', 600, 700, '2026-06-10T10:00:00Z');
-    const p = new Poller({ client: fakeClient() as never, history, deploy: noDeploy(),
+    const p = new Poller({ router: asRouter(fakeClient()), history, deploy: noDeploy(),
       config: CONFIG, now: () => NOW });
     await p.sweepOnce();
     await p.detailOnce();
@@ -1588,7 +1594,7 @@ describe('Poller ETA accuracy tracking', () => {
         throw new Error(`unexpected query: ${q.slice(0, 80)}`);
       }),
     };
-    const p = new Poller({ client: client as never, history, deploy: noDeploy(),
+    const p = new Poller({ router: asRouter(client), history, deploy: noDeploy(),
       config: CONFIG, now: () => NOW });
     await p.sweepOnce();
     await p.detailOnce();
@@ -1701,7 +1707,7 @@ describe('Poller buildQueueView — queue view payload (V1)', () => {
 
   it('two building groups cover batch ranges; waiting entries are beyond both groups', async () => {
     const rollupBox = { current: rollupRunning as Record<string, unknown> };
-    const p = new Poller({ client: queueViewClient(rollupBox) as never, history, deploy: noDeploy(),
+    const p = new Poller({ router: asRouter(queueViewClient(rollupBox)), history, deploy: noDeploy(),
       config: CONFIG, now: () => NOW });
     await p.sweepOnce();
     await p.detailOnce();
@@ -1724,7 +1730,7 @@ describe('Poller buildQueueView — queue view payload (V1)', () => {
 
   it('failed group flag propagates from group-check conclusion=FAILURE', async () => {
     const rollupBox = { current: rollupGroupBFailed as Record<string, unknown> };
-    const p = new Poller({ client: queueViewClient(rollupBox) as never, history, deploy: noDeploy(),
+    const p = new Poller({ router: asRouter(queueViewClient(rollupBox)), history, deploy: noDeploy(),
       config: CONFIG, now: () => NOW });
     await p.sweepOnce();
     await p.detailOnce();
@@ -1737,7 +1743,7 @@ describe('Poller buildQueueView — queue view payload (V1)', () => {
   });
 
   it('returns null when there are no queue entries for the repo', async () => {
-    const p = new Poller({ client: fakeClient() as never, history, deploy: noDeploy(),
+    const p = new Poller({ router: asRouter(fakeClient()), history, deploy: noDeploy(),
       config: CONFIG, now: () => NOW });
     await p.sweepOnce();
     await p.detailOnce();
@@ -1749,7 +1755,7 @@ describe('Poller buildQueueView — queue view payload (V1)', () => {
   it('a per-repo batchSize override flows into the queue view', async () => {
     const config: AppConfig = { ...CONFIG, repos: { 'acme/widgets': { batchSize: 2 } } };
     const rollupBox = { current: rollupRunning as Record<string, unknown> };
-    const p = new Poller({ client: queueViewClient(rollupBox) as never, history, deploy: noDeploy(),
+    const p = new Poller({ router: asRouter(queueViewClient(rollupBox)), history, deploy: noDeploy(),
       config, now: () => NOW });
     await p.sweepOnce();
     await p.detailOnce();
@@ -1836,7 +1842,7 @@ describe('Poller queue group coverage + UNMERGEABLE (HEADGREEN)', () => {
         headCommit: { oid: 'staleOid8878' } }) } };
     const rollup = { repository: { o0: mgRunning(OID_A), o1: mgRunning(OID_B) } };
     seedMergeGroupHistory();
-    const p = new Poller({ client: hgClient(sweep, detail, 'pr8878: pullRequest', queueResponse, rollup) as never,
+    const p = new Poller({ router: asRouter(hgClient(sweep, detail, 'pr8878: pullRequest', queueResponse, rollup)),
       history, deploy: noDeploy(), config: CONFIG, now: () => NOW });
     await p.sweepOnce();
     await p.detailOnce();
@@ -1880,7 +1886,7 @@ describe('Poller queue group coverage + UNMERGEABLE (HEADGREEN)', () => {
     } };
     const rollup = { repository: { o0: mgRunning(OID_A) } };
     seedMergeGroupHistory();
-    const p = new Poller({ client: hgClient(sweep, detail, 'pr9001: pullRequest', queueResponse, rollup) as never,
+    const p = new Poller({ router: asRouter(hgClient(sweep, detail, 'pr9001: pullRequest', queueResponse, rollup)),
       history, deploy: noDeploy(), config: CONFIG, now: () => NOW });
     await p.sweepOnce();
     await p.detailOnce();
@@ -1936,7 +1942,7 @@ describe('Poller workflow scoping (Y1)', () => {
 
   async function build(ciGateWorkflow: string | null, rollupWf: string | null) {
     const client = fakeClient(staleSweep, ciGateDetail(ciGateWorkflow), 'pr8970: pullRequest');
-    const p = new Poller({ client: client as never, history, deploy: noDeploy(),
+    const p = new Poller({ router: asRouter(client), history, deploy: noDeploy(),
       config: PREFIX_CONFIG, now: () => NOW });
     if (rollupWf != null) p.setRollupWorkflowName('acme/widgets', rollupWf);
     await p.sweepOnce();
@@ -1983,7 +1989,7 @@ describe('Poller workflow scoping (Y1)', () => {
   });
 
   it('rollupWorkflowFor returns the stored name, null when unknown', () => {
-    const p = new Poller({ client: fakeClient() as never, history, deploy: noDeploy(),
+    const p = new Poller({ router: asRouter(fakeClient()), history, deploy: noDeploy(),
       config: CONFIG, now: () => NOW });
     expect(p.rollupWorkflowFor('acme/widgets')).toBeNull();
     p.setRollupWorkflowName('acme/widgets', 'CI');
@@ -2000,7 +2006,7 @@ describe('Poller workflow scoping (Y1)', () => {
       readFileAtHead: vi.fn(async () => ciYaml),
     } as unknown as DeployWatcher;
     const log = vi.spyOn(console, 'log').mockImplementation(() => {});
-    const p = new Poller({ client: fakeClient() as never, history, deploy,
+    const p = new Poller({ router: asRouter(fakeClient()), history, deploy,
       config: CONFIG, now: () => NOW });
     await p.deployOnce();
     expect(p.rollupWorkflowFor('acme/widgets')).toBe('CI');
@@ -2051,7 +2057,7 @@ describe('Poller groupChecks payload (Y1)', () => {
       history.recordCheckDuration('acme/widgets', 'ci', 'merge_group',
         `2026-06-0${i + 1}T10:00:00Z`, `2026-06-0${i + 1}T10:${String(mins[i]).padStart(2, '0')}:00Z`, 'SUCCESS');
     }
-    const p = new Poller({ client: groupClient() as never, history, deploy: noDeploy(),
+    const p = new Poller({ router: asRouter(groupClient()), history, deploy: noDeploy(),
       config: CONFIG, now: () => NOW });
     await p.sweepOnce();
     await p.detailOnce();
@@ -2076,7 +2082,7 @@ describe('Poller groupChecks payload (Y1)', () => {
   });
 
   it('groupChecks is null while the group rollup has not been fetched yet', async () => {
-    const p = new Poller({ client: groupClient() as never, history, deploy: noDeploy(),
+    const p = new Poller({ router: asRouter(groupClient()), history, deploy: noDeploy(),
       config: CONFIG, now: () => NOW });
     await p.sweepOnce();
     await p.detailOnce(); // no queueOnce → group rollup unknown
@@ -2087,7 +2093,7 @@ describe('Poller groupChecks payload (Y1)', () => {
   });
 
   it('non-queued PRs carry groupChecks: null', async () => {
-    const p = new Poller({ client: fakeClient() as never, history, deploy: noDeploy(),
+    const p = new Poller({ router: asRouter(fakeClient()), history, deploy: noDeploy(),
       config: CONFIG, now: () => NOW });
     await p.sweepOnce();
     await p.detailOnce();
@@ -2135,7 +2141,7 @@ describe('Poller in-repo .pr-dashboard.yml (Z1)', () => {
     const log = vi.spyOn(console, 'log').mockImplementation(() => {});
     const textBox = { current: FILE_YAML };
     const client = repoCfgClient(textBox);
-    const p = new Poller({ client: client as never, history, deploy: noDeploy(),
+    const p = new Poller({ router: asRouter(client), history, deploy: noDeploy(),
       config: NO_DEPLOY_CONFIG, now: () => NOW });
     await p.sweepOnce();             // PR 8962 makes acme/widgets a watched repo
     await p.refreshRepoConfigs();
@@ -2156,7 +2162,7 @@ describe('Poller in-repo .pr-dashboard.yml (Z1)', () => {
   it('instance config override beats the in-repo file, per field', async () => {
     const config: AppConfig = { ...NO_DEPLOY_CONFIG,
       repos: { 'acme/widgets': { batchSize: 4 } } };
-    const p = new Poller({ client: repoCfgClient({ current: FILE_YAML }) as never, history,
+    const p = new Poller({ router: asRouter(repoCfgClient({ current: FILE_YAML })), history,
       deploy: noDeploy(), config, now: () => NOW });
     await p.sweepOnce();
     await p.refreshRepoConfigs();
@@ -2169,7 +2175,7 @@ describe('Poller in-repo .pr-dashboard.yml (Z1)', () => {
     const textBox = { current:
       'deploy:\n  environments:\n    - name: qa\n      healthUrl: https://qa.file.dev/health\n' };
     const deploy = fakeDeploy({ 'https://qa.file.dev/health': 'sha-qa' }, { 'sha-qa': 'yes' });
-    const p = new Poller({ client: repoCfgClient(textBox) as never, history, deploy,
+    const p = new Poller({ router: asRouter(repoCfgClient(textBox)), history, deploy,
       config: NO_DEPLOY_CONFIG, now: () => NOW });
     await p.sweepOnce();
     expect(p.buildState().repos[0]!.hasDeploy).toBe(false);
@@ -2187,7 +2193,7 @@ describe('Poller in-repo .pr-dashboard.yml (Z1)', () => {
     const textBox = { current:
       'deploy:\n  environments:\n    - name: qa\n      healthUrl: https://qa.file.dev/health\n' };
     const deploy = fakeDeploy({}, {});
-    const p = new Poller({ client: repoCfgClient(textBox) as never, history, deploy,
+    const p = new Poller({ router: asRouter(repoCfgClient(textBox)), history, deploy,
       config: CONFIG, now: () => NOW }); // CONFIG has an instance deploy for acme/widgets
     await p.sweepOnce();
     await p.deployOnce();
@@ -2200,7 +2206,7 @@ describe('Poller in-repo .pr-dashboard.yml (Z1)', () => {
     let t = NOW.getTime();
     const textBox = { current: null as string | null };
     const client = repoCfgClient(textBox);
-    const p = new Poller({ client: client as never, history, deploy: noDeploy(),
+    const p = new Poller({ router: asRouter(client), history, deploy: noDeploy(),
       config: NO_DEPLOY_CONFIG, now: () => new Date(t) });
     await p.sweepOnce();
     await p.deployOnce();
@@ -2220,7 +2226,7 @@ describe('Poller in-repo .pr-dashboard.yml (Z1)', () => {
     let t = NOW.getTime();
     const log = vi.spyOn(console, 'log').mockImplementation(() => {});
     const textBox: { current: string | null } = { current: FILE_YAML };
-    const p = new Poller({ client: repoCfgClient(textBox) as never, history, deploy: noDeploy(),
+    const p = new Poller({ router: asRouter(repoCfgClient(textBox)), history, deploy: noDeploy(),
       config: NO_DEPLOY_CONFIG, now: () => new Date(t) });
     await p.sweepOnce();
     await p.refreshRepoConfigs();
@@ -2240,7 +2246,7 @@ describe('Poller in-repo .pr-dashboard.yml (Z1)', () => {
   it('a failed blob fetch keeps the previously parsed config (best-effort)', async () => {
     let t = NOW.getTime();
     const textBox = { current: FILE_YAML, fail: false };
-    const p = new Poller({ client: repoCfgClient(textBox) as never, history, deploy: noDeploy(),
+    const p = new Poller({ router: asRouter(repoCfgClient(textBox)), history, deploy: noDeploy(),
       config: NO_DEPLOY_CONFIG, now: () => new Date(t) });
     await p.sweepOnce();
     await p.refreshRepoConfigs();
@@ -2255,7 +2261,7 @@ describe('Poller in-repo .pr-dashboard.yml (Z1)', () => {
   it('file warnings are surfaced via console.warn with the repo prefix', async () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     vi.spyOn(console, 'log').mockImplementation(() => {});
-    const p = new Poller({ client: repoCfgClient({ current: 'batchSize: -1\n' }) as never, history,
+    const p = new Poller({ router: asRouter(repoCfgClient({ current: 'batchSize: -1\n' })), history,
       deploy: noDeploy(), config: NO_DEPLOY_CONFIG, now: () => NOW });
     await p.sweepOnce();
     await p.refreshRepoConfigs();
@@ -2267,7 +2273,7 @@ describe('Poller in-repo .pr-dashboard.yml (Z1)', () => {
       (p as unknown as { effectivePrefixes(r: string): string[] | undefined });
     const textBox = { current: "requiredCheckPrefixes: ['from-file']\n" };
     // file > derived
-    const p1 = new Poller({ client: repoCfgClient(textBox) as never, history, deploy: noDeploy(),
+    const p1 = new Poller({ router: asRouter(repoCfgClient(textBox)), history, deploy: noDeploy(),
       config: NO_DEPLOY_CONFIG, now: () => NOW });
     vi.spyOn(console, 'log').mockImplementation(() => {});
     p1.setDerivedPrefixes('acme/widgets', ['derived']);
@@ -2275,7 +2281,7 @@ describe('Poller in-repo .pr-dashboard.yml (Z1)', () => {
     await p1.refreshRepoConfigs();
     expect(internals(p1).effectivePrefixes('acme/widgets')).toEqual(['from-file']);
     // override > file
-    const p2 = new Poller({ client: repoCfgClient(textBox) as never, history, deploy: noDeploy(),
+    const p2 = new Poller({ router: asRouter(repoCfgClient(textBox)), history, deploy: noDeploy(),
       config: { ...NO_DEPLOY_CONFIG, repos: { 'acme/widgets': { requiredCheckPrefixes: ['override'] } } },
       now: () => NOW });
     await p2.sweepOnce();
@@ -2294,7 +2300,7 @@ describe('Poller in-repo .pr-dashboard.yml (Z1)', () => {
       readFileAtHead: vi.fn(async () => ciYaml),
     } as unknown as DeployWatcher;
     const log = vi.spyOn(console, 'log').mockImplementation(() => {});
-    const p = new Poller({ client: repoCfgClient(textBox) as never, history, deploy,
+    const p = new Poller({ router: asRouter(repoCfgClient(textBox)), history, deploy,
       config: NO_DEPLOY_CONFIG, now: () => NOW });
     await p.sweepOnce();
     await p.deployOnce(); // refresh makes widgets a deploy repo → derivation runs with file settings
@@ -2319,10 +2325,11 @@ describe('Poller.reconfigure (Z2 hot-apply)', () => {
     vi.useFakeTimers();
     vi.spyOn(console, 'log').mockImplementation(() => {});
     const client = fakeClient();
-    const p = new Poller({ client: client as never, history, deploy: noDeploy(),
+    const p = new Poller({ router: asRouter(client), history, deploy: noDeploy(),
       config: CONFIG, now: () => NOW });
+    // count sweep CYCLES: each cycle issues ONE search per owner; key off acme's
     const sweepCalls = () =>
-      client.graphql.mock.calls.filter(([q]) => (q as string).includes('open0: search')).length;
+      client.graphql.mock.calls.filter(([q]) => (q as string).includes('user:acme')).length;
     p.start();
     await vi.advanceTimersByTimeAsync(0);   // initial kick
     expect(sweepCalls()).toBe(1);
@@ -2339,7 +2346,7 @@ describe('Poller.reconfigure (Z2 hot-apply)', () => {
     vi.useFakeTimers();
     vi.spyOn(console, 'log').mockImplementation(() => {});
     const client = fakeClient();
-    const p = new Poller({ client: client as never, history, deploy: noDeploy(),
+    const p = new Poller({ router: asRouter(client), history, deploy: noDeploy(),
       config: { ...CONFIG, intervals: { ...CONFIG.intervals, sweepMs: 20_000, hotMs: 600_000, deployMs: 600_000 } },
       now: () => NOW });
     const sweepCalls = () =>
@@ -2358,7 +2365,7 @@ describe('Poller.reconfigure (Z2 hot-apply)', () => {
     vi.useFakeTimers();
     vi.spyOn(console, 'log').mockImplementation(() => {});
     const client = fakeClient();
-    const p = new Poller({ client: client as never, history, deploy: noDeploy(),
+    const p = new Poller({ router: asRouter(client), history, deploy: noDeploy(),
       config: CONFIG, now: () => NOW });
     p.reconfigure({ ...CONFIG, intervals: { ...CONFIG.intervals, sweepMs: 1_000 } });
     await vi.advanceTimersByTimeAsync(10_000);
@@ -2367,7 +2374,7 @@ describe('Poller.reconfigure (Z2 hot-apply)', () => {
 
   it('a reconfigured exclude prunes the repo (open AND merged views) on the next sweep', async () => {
     vi.spyOn(console, 'log').mockImplementation(() => {});
-    const p = new Poller({ client: fakeClient() as never, history, deploy: noDeploy(),
+    const p = new Poller({ router: asRouter(fakeClient()), history, deploy: noDeploy(),
       config: CONFIG, now: () => NOW });
     await p.sweepOnce();
     expect(p.buildState().repos).toHaveLength(1);
@@ -2378,7 +2385,7 @@ describe('Poller.reconfigure (Z2 hot-apply)', () => {
 
   it('a reconfigured retentionDays applies to the merged-PR window immediately', async () => {
     vi.spyOn(console, 'log').mockImplementation(() => {});
-    const p = new Poller({ client: fakeClient() as never, history, deploy: noDeploy(),
+    const p = new Poller({ router: asRouter(fakeClient()), history, deploy: noDeploy(),
       config: CONFIG, now: () => NOW });
     await p.sweepOnce();        // merged 8951 (20 min old) tracked under 7d retention
     expect(p.buildState().repos[0]!.prs.some((x) => x.number === 8951)).toBe(true);
@@ -2405,7 +2412,7 @@ describe('Poller.reposReport (Z2 source attribution)', () => {
   it('attributes override / in-repo / derived / default per field (instance deploy stays override)', async () => {
     vi.spyOn(console, 'log').mockImplementation(() => {});
     const config: AppConfig = { ...CONFIG, repos: { 'acme/widgets': { batchSize: 4 } } };
-    const p = new Poller({ client: reportClient(fileYaml) as never, history, deploy: noDeploy(),
+    const p = new Poller({ router: asRouter(reportClient(fileYaml)), history, deploy: noDeploy(),
       config, now: () => NOW });
     p.setDerivedPrefixes('acme/widgets', ['ci']);
     await p.sweepOnce();
@@ -2423,7 +2430,7 @@ describe('Poller.reposReport (Z2 source attribution)', () => {
   it('file-only deploy reads in-repo; with no layers everything is default', async () => {
     vi.spyOn(console, 'log').mockImplementation(() => {});
     const config: AppConfig = { ...DEFAULTS, owners: ['acme', 'octo'] };
-    const p = new Poller({ client: reportClient(fileYaml) as never, history, deploy: noDeploy(),
+    const p = new Poller({ router: asRouter(reportClient(fileYaml)), history, deploy: noDeploy(),
       config, now: () => NOW });
     await p.sweepOnce();
     await p.refreshRepoConfigs();
@@ -2461,7 +2468,7 @@ describe('Poller reconfigure generation guard (timer-chain resurrection)', () =>
       remaining: 4000, resetAt: null,
       graphql: vi.fn(async (q: string) => {
         if ((q as string).includes('open0: search')) {
-          sweepCallCount++;
+          if ((q as string).includes('user:acme')) sweepCallCount++; // one per sweep CYCLE, not per owner
           if (firstSweep) {
             firstSweep = false;
             await sweepInflight; // hold the first sweep in-flight across the reconfigure
@@ -2475,7 +2482,7 @@ describe('Poller reconfigure generation guard (timer-chain resurrection)', () =>
 
     const INTERVAL = 5_000;
     const p = new Poller({
-      client: client as never, history, deploy: noDeploy(),
+      router: asRouter(client), history, deploy: noDeploy(),
       config: { ...CONFIG, intervals: { sweepMs: INTERVAL, hotMs: 600_000, deployMs: 600_000 } },
       now: () => NOW,
     });
@@ -2518,7 +2525,7 @@ describe('Poller reconfigure generation guard (timer-chain resurrection)', () =>
 describe('Poller.nudge (webhook-driven out-of-band cycles)', () => {
   it('pr-detail for a TRACKED PR → targeted detail fetch for just that PR', async () => {
     const client = fakeClient();
-    const p = new Poller({ client: client as never, history, deploy: noDeploy(),
+    const p = new Poller({ router: asRouter(client), history, deploy: noDeploy(),
       config: CONFIG, now: () => NOW });
     await p.sweepOnce(); // tracks acme/widgets#8962
     client.graphql.mockClear();
@@ -2539,7 +2546,7 @@ describe('Poller.nudge (webhook-driven out-of-band cycles)', () => {
       ] },
     };
     const client = fakeClient(sweep);
-    const p = new Poller({ client: client as never, history, deploy: noDeploy(),
+    const p = new Poller({ router: asRouter(client), history, deploy: noDeploy(),
       config: CONFIG, now: () => NOW });
     await p.sweepOnce();
     client.graphql.mockClear();
@@ -2550,7 +2557,7 @@ describe('Poller.nudge (webhook-driven out-of-band cycles)', () => {
   });
 
   it('pr-detail for an UNTRACKED PR → falls back to sweep + full detail', async () => {
-    const p = new Poller({ client: fakeClient() as never, history, deploy: noDeploy(),
+    const p = new Poller({ router: asRouter(fakeClient()), history, deploy: noDeploy(),
       config: CONFIG, now: () => NOW });
     const sweepSpy = vi.spyOn(p, 'sweepOnce');
     const detailSpy = vi.spyOn(p, 'detailOnce');
@@ -2560,7 +2567,7 @@ describe('Poller.nudge (webhook-driven out-of-band cycles)', () => {
   });
 
   it('queue route → queueOnce; sweep route → sweepOnce + detailOnce(false)', async () => {
-    const p = new Poller({ client: fakeClient() as never, history, deploy: noDeploy(),
+    const p = new Poller({ router: asRouter(fakeClient()), history, deploy: noDeploy(),
       config: CONFIG, now: () => NOW });
     const sweepSpy = vi.spyOn(p, 'sweepOnce');
     const detailSpy = vi.spyOn(p, 'detailOnce');
@@ -2580,12 +2587,15 @@ describe('Poller.nudge (webhook-driven out-of-band cycles)', () => {
     const client = {
       remaining: 4000, resetAt: null,
       graphql: vi.fn(async (q: string) => {
-        if (q.includes('open0: search')) { sweepCalls++; await deferred; return SWEEP_RESPONSE; }
+        if (q.includes('open0: search')) {
+          if (q.includes('user:acme')) sweepCalls++; // one per sweep CYCLE, not per owner
+          await deferred; return SWEEP_RESPONSE;
+        }
         if (q.includes('pr8962: pullRequest')) return DETAIL_RESPONSE;
         throw new Error(`unexpected query: ${q.slice(0, 80)}`);
       }),
     };
-    const p = new Poller({ client: client as never, history, deploy: noDeploy(),
+    const p = new Poller({ router: asRouter(client), history, deploy: noDeploy(),
       config: CONFIG, now: () => NOW });
     const first = p.sweepOnce();           // holds the 'sweep' latch
     const nudged = p.nudge({ kind: 'sweep' }); // latch-blocked: must not double-fetch
@@ -2600,7 +2610,7 @@ describe('Poller.nudge (webhook-driven out-of-band cycles)', () => {
       graphql: vi.fn(async () => { throw new Error('boom'); }),
     };
     const err = vi.spyOn(console, 'error').mockImplementation(() => {});
-    const p = new Poller({ client: client as never, history, deploy: noDeploy(),
+    const p = new Poller({ router: asRouter(client), history, deploy: noDeploy(),
       config: CONFIG, now: () => NOW });
     await expect(p.nudge({ kind: 'sweep' })).resolves.toBeUndefined();
     expect(p.buildState().staleSince).toBe(NOW.toISOString());
@@ -2612,27 +2622,27 @@ describe('Poller.effectiveHotMs webhook relax', () => {
   const WEBHOOKS_ON = { enabled: true, secretPath: '/tmp/s', path: '/api/webhooks/github' };
 
   it('webhooks enabled + default hotMs → relaxed ×4', () => {
-    const p = new Poller({ client: fakeClient() as never, history, deploy: noDeploy(),
+    const p = new Poller({ router: asRouter(fakeClient()), history, deploy: noDeploy(),
       config: { ...CONFIG, webhooks: WEBHOOKS_ON, hotMsExplicit: false }, now: () => NOW });
     expect(p.effectiveHotMs()).toBe(CONFIG.intervals.hotMs * 4);
     expect(p.nextDelayMs('hot')).toBe(CONFIG.intervals.hotMs * 4);
   });
 
   it('explicit intervals.hotMs in the config file wins — no relax', () => {
-    const p = new Poller({ client: fakeClient() as never, history, deploy: noDeploy(),
+    const p = new Poller({ router: asRouter(fakeClient()), history, deploy: noDeploy(),
       config: { ...CONFIG, webhooks: WEBHOOKS_ON, hotMsExplicit: true }, now: () => NOW });
     expect(p.effectiveHotMs()).toBe(CONFIG.intervals.hotMs);
   });
 
   it('webhooks disabled → unchanged', () => {
-    const p = new Poller({ client: fakeClient() as never, history, deploy: noDeploy(),
+    const p = new Poller({ router: asRouter(fakeClient()), history, deploy: noDeploy(),
       config: CONFIG, now: () => NOW });
     expect(p.effectiveHotMs()).toBe(CONFIG.intervals.hotMs);
   });
 
   it('rate-limit floor still beats the relax (degrades to 60s)', () => {
     const c = fakeClient(); c.remaining = 500;
-    const p = new Poller({ client: c as never, history, deploy: noDeploy(),
+    const p = new Poller({ router: asRouter(c), history, deploy: noDeploy(),
       config: { ...CONFIG, webhooks: WEBHOOKS_ON, hotMsExplicit: false }, now: () => NOW });
     expect(p.effectiveHotMs()).toBe(60_000);
   });
@@ -2722,7 +2732,7 @@ describe('Poller failure-aware refresh throttles (incident 2026-06-11)', () => {
     let t = NOW.getTime();
     const textBox = { current: FILE_YAML, fail: true };
     const client = repoCfgClient(textBox);
-    const p = new Poller({ client: client as never, history, deploy: noDeploy(),
+    const p = new Poller({ router: asRouter(client), history, deploy: noDeploy(),
       config: NO_DEPLOY_CONFIG, now: () => new Date(t) });
     await p.sweepOnce();
     await p.refreshRepoConfigs();                  // attempt 1: fails
@@ -2763,7 +2773,7 @@ describe('Poller failure-aware refresh throttles (incident 2026-06-11)', () => {
       isAncestor: vi.fn(async () => 'missing' as const),
       readFileAtHead: vi.fn(async () => 'jobs:\n  lint: {}\n  ci:\n    needs: [lint]\n'),
     } as unknown as DeployWatcher;
-    const p = new Poller({ client: fakeClient() as never, history, deploy,
+    const p = new Poller({ router: asRouter(fakeClient()), history, deploy,
       config: CONFIG, now: () => new Date(t) });
     await p.deployOnce();                          // attempt 1: clone fetch fails
     expect(vi.mocked(deploy.readFileAtHead)).not.toHaveBeenCalled();
@@ -2788,7 +2798,7 @@ describe('Poller failure-aware refresh throttles (incident 2026-06-11)', () => {
   it('guard() logs the cause chain on a failed sweep (one line, no stack)', async () => {
     const error = vi.spyOn(console, 'error').mockImplementation(() => {});
     const client = { remaining: 4000, resetAt: null, graphql: vi.fn(async () => { throw enotfound(); }) };
-    const p = new Poller({ client: client as never, history, deploy: noDeploy(),
+    const p = new Poller({ router: asRouter(client), history, deploy: noDeploy(),
       config: CONFIG, now: () => NOW });
     await p.sweepOnce();
     expect(error).toHaveBeenCalledWith('[poller] fetch failed:',
@@ -2840,7 +2850,7 @@ describe('Poller persisted last-known-good (restart during an outage)', () => {
     vi.spyOn(console, 'warn').mockImplementation(() => {});
     vi.spyOn(console, 'error').mockImplementation(() => {});
     // Phase 1 — healthy instance: fetches the in-repo file and derives ci.yml.
-    const p1 = new Poller({ client: healthyClient(FILE_YAML) as never, history,
+    const p1 = new Poller({ router: asRouter(healthyClient(FILE_YAML)), history,
       deploy: healthyDeploy(), config: NO_DEPLOY_CONFIG, now: () => NOW });
     await p1.sweepOnce();
     await p1.deployOnce();
@@ -2849,7 +2859,7 @@ describe('Poller persisted last-known-good (restart during an outage)', () => {
       { prefixes: ['ci', 'build', 'lint'], workflowName: 'CI' });
 
     // Phase 2 — process restart during a GitHub outage: every fetch fails.
-    const p2 = new Poller({ client: outageClient() as never, history,
+    const p2 = new Poller({ router: asRouter(outageClient()), history,
       deploy: outageDeploy(), config: NO_DEPLOY_CONFIG, now: () => NOW });
     await p2.sweepOnce();   // fails — guard contains it
     await p2.deployOnce();  // repo-config fetch + derivation both fail
@@ -2873,7 +2883,7 @@ describe('Poller persisted last-known-good (restart during an outage)', () => {
     history.setMeta('repoConfig:acme/widgets', JSON.stringify({ batchSize: 99 }));
     history.setMeta('ciGraph:acme/widgets', JSON.stringify(
       { prefixes: ['stale'], nodes: { stale: { needs: [], activity: { mode: 'all' } } }, workflowName: null }));
-    const p = new Poller({ client: healthyClient(FILE_YAML) as never, history,
+    const p = new Poller({ router: asRouter(healthyClient(FILE_YAML)), history,
       deploy: healthyDeploy(), config: NO_DEPLOY_CONFIG, now: () => NOW });
     expect(p.settingsFor('acme/widgets').batchSize).toBe(99);   // restored stale value
     await p.sweepOnce();
@@ -2896,7 +2906,7 @@ describe('Poller persisted last-known-good (restart during an outage)', () => {
         throw new Error(`unexpected query: ${q.slice(0, 80)}`);
       }),
     };
-    const p = new Poller({ client: client as never, history, deploy: noDeploy(),
+    const p = new Poller({ router: asRouter(client), history, deploy: noDeploy(),
       config: NO_DEPLOY_CONFIG, now: () => NOW });
     expect(p.needsFor('acme/widgets', 'ci')).toBeNull();        // corrupt graph row ignored
     await p.sweepOnce();
@@ -2952,7 +2962,7 @@ describe('Poller inaccessible repository ≠ removed file (App-mode incident 202
     let t = NOW.getTime();
     const box = { blob: 'file' as 'file' | 'absent' | 'norepo' };
     const client = incidentClient(box);
-    const p = new Poller({ client: client as never, history, deploy: noDeploy(),
+    const p = new Poller({ router: asRouter(client), history, deploy: noDeploy(),
       config: NO_DEPLOY_CONFIG, now: () => new Date(t) });
     await p.sweepOnce();
     await p.refreshRepoConfigs();                  // healthy: loaded + persisted
@@ -2979,7 +2989,7 @@ describe('Poller inaccessible repository ≠ removed file (App-mode incident 202
     const log = vi.spyOn(console, 'log').mockImplementation(() => {});
     let t = NOW.getTime();
     const box = { blob: 'file' as 'file' | 'absent' | 'norepo' };
-    const p = new Poller({ client: incidentClient(box) as never, history, deploy: noDeploy(),
+    const p = new Poller({ router: asRouter(incidentClient(box)), history, deploy: noDeploy(),
       config: NO_DEPLOY_CONFIG, now: () => new Date(t) });
     await p.sweepOnce();
     await p.refreshRepoConfigs();
@@ -2996,7 +3006,7 @@ describe('Poller inaccessible repository ≠ removed file (App-mode incident 202
     vi.spyOn(console, 'warn').mockImplementation(() => {});
     let t = NOW.getTime();
     const box = { blob: 'file' as 'file' | 'absent' | 'norepo' };
-    const p = new Poller({ client: incidentClient(box) as never, history, deploy: noDeploy(),
+    const p = new Poller({ router: asRouter(incidentClient(box)), history, deploy: noDeploy(),
       config: NO_DEPLOY_CONFIG, now: () => new Date(t) });
     await p.sweepOnce();                           // merged PR 8951 lands in history
     await p.refreshRepoConfigs();                  // good config persisted (incl. deploy block)
@@ -3017,7 +3027,7 @@ describe('Poller inaccessible repository ≠ removed file (App-mode incident 202
     const box = { blob: 'norepo' as const, sweep: EMPTY_SWEEP };
     // acme/widgets is watched via instance config even with no PRs visible
     const config: AppConfig = { ...NO_DEPLOY_CONFIG, repos: { 'acme/widgets': { batchSize: 4 } } };
-    const p = new Poller({ client: incidentClient(box) as never, history, deploy: noDeploy(),
+    const p = new Poller({ router: asRouter(incidentClient(box)), history, deploy: noDeploy(),
       config, now: () => NOW });
     await p.sweepOnce();                           // no inaccessible evidence yet → no warning
     const ownerWarns = () => warn.mock.calls
@@ -3046,7 +3056,7 @@ describe('Poller inaccessible repository ≠ removed file (App-mode incident 202
         throw new Error(`unexpected query: ${q.slice(0, 80)}`);
       }),
     };
-    const p = new Poller({ client: client as never, history, deploy: noDeploy(),
+    const p = new Poller({ router: asRouter(client), history, deploy: noDeploy(),
       config: NO_DEPLOY_CONFIG, now: () => NOW });
     await p.sweepOnce();                           // PR 8962 discovered
     await p.detailOnce();                          // detail alias resolves to null
@@ -3059,11 +3069,155 @@ describe('Poller inaccessible repository ≠ removed file (App-mode incident 202
     vi.spyOn(console, 'log').mockImplementation(() => {});
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const box = { blob: 'norepo' as const };
-    const p = new Poller({ client: incidentClient(box) as never, history, deploy: noDeploy(),
+    const p = new Poller({ router: asRouter(incidentClient(box)), history, deploy: noDeploy(),
       config: NO_DEPLOY_CONFIG, now: () => NOW });
     await p.sweepOnce();
     await p.refreshRepoConfigs();                  // evidence for acme…
     await p.sweepOnce();                           // …but the sweep still sees acme PRs
     expect(warn.mock.calls.some((c) => String(c).includes('appears inaccessible'))).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Round 10 (issue #10): per-owner request routing across installations
+// ---------------------------------------------------------------------------
+
+describe('Poller per-owner routing (multi-installation)', () => {
+  afterEach(() => vi.restoreAllMocks());
+
+  const ACME_SWEEP = { open0: SWEEP_RESPONSE.open0, merged0: SWEEP_RESPONSE.merged0 };
+  const OCTO_SWEEP = {
+    open0: { issueCount: 1, nodes: [{ number: 42, title: 'feat: tools', url: 'u42', isDraft: false,
+      mergedAt: null, repository: { nameWithOwner: 'octo/tools' }, mergeCommit: null }] },
+    merged0: { issueCount: 0, nodes: [] },
+  };
+  const octoDetail = (over: Record<string, unknown> = {}) => ({
+    r0: { nameWithOwner: 'octo/tools', pr42: {
+      number: 42, title: 'feat: tools', url: 'u42', isDraft: false, mergeStateStatus: 'BLOCKED',
+      mergedAt: null, headRefOid: 'head42', autoMergeRequest: null, mergeCommit: null,
+      mergeQueueEntry: null,
+      commits: { nodes: [{ commit: { statusCheckRollup: { state: 'PENDING',
+        contexts: { pageInfo: { hasNextPage: false }, nodes: [CHECK_DONE] } } } }] },
+      ...over,
+    } },
+  });
+
+  /** Per-owner fake client: a sweep payload plus marker-keyed extra responses. */
+  function ownerClient(sweep: Record<string, unknown>, responses: Record<string, unknown> = {}) {
+    return {
+      remaining: 4000 as number | null, resetAt: null,
+      graphql: vi.fn(async (q: string) => {
+        if (q.includes(': search')) return sweep;
+        for (const [marker, payload] of Object.entries(responses)) {
+          if (q.includes(marker)) return payload;
+        }
+        throw new Error(`unexpected query: ${q.slice(0, 80)}`);
+      }),
+    };
+  }
+
+  /** Structural multi-owner router: per-owner clients, null for unknown owners. */
+  function routerFor(clients: Record<string, ReturnType<typeof ownerClient>>) {
+    const all = () => Object.values(clients);
+    return {
+      clientFor: (owner: string) => clients[owner] ?? null,
+      allClients: all,
+      minRemaining: () => {
+        const vals = all().map((c) => c.remaining).filter((r): r is number => r != null);
+        return vals.length ? Math.min(...vals) : null;
+      },
+    } as unknown as ClientRouter;
+  }
+
+  it('sweep routes each owner search to its own client and merges both into one pass', async () => {
+    const acme = ownerClient(ACME_SWEEP, { 'pr8962: pullRequest': DETAIL_RESPONSE });
+    const octo = ownerClient(OCTO_SWEEP, { 'pr42: pullRequest': octoDetail() });
+    const p = new Poller({ router: routerFor({ acme, octo }), history, deploy: noDeploy(),
+      config: CONFIG, now: () => NOW });
+    await p.sweepOnce();
+    // each client saw exactly one search, scoped to its own owner
+    expect(acme.graphql).toHaveBeenCalledTimes(1);
+    expect(octo.graphql).toHaveBeenCalledTimes(1);
+    expect(String(acme.graphql.mock.calls[0])).toContain('user:acme');
+    expect(String(acme.graphql.mock.calls[0])).not.toContain('user:octo');
+    expect(String(octo.graphql.mock.calls[0])).toContain('user:octo');
+    await p.detailOnce();
+    // results merged into ONE dashboard state + ONE sweep bookkeeping pass
+    expect(p.buildState().repos.map((r) => r.repo)).toEqual(['acme/widgets', 'octo/tools']);
+    expect(history.getMeta('lastSweep')).toBe(NOW.toISOString());
+  });
+
+  it('detail fetch batches targets per repo owner', async () => {
+    const acme = ownerClient(ACME_SWEEP, { 'pr8962: pullRequest': DETAIL_RESPONSE });
+    const octo = ownerClient(OCTO_SWEEP, { 'pr42: pullRequest': octoDetail() });
+    const p = new Poller({ router: routerFor({ acme, octo }), history, deploy: noDeploy(),
+      config: CONFIG, now: () => NOW });
+    await p.sweepOnce();
+    await p.detailOnce();
+    const acmeDetail = acme.graphql.mock.calls.map(([q]) => q as string).filter((q) => q.includes('pullRequest('));
+    const octoDetailQs = octo.graphql.mock.calls.map(([q]) => q as string).filter((q) => q.includes('pullRequest('));
+    expect(acmeDetail).toHaveLength(1);
+    expect(octoDetailQs).toHaveLength(1);
+    expect(acmeDetail[0]).toContain('pr8962:');
+    expect(acmeDetail[0]).not.toContain('pr42:');
+    expect(octoDetailQs[0]).toContain('pr42:');
+    expect(octoDetailQs[0]).not.toContain('pr8962:');
+  });
+
+  it('repo-scoped queue queries route via the repo owner', async () => {
+    const queued = octoDetail({
+      autoMergeRequest: { mergeMethod: 'SQUASH' }, mergeStateStatus: 'CLEAN',
+      mergeQueueEntry: { position: 1, state: 'QUEUED', enqueuedAt: null, headCommit: null },
+    });
+    const octoQueue = { repository: { mergeQueue: { entries: { nodes: [
+      { position: 1, state: 'QUEUED', enqueuedAt: null, headCommit: null, pullRequest: { number: 42 } },
+    ] } } } };
+    const acme = ownerClient(ACME_SWEEP, { 'pr8962: pullRequest': DETAIL_RESPONSE });
+    const octo = ownerClient(OCTO_SWEEP, { 'pr42: pullRequest': queued, 'mergeQueue(branch:': octoQueue });
+    const p = new Poller({ router: routerFor({ acme, octo }), history, deploy: noDeploy(),
+      config: CONFIG, now: () => NOW });
+    await p.sweepOnce();
+    await p.detailOnce();
+    await p.queueOnce();
+    expect(octo.graphql.mock.calls.some(([q]) => (q as string).includes('mergeQueue(branch:'))).toBe(true);
+    expect(acme.graphql.mock.calls.some(([q]) => (q as string).includes('mergeQueue(branch:'))).toBe(false);
+  });
+
+  it("an owner with no installation is skipped with ONE warning; sweep bookkeeping stays healthy", async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const acme = ownerClient(ACME_SWEEP, { 'pr8962: pullRequest': DETAIL_RESPONSE });
+    const p = new Poller({ router: routerFor({ acme }), history, deploy: noDeploy(),
+      config: { ...CONFIG, owners: ['acme', 'ghost'] }, now: () => NOW });
+    await p.sweepOnce();
+    await p.sweepOnce();
+    const skips = warn.mock.calls.filter((c) => String(c).includes("owner 'ghost' has no installation"));
+    expect(skips).toHaveLength(1);                            // once per owner per process
+    expect(p.buildState().staleSince).toBeNull();             // config mismatch, NOT an outage
+    expect(history.getMeta('lastSweep')).toBe(NOW.toISOString()); // window still advances
+  });
+
+  it('one owner failing keeps the other ingested but defers prune + lastSweep', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    const acme = ownerClient(ACME_SWEEP, { 'pr8962: pullRequest': DETAIL_RESPONSE });
+    const octo = ownerClient(OCTO_SWEEP);
+    octo.graphql.mockImplementation(async () => { throw new TypeError('boom'); });
+    const p = new Poller({ router: routerFor({ acme, octo }), history, deploy: noDeploy(),
+      config: CONFIG, now: () => NOW });
+    await p.sweepOnce();
+    expect(p.buildState().staleSince).toBe(NOW.toISOString());      // real fetch failure
+    expect(p.buildState().repos.map((r) => r.repo)).toContain('acme/widgets'); // acme still landed
+    // an outage for one owner must not read its PRs as "vanished" nor advance the window
+    expect(history.getMeta('lastSweep')).toBeNull();
+  });
+
+  it('rate governance keys off the WORST per-installation budget (router.minRemaining)', () => {
+    const acme = ownerClient(ACME_SWEEP);
+    const octo = ownerClient(OCTO_SWEEP);
+    acme.remaining = 4000;
+    octo.remaining = 500;
+    const p = new Poller({ router: routerFor({ acme, octo }), history, deploy: noDeploy(),
+      config: CONFIG, now: () => NOW });
+    expect(p.effectiveHotMs()).toBe(60_000);          // hot tick degraded
+    expect(p.nextDelayMs('sweep')).toBe(300_000);     // sweep low-budget floor
   });
 });

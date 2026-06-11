@@ -198,14 +198,35 @@ export interface ViewerClient {
   graphql<T>(query: string): Promise<T>;
 }
 
+/** Minimal structural registry — keeps config decoupled from InstallationRegistry. */
+export interface InstallationAccountsSource {
+  accounts(): { login: string }[];
+}
+
 /**
- * Owners fallback: when no owners are configured, derive them from the token —
- * one `{ viewer { login } }` query, mutating `config.owners` in place.
- * Configured owners always win; the query is skipped entirely then.
+ * Owners fallback: when no owners are configured, derive them — mutating
+ * `config.owners` in place. Configured owners always win; the source is never
+ * consulted then.
+ *
+ * - App mode passes the installation registry: owners default to the accounts
+ *   the App is installed on (every installation is watched).
+ * - gh/env modes pass the GraphQL client: one `{ viewer { login } }` query —
+ *   owners default to the token owner.
  */
-export async function resolveOwners(config: AppConfig, client: ViewerClient): Promise<void> {
+export async function resolveOwners(
+  config: AppConfig, source: ViewerClient | InstallationAccountsSource,
+): Promise<void> {
   if (config.owners.length > 0) return;
-  const data = await client.graphql<{ viewer: { login: string } }>(buildViewerQuery());
+  if ('accounts' in source) {
+    const logins = source.accounts().map((a) => a.login);
+    if (logins.length === 0) {
+      throw new Error('owners auto-derivation: the App has no installation accounts');
+    }
+    config.owners = logins;
+    console.log(`[config] no owners configured — defaulting to installation accounts: ${logins.join(', ')}`);
+    return;
+  }
+  const data = await source.graphql<{ viewer: { login: string } }>(buildViewerQuery());
   const login = data?.viewer?.login;
   if (!login) throw new Error('owners auto-derivation: viewer query returned no login');
   config.owners = [login];

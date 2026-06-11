@@ -446,6 +446,32 @@ describe('resolveOwners', () => {
     await expect(resolveOwners(configWith([]), client as never))
       .rejects.toThrow(/viewer query returned no login/);
   });
+
+  // Round 10 (issue #10): App mode defaults owners to the installation accounts.
+  it('empty owners + an accounts source (App mode) → owners = installation logins, logged', async () => {
+    const log = vi.spyOn(console, 'log').mockImplementation(() => {});
+    const registry = { accounts: vi.fn(() => [{ id: 11, login: 'acme' }, { id: 22, login: 'globex' }]) };
+    const config = configWith([]);
+    await resolveOwners(config, registry as never);
+    expect(config.owners).toEqual(['acme', 'globex']);
+    expect(log).toHaveBeenCalledTimes(1);
+    expect(String(log.mock.calls[0])).toContain('installation accounts: acme, globex');
+    log.mockRestore();
+  });
+
+  it('configured owners win over installation accounts — accounts() is never consulted', async () => {
+    const registry = { accounts: vi.fn(() => [{ id: 11, login: 'acme' }]) };
+    const config = configWith(['keepme']);
+    await resolveOwners(config, registry as never);
+    expect(registry.accounts).not.toHaveBeenCalled();
+    expect(config.owners).toEqual(['keepme']);
+  });
+
+  it('rejects when the accounts source yields no accounts', async () => {
+    const registry = { accounts: vi.fn(() => []) };
+    await expect(resolveOwners(configWith([]), registry as never))
+      .rejects.toThrow(/no installation accounts/);
+  });
 });
 
 // ---------------------------------------------------------------------------

@@ -1,6 +1,7 @@
 import { EventEmitter } from 'node:events';
 import type { GithubClient } from './github';
 import { RateLimitError } from './github';
+import type { ClientRouter } from './client-router';
 import type { HistoryStore, MergedPrRecord } from './history';
 import type { DeployWatcher } from './deploy-watcher';
 import { effectiveRepoSettings, effectiveDeployMap, type AppConfig, type DeployConfig, type RepoSettings } from './config';
@@ -91,7 +92,9 @@ export interface DashboardState {
 }
 
 interface PollerDeps {
-  client: GithubClient;
+  /** Per-owner request routing (App mode: one client per installation;
+   *  gh/env: `ClientRouter.forSingle` over the one shared client). */
+  router: ClientRouter;
   history: HistoryStore;
   deploy: DeployWatcher;
   config: AppConfig;
@@ -208,6 +211,7 @@ export class Poller extends EventEmitter {
   private ancestryCheckedAt = new Map<string, number>();  // "sha:deployedSha" → last check (ms)
   private inaccessibleOwners = new Set<string>();        // owners with repository-inaccessible evidence (process lifetime)
   private warnedInaccessibleOwners = new Set<string>();   // owner-invisible diagnosability log fired (log once)
+  private warnedUnknownOwners = new Set<string>();        // no-installation skip logged (once per owner per process)
   private staleSince: string | null = null;
   private pauseUntil = 0;                                 // rate-limit pause (epoch ms)
   private inFlight = new Set<string>();                   // re-entrancy latches per cycle
@@ -269,35 +273,49 @@ export class Poller extends EventEmitter {
   }
 
   private async sweepImpl(deepMergedSweep: boolean): Promise<void> {
-    const { client, history, config } = this.deps;
+    const { history, config } = this.deps;
     const sweepStartedAt = this.now(); // captured BEFORE the fetch: next window must overlap it
     const since = history.getMeta('lastSweep') ?? new Date(sweepStartedAt.getTime() - 90_000).toISOString();
-    const data = await this.guard(() => client.graphql<Record<string, any>>(buildSweepQuery(config.owners, since)));
-    if (!data) return;
     const seenOpen = new Set<string>();
     const ownerResultCounts = new Map<string, number>();
     let warnedTruncation = false;
-    for (const [alias, payload] of Object.entries(data)) {
-      if (!alias.startsWith('open') && !alias.startsWith('merged')) continue;
-      const nodes: any[] = (payload as any)?.nodes ?? [];
-      const issueCount: number = (payload as any)?.issueCount ?? 0;
-      const pageInfo = (payload as any)?.pageInfo as { hasNextPage?: boolean; endCursor?: string | null } | undefined;
-      const owner = config.owners[Number(alias.replace(/^\D+/, ''))] ?? '?';
-      ownerResultCounts.set(owner, (ownerResultCounts.get(owner) ?? 0) + nodes.length);
-      const willPaginate = deepMergedSweep && alias.startsWith('merged')
-        && !!pageInfo?.hasNextPage && !!pageInfo.endCursor;
-      if (!warnedTruncation && issueCount > nodes.length && !willPaginate) {
-        console.warn(`[poller] sweep truncated: ${alias} (owner ${owner}) returned ${nodes.length} of ${issueCount} PRs`);
-        warnedTruncation = true;
+    let allOwnersAnswered = true;
+    // One search request per owner, routed to the installation that covers it —
+    // results from every owner merge into this single sweep pass. An owner with
+    // no installation is a config mismatch (logged once, skipped, sweep stays
+    // healthy); a FAILED owner fetch is an outage (staleSince set by guard).
+    for (const owner of config.owners) {
+      const client = this.routedClient(owner);
+      if (!client) {
+        ownerResultCounts.set(owner, 0); // counted toward the inaccessible-owner warning
+        continue;
       }
-      for (const node of nodes) this.ingestSweepNode(node, seenOpen);
-      if (willPaginate) await this.fetchMergedPages(owner, since, pageInfo!.endCursor!, seenOpen);
+      const data = await this.guard(() => client.graphql<Record<string, any>>(buildSweepQuery([owner], since)));
+      if (!data) { allOwnersAnswered = false; continue; }
+      for (const [alias, payload] of Object.entries(data)) {
+        if (!alias.startsWith('open') && !alias.startsWith('merged')) continue;
+        const nodes: any[] = (payload as any)?.nodes ?? [];
+        const issueCount: number = (payload as any)?.issueCount ?? 0;
+        const pageInfo = (payload as any)?.pageInfo as { hasNextPage?: boolean; endCursor?: string | null } | undefined;
+        ownerResultCounts.set(owner, (ownerResultCounts.get(owner) ?? 0) + nodes.length);
+        const willPaginate = deepMergedSweep && alias.startsWith('merged')
+          && !!pageInfo?.hasNextPage && !!pageInfo.endCursor;
+        if (!warnedTruncation && issueCount > nodes.length && !willPaginate) {
+          console.warn(`[poller] sweep truncated: ${alias} (owner ${owner}) returned ${nodes.length} of ${issueCount} PRs`);
+          warnedTruncation = true;
+        }
+        for (const node of nodes) this.ingestSweepNode(node, seenOpen);
+        if (willPaginate) await this.fetchMergedPages(client, owner, since, pageInfo!.endCursor!, seenOpen);
+      }
     }
     this.warnInvisibleOwners(ownerResultCounts);
-    // drop open PRs that vanished (closed without merge)
-    for (const key of this.prs.keys()) if (!seenOpen.has(key)) this.prs.delete(key);
-    this.pruneCaches(seenOpen);
-    history.setMeta('lastSweep', sweepStartedAt.toISOString());
+    if (allOwnersAnswered) {
+      // prune + window advance only when every covered owner answered — a failed
+      // owner's open PRs must not read as "vanished (closed without merge)"
+      for (const key of this.prs.keys()) if (!seenOpen.has(key)) this.prs.delete(key);
+      this.pruneCaches(seenOpen);
+      history.setMeta('lastSweep', sweepStartedAt.toISOString());
+    }
     this.emitUpdate();
   }
 
@@ -324,8 +342,8 @@ export class Poller extends EventEmitter {
   }
 
   /** Startup deep sweep: follow merged-search pagination (pages 2..MAX) for one owner. */
-  private async fetchMergedPages(owner: string, since: string, cursor: string, seenOpen: Set<string>): Promise<void> {
-    const { client } = this.deps;
+  private async fetchMergedPages(client: GithubClient, owner: string, since: string,
+    cursor: string, seenOpen: Set<string>): Promise<void> {
     for (let page = 2; page <= MAX_MERGED_PAGES; page++) {
       const data = await this.guard(() => client.graphql<Record<string, any>>(
         buildMergedPageQuery(owner, since, cursor)));
@@ -381,6 +399,22 @@ export class Poller extends EventEmitter {
   }
 
   /**
+   * Route an owner to the client whose installation covers it. An owner no
+   * installation covers is a CONFIG mismatch, not an outage: log once per owner
+   * per process, count it as inaccessible-owner evidence, and return null so the
+   * caller skips — staleSince must stay untouched.
+   */
+  private routedClient(owner: string): GithubClient | null {
+    const client = this.deps.router.clientFor(owner);
+    if (!client && !this.warnedUnknownOwners.has(owner)) {
+      this.warnedUnknownOwners.add(owner);
+      this.inaccessibleOwners.add(owner);
+      console.warn(`[poller] owner '${owner}' has no installation — skipped`);
+    }
+    return client;
+  }
+
+  /**
    * Diagnosability for an owner the token cannot see at all (App-mode: the
    * installation doesn't cover that account — search just returns nothing, so
    * the owner's data silently rots). When a sweep returns 0 results for an
@@ -388,8 +422,10 @@ export class Poller extends EventEmitter {
    * for that owner's repos this process lifetime, log once. No UI change.
    */
   private warnInvisibleOwners(ownerResultCounts: Map<string, number>): void {
-    for (const owner of this.deps.config.owners) {
-      if ((ownerResultCounts.get(owner) ?? 0) > 0) continue;
+    // iterate the counts map (not config.owners): an owner whose fetch FAILED this
+    // sweep is absent from the map and must not read as "invisible" off one blip
+    for (const [owner, count] of ownerResultCounts) {
+      if (count > 0) continue;
       if (!this.inaccessibleOwners.has(owner) || this.warnedInaccessibleOwners.has(owner)) continue;
       this.warnedInaccessibleOwners.add(owner);
       console.warn(`[poller] owner '${owner}' appears inaccessible to the current token (App installation missing?)`);
@@ -402,11 +438,29 @@ export class Poller extends EventEmitter {
   }
 
   private async detailImpl(onlyHot: boolean, onlyKey?: string): Promise<void> {
-    const { client, history } = this.deps;
     const targets = [...this.prs.values()].filter((pr) => onlyKey
       ? `${pr.repo}#${pr.number}` === onlyKey
       : (!onlyHot || this.isHot(pr)));
     if (!targets.length) return;
+    // Partition by repo owner: one batched query per owner, routed to the
+    // installation that covers it. Owners share nothing — a failed or skipped
+    // owner batch leaves the other owners' snapshots fresh.
+    const byOwner = new Map<string, PrSnapshot[]>();
+    for (const pr of targets) {
+      const owner = pr.repo.split('/')[0] ?? '';
+      byOwner.set(owner, [...(byOwner.get(owner) ?? []), pr]);
+    }
+    for (const [owner, ownerTargets] of byOwner) {
+      const client = this.routedClient(owner);
+      if (!client) continue;
+      await this.detailFetchBatch(client, ownerTargets);
+    }
+    this.emitUpdate();
+  }
+
+  /** Fetch + ingest one owner's detail batch (see detailImpl). */
+  private async detailFetchBatch(client: GithubClient, targets: PrSnapshot[]): Promise<void> {
+    const { history } = this.deps;
     const data = await this.guard(() => client.graphql<Record<string, any>>(buildDetailQuery(
       targets.map((p) => {
         const [owner, name] = p.repo.split('/');
@@ -456,7 +510,6 @@ export class Poller extends EventEmitter {
           this.rollupWorkflowFor(repo));
       }
     }
-    this.emitUpdate();
   }
 
   async queueOnce(): Promise<void> {
@@ -464,10 +517,11 @@ export class Poller extends EventEmitter {
   }
 
   private async queueImpl(): Promise<void> {
-    const { client, config } = this.deps;
     const queuedRepos = new Set([...this.prs.values()].filter((p) => p.queue).map((p) => p.repo));
     for (const repo of queuedRepos) {
       const [owner, name] = repo.split('/');
+      const client = this.routedClient(owner ?? ''); // repo-scoped: route via the repo owner
+      if (!client) continue;
       const branch = this.effectiveDeploy()[repo]?.defaultBranch ?? 'main';
       const data = await this.guard(() => client.graphql<any>(buildQueueQuery(owner, name, branch)));
       if (!data) continue;
@@ -633,11 +687,16 @@ export class Poller extends EventEmitter {
    * null) clears it (including the persisted last-known-good copy).
    */
   async refreshRepoConfigs(): Promise<void> {
-    const { client, history, config } = this.deps;
+    const { history, config } = this.deps;
     for (const repo of this.watchedRepos()) {
       if (config.exclude.includes(repo)) continue;
       if (!this.repoConfigThrottle.due(repo, this.now().getTime())) continue;
       const [owner, name] = repo.split('/');
+      // repo-scoped blob read: route via the repo owner; an uncovered owner is a
+      // config mismatch (logged once by routedClient) — skip without arming the
+      // failure backoff, so a later registry refresh picks the repo up cleanly
+      const client = this.routedClient(owner ?? '');
+      if (!client) continue;
       let data: { repository?: { object?: { text?: unknown } | null } | null } | null = null;
       try {
         data = await client.graphql(buildBlobQuery(owner ?? '', name ?? '', `HEAD:${REPO_CONFIG_PATH}`));
@@ -1269,7 +1328,8 @@ export class Poller extends EventEmitter {
   }
 
   effectiveHotMs(): number {
-    const remaining = this.deps.client.remaining;
+    // worst per-installation budget: each installation token meters separately
+    const remaining = this.deps.router.minRemaining();
     if (remaining != null && remaining < this.deps.config.rateLimitFloor) return 60_000;
     const { hotMs } = this.deps.config.intervals;
     // Webhooks deliver hot-PR signals out-of-band — relax the hot polling tick ×4,
@@ -1281,7 +1341,7 @@ export class Poller extends EventEmitter {
   /** Delay before the next run of a cycle kind; honors any rate-limit pause. */
   nextDelayMs(kind: DelayKind): number {
     const { intervals, rateLimitFloor } = this.deps.config;
-    const { remaining } = this.deps.client;
+    const remaining = this.deps.router.minRemaining();
     const base = kind === 'hot' ? this.effectiveHotMs()
       : kind === 'sweep'
         ? (remaining != null && remaining < rateLimitFloor ? SWEEP_LOW_BUDGET_MS : intervals.sweepMs)
