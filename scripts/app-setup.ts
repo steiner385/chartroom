@@ -26,12 +26,30 @@ function writeSecretFile(path: string, content: string): void {
   chmodSync(path, 0o600); // mode option only applies on create — enforce on overwrite too
 }
 
+function parseArgs(argv: string[]): { name: string; webhookUrl?: string } {
+  let name = 'pr-dashboard';
+  let webhookUrl: string | undefined;
+  for (let i = 0; i < argv.length; i++) {
+    if (argv[i] === '--webhook-url' && argv[i + 1]) {
+      webhookUrl = argv[++i];
+    } else if (argv[i] === '--help' || argv[i] === '-h') {
+      console.log('Usage: pnpm app:setup [name] [--webhook-url <url>]');
+      console.log('  name            GitHub App name (default: pr-dashboard)');
+      console.log('  --webhook-url   Register an active webhook at this URL (enables events + merge_queues:read)');
+      process.exit(0);
+    } else if (!argv[i].startsWith('--')) {
+      name = argv[i];
+    }
+  }
+  return { name, webhookUrl };
+}
+
 async function main(): Promise<void> {
   const cfgPath = configPath();
   const config = loadConfig(cfgPath);
   const restBase = deriveRestBase(config.apiUrl);
   const createUrl = `${webBaseFromApiUrl(config.apiUrl)}/settings/apps/new`;
-  const name = process.argv[2] ?? 'pr-dashboard';
+  const { name, webhookUrl } = parseArgs(process.argv.slice(2));
 
   const server = createServer((req, res) => {
     void (async () => {
@@ -42,6 +60,7 @@ async function main(): Promise<void> {
           name,
           url: `http://127.0.0.1:${config.port}`, // homepage: the operator's own dashboard
           redirectUrl: `http://127.0.0.1:${port}/callback`,
+          webhookUrl,
         });
         res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
         res.end(buildManifestPostPage(manifest, createUrl));

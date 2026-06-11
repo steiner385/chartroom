@@ -13,6 +13,12 @@ export interface ManifestOptions {
   url: string;
   /** Localhost callback GitHub redirects to with ?code= after creation. */
   redirectUrl: string;
+  /**
+   * When set, registers an active webhook at this URL and adds `default_events`
+   * + the `merge_queues: read` permission required for `merge_group` events.
+   * When omitted the manifest is webhook-less (polling-primary default).
+   */
+  webhookUrl?: string;
 }
 
 export interface AppManifest {
@@ -21,29 +27,52 @@ export interface AppManifest {
   public: false;
   redirect_url: string;
   default_permissions: Record<string, 'read' | 'write'>;
-  default_events: string[];
+  hook_attributes?: { url: string; active: true };
+  default_events?: string[];
 }
+
+const WEBHOOK_EVENTS = ['check_run', 'check_suite', 'pull_request', 'workflow_run', 'merge_group'] as const;
 
 /**
  * Build the App manifest: private App, read-only permissions matching what the
- * dashboard polls today, default events ready for the optional webhook receiver
- * (A3). `hook_attributes` is omitted — the App is created without an active
- * webhook; enabling one later is covered by the webhook docs.
+ * dashboard polls today.
+ *
+ * By DEFAULT the manifest is webhook-less — no `default_events` and no
+ * `hook_attributes`. GitHub rejects `default_events` without a hook URL, and
+ * the `merge_group` event requires `merge_queues: read` which we must not
+ * request unless we actually subscribe to it.
+ *
+ * Pass `opts.webhookUrl` to enable webhook delivery: adds `hook_attributes`,
+ * `default_events`, and `merge_queues: read` to permissions.
  */
 export function buildManifest(opts: ManifestOptions): AppManifest {
+  const permissions: Record<string, 'read' | 'write'> = {
+    checks: 'read',
+    pull_requests: 'read',
+    actions: 'read',
+    contents: 'read',
+    metadata: 'read',
+  };
+
+  if (opts.webhookUrl) {
+    permissions.merge_queues = 'read';
+    return {
+      name: opts.name,
+      url: opts.url,
+      public: false,
+      redirect_url: opts.redirectUrl,
+      default_permissions: permissions,
+      hook_attributes: { url: opts.webhookUrl, active: true },
+      default_events: [...WEBHOOK_EVENTS],
+    };
+  }
+
   return {
     name: opts.name,
     url: opts.url,
     public: false,
     redirect_url: opts.redirectUrl,
-    default_permissions: {
-      checks: 'read',
-      pull_requests: 'read',
-      actions: 'read',
-      contents: 'read',
-      metadata: 'read',
-    },
-    default_events: ['check_run', 'check_suite', 'pull_request', 'workflow_run', 'merge_group'],
+    default_permissions: permissions,
   };
 }
 

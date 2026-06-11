@@ -10,7 +10,7 @@ describe('buildManifest', () => {
     redirectUrl: 'http://127.0.0.1:51234/callback',
   };
 
-  it('builds a private App manifest with the exact read-only permission set', () => {
+  it('default (no webhookUrl): builds a webhook-less manifest — no default_events, no hook_attributes', () => {
     const m = buildManifest(opts);
     expect(m).toEqual({
       name: 'pr-dashboard',
@@ -24,12 +24,35 @@ describe('buildManifest', () => {
         contents: 'read',
         metadata: 'read',
       },
-      default_events: ['check_run', 'check_suite', 'pull_request', 'workflow_run', 'merge_group'],
     });
   });
 
-  it('omits hook_attributes — webhooks are opt-in later (A3)', () => {
+  it('default: omits hook_attributes key entirely', () => {
     expect('hook_attributes' in buildManifest(opts)).toBe(false);
+  });
+
+  it('default: omits default_events key entirely', () => {
+    expect('default_events' in buildManifest(opts)).toBe(false);
+  });
+
+  it('webhookUrl variant: includes hook_attributes, default_events, and merge_queues:read permission', () => {
+    const m = buildManifest({ ...opts, webhookUrl: 'https://example.com/webhook' });
+    expect(m).toEqual({
+      name: 'pr-dashboard',
+      url: 'http://127.0.0.1:4400',
+      public: false,
+      redirect_url: 'http://127.0.0.1:51234/callback',
+      default_permissions: {
+        checks: 'read',
+        pull_requests: 'read',
+        actions: 'read',
+        contents: 'read',
+        metadata: 'read',
+        merge_queues: 'read',
+      },
+      hook_attributes: { url: 'https://example.com/webhook', active: true },
+      default_events: ['check_run', 'check_suite', 'pull_request', 'workflow_run', 'merge_group'],
+    });
   });
 });
 
