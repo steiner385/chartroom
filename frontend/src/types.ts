@@ -19,6 +19,12 @@ export interface CheckView {
   blockedOn: string | null;
   waitingSeconds: number | null;
   expectedRunnerWaitSeconds: number | null;
+  /** Flake radar (issue #37): 7-day flake rate when the check has enough
+   *  history (≥5 distinct (sha, attempt) samples); null otherwise. */
+  flakeRatePct: number | null;
+  /** True when the check is currently failing-class AND its flake rate ≥ 20% —
+   *  the failure is likely a flake; consider a re-run. */
+  likelyFlake: boolean;
 }
 export interface PrView {
   repo: string; number: number; title: string; url: string;
@@ -204,4 +210,15 @@ export interface MetricsPayload {
     medianErrorPct: number; p90AbsErrorPct: number;
     buckets: { bucket: string; medianErrorPct: number; n: number }[];
     points: { predicted: number; actual: number }[] }[];
+  /** Flake radar (issue #37): top checks by flake rate per repo (min 5 runs,
+   *  cap 10). A flake = failing then passing on the SAME head sha (re-run). */
+  flakiness: { repo: string; checks: { name: string; event: string;
+    flakeEvents: number; totalRuns: number; flakeRatePct: number;
+    trend: { bucket: string; flakeEvents: number; runs: number }[] }[] }[];
+  /** Train killers (issue #38): checks ranked by merge-group ejections.
+   *  estCostTrainHours ≈ ejects × median group run × batchSize (hours); null
+   *  without an observed median. flakeRatePct cross-references the flake radar. */
+  trainKillers: { repo: string; batchSize: number; medianGroupRunSecs: number | null;
+    checks: { name: string; ejects: number; estCostTrainHours: number | null;
+      flakeRatePct: number | null }[] }[];
 }

@@ -277,7 +277,7 @@ describe('App kiosk mode (issue #20)', () => {
       { name: 'fast-checks / ESLint', status: 'COMPLETED', conclusion: 'SUCCESS', isRequired: true,
         workflowName: null, elapsedSeconds: 180, expectedSeconds: 200, url: null,
         expectedLowSeconds: null, expectedHighSeconds: null,
-        waitKind: null, blockedOn: null, waitingSeconds: null, expectedRunnerWaitSeconds: null },
+        waitKind: null, blockedOn: null, waitingSeconds: null, expectedRunnerWaitSeconds: null, flakeRatePct: null, likelyFlake: false },
     ] };
     mockUseDashboard.mockReturnValue(hook({ state: { ...STATE, repos: [
       { repo: 'acme/widgets', hasDeploy: true, prs: [checkedPr], queue: null },

@@ -1,4 +1,4 @@
-import type { HistoryStore } from './history';
+import { FLAKE_MIN_RUNS, type HistoryStore } from './history';
 import { percentile } from './math';
 
 /**
@@ -60,6 +60,24 @@ export interface MetricsPayload {
     medianErrorPct: number; p90AbsErrorPct: number;
     buckets: { bucket: string; medianErrorPct: number; n: number }[];
     points: { predicted: number; actual: number }[] }[];
+  /** Flake radar (issue #37): per repo, the top checks by flake rate — a flake
+   *  is a failing-class sample resolved by SUCCESS on the SAME head sha (re-run,
+   *  no new push). Only checks with ≥ FLAKE_MIN_RUNS (5) distinct (sha, attempt)
+   *  samples qualify; capped at 10 per repo. Trend buckets carry flake events
+   *  and total runs per bucket. */
+  flakiness: { repo: string; checks: { name: string; event: string;
+    flakeEvents: number; totalRuns: number; flakeRatePct: number;
+    trend: { bucket: string; flakeEvents: number; runs: number }[] }[] }[];
+  /** Train-killer leaderboard (issue #38): per repo, checks ranked by how many
+   *  merge-group builds they ejected in the window. `estCostTrainHours` is an
+   *  APPROXIMATION: ejects × median group-run duration × current batchSize, in
+   *  hours — each eject roughly wastes one group build's wall-clock for each of
+   *  the up-to-batchSize PRs riding the train (null without an observed median).
+   *  `flakeRatePct` cross-references the flake radar for the same check name
+   *  (max rate across events, ≥ FLAKE_MIN_RUNS); null when unknown. */
+  trainKillers: { repo: string; batchSize: number; medianGroupRunSecs: number | null;
+    checks: { name: string; ejects: number; estCostTrainHours: number | null;
+      flakeRatePct: number | null }[] }[];
 }
 
 /**
@@ -154,6 +172,9 @@ const mean = (xs: number[]): number => xs.reduce((s, x) => s + x, 0) / xs.length
 /** Top-N cap for the slowest-jobs leaderboard (per repo). */
 const SLOWEST_JOBS_CAP = 10;
 
+/** Top-N cap for the flakiest-jobs leaderboard (per repo). */
+const FLAKINESS_CAP = 10;
+
 /** Scatter-point cap for the calibration panel (most recent rows win). */
 const CALIBRATION_POINTS_CAP = 200;
 
@@ -164,7 +185,8 @@ const CALIBRATION_POINTS_CAP = 200;
  * boundary; repos/groups with rows only in the previous window are omitted.
  */
 export function computeMetrics(history: HistoryStore, window: MetricsWindow,
-  bucket: MetricsBucket, now: Date = new Date(), exclude: string[] = []): MetricsPayload {
+  bucket: MetricsBucket, now: Date = new Date(), exclude: string[] = [],
+  batchSizeFor: (repo: string) => number = () => 1): MetricsPayload {
   const dropped = new Set(exclude);
   const keep = <T extends { repo: string }>(rows: T[]): T[] =>
     dropped.size ? rows.filter((r) => !dropped.has(r.repo)) : rows;
@@ -321,5 +343,61 @@ export function computeMetrics(history: HistoryStore, window: MetricsWindow,
       };
     });
 
-  return { window, bucket, runnerWaits, queue, slowestJobs, velocity, trends, calibration };
+  // 7. Flake radar (issue #37): per repo, top checks by flake rate. Current
+  // window only (no headline deltas — like slowestJobs). Min-runs threshold
+  // keeps one-off retries from reading as 100% flaky.
+  const flakeByRepo = history.flakeStatsByRepo(since);
+  const flakiness = [...flakeByRepo]
+    .filter(([repo]) => !dropped.has(repo))
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([repo, stats]) => ({
+      repo,
+      checks: stats
+        .filter((s) => s.totalRuns >= FLAKE_MIN_RUNS && s.flakeEvents > 0)
+        .sort((a, b) => b.flakeRatePct - a.flakeRatePct || a.name.localeCompare(b.name))
+        .slice(0, FLAKINESS_CAP)
+        .map((s) => {
+          // axis = run buckets (every bucket with samples); flake counts joined in
+          const flakeByBucket = new Map(bucketCounts(s.flakeAts, key).map((b) => [b.bucket, b.count]));
+          const trend = bucketCounts(s.runAts, key).map((b) => ({
+            bucket: b.bucket,
+            flakeEvents: flakeByBucket.get(b.bucket) ?? 0,
+            runs: b.count,
+          }));
+          return { name: s.name, event: s.event, flakeEvents: s.flakeEvents,
+            totalRuns: s.totalRuns, flakeRatePct: s.flakeRatePct, trend };
+        }),
+    }))
+    .filter((r) => r.checks.length > 0);
+
+  // 8. Train killers (issue #38): ejects per check from group_failures, with the
+  // documented cost approximation (ejects × median group run × batchSize) and a
+  // flake-rate cross-reference (max across events for the same check name).
+  const flakeRateByRepoName = new Map<string, number>(); // `${repo}\0${name}` → max rate
+  for (const [repo, stats] of flakeByRepo) {
+    for (const s of stats) {
+      if (s.totalRuns < FLAKE_MIN_RUNS) continue;
+      const k = `${repo}${SEP}${s.name}`;
+      flakeRateByRepoName.set(k, Math.max(flakeRateByRepoName.get(k) ?? 0, s.flakeRatePct));
+    }
+  }
+  const trainKillers = [...groupBy(keep(history.groupFailuresSince(since)), (r) => r.repo)]
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([repo, rows]) => {
+      const batchSize = batchSizeFor(repo);
+      const medianGroupRunSecs = history.medianGroupRun(repo);
+      const checks = [...groupBy(rows, (r) => r.checkName)]
+        .map(([name, ejections]) => ({
+          name,
+          ejects: ejections.length, // one row per (group sha, check) — UNIQUE-deduped at write
+          estCostTrainHours: medianGroupRunSecs != null
+            ? (ejections.length * medianGroupRunSecs * batchSize) / 3600 : null,
+          flakeRatePct: flakeRateByRepoName.get(`${repo}${SEP}${name}`) ?? null,
+        }))
+        .sort((a, b) => b.ejects - a.ejects || a.name.localeCompare(b.name));
+      return { repo, batchSize, medianGroupRunSecs, checks };
+    });
+
+  return { window, bucket, runnerWaits, queue, slowestJobs, velocity, trends, calibration,
+    flakiness, trainKillers };
 }

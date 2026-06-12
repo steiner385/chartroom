@@ -208,6 +208,8 @@ export function MetricsView({ now }: {
     if (!c.buckets.length && !c.points.length) continue;
     calByRepo.set(c.repo, [...(calByRepo.get(c.repo) ?? []), c]);
   }
+  const flakeRepos = payload.flakiness.filter((f) => f.checks.length);
+  const killerRepos = payload.trainKillers.filter((t) => t.checks.length);
 
   return (
     <div className="metrics">
@@ -320,6 +322,82 @@ export function MetricsView({ now }: {
                 ))}
               </tbody>
             </table>
+          </div>
+        ))}
+      </Panel>
+
+      <Panel title="Flakiest jobs" empty={flakeRepos.length === 0}>
+        {flakeRepos.map((f) => (
+          <div key={f.repo} className="metric-repo">
+            <h3>{f.repo}</h3>
+            <table className="metric-table">
+              <thead>
+                <tr>
+                  <th>job</th><th>event</th><th>flake rate</th><th>events / runs</th>
+                  <th>trend (rate)</th>
+                </tr>
+              </thead>
+              <tbody>
+                {f.checks.map((c) => (
+                  <tr key={`${c.name}/${c.event}`}>
+                    <td className="metric-job-name">{c.name}</td>
+                    <td>{c.event}</td>
+                    <td className={c.flakeRatePct >= 20 ? 'var-high' : undefined}>
+                      {fmtPct(c.flakeRatePct)}
+                    </td>
+                    <td>{c.flakeEvents} / {c.totalRuns}</td>
+                    <td className="metric-trend-cell">
+                      <BandSeries compact format={fmtPct}
+                        points={alignBand(axis, c.trend.map((t) => ({
+                          bucket: t.bucket,
+                          p50: t.runs ? (t.flakeEvents / t.runs) * 100 : 0,
+                        })))} kind={kind}
+                        label={`${c.name} flake rate trend`} />
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+            <p className="metric-note">
+              flake = failed then passed on the same commit (re-run, no new push) —
+              min 5 runs per job
+            </p>
+          </div>
+        ))}
+      </Panel>
+
+      <Panel title="Train killers" empty={killerRepos.length === 0}>
+        {killerRepos.map((t) => (
+          <div key={t.repo} className="metric-repo">
+            <h3>{t.repo}</h3>
+            <table className="metric-table">
+              <thead>
+                <tr>
+                  <th>job</th><th>trains ejected</th><th>est. cost (train-hours)</th>
+                  <th>flake rate</th>
+                </tr>
+              </thead>
+              <tbody>
+                {t.checks.map((c) => {
+                  const flaky = c.flakeRatePct != null && c.flakeRatePct >= 20;
+                  return (
+                    <tr key={c.name} className={flaky ? 'tk-flaky' : undefined}>
+                      <td className="metric-job-name">{c.name}</td>
+                      <td>{c.ejects}</td>
+                      <td>{c.estCostTrainHours != null ? c.estCostTrainHours.toFixed(1) : '–'}</td>
+                      <td>{c.flakeRatePct != null
+                        ? `${fmtPct(c.flakeRatePct)}${flaky ? ' ⚐ flaky' : ''}` : '–'}</td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+            <p className="metric-note">
+              cost ≈ ejects × median group run
+              {t.medianGroupRunSecs != null ? ` (${formatDur(t.medianGroupRunSecs)})` : ''} ×
+              batch size ({t.batchSize}) — an approximation of wasted train-hours;
+              amber rows are train killers that are ALSO flaky (fix-list top)
+            </p>
           </div>
         ))}
       </Panel>

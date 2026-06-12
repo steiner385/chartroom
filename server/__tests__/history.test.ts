@@ -672,3 +672,123 @@ describe('distinctRepos (repo toggles)', () => {
     expect(h.distinctRepos()).toEqual(['acme/a', 'acme/b', 'octo/c']);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Flake radar (issue #37) — flakeStats over check_durations (sha+attempt-aware)
+// ---------------------------------------------------------------------------
+
+describe('flakeStats (issue #37)', () => {
+  const REPO2 = 'acme/widgets';
+  const SINCE = '2026-06-01T00:00:00Z';
+  /** Insert one check_durations row with full sha/attempt identity. */
+  const row = (conclusion: string, sha: string, attempt: number | null, completedAt: string,
+    name = 'e2e', event = 'merge_group', repo = REPO2) =>
+    h.recordCheckDuration(repo, name, event,
+      new Date(Date.parse(completedAt) - 60_000).toISOString(), completedAt,
+      conclusion, sha, attempt);
+
+  it('attempt-based: FAILURE then SUCCESS at a higher attempt on the SAME sha = one flake event', () => {
+    row('FAILURE', 'sha1', 1, '2026-06-10T10:00:00Z');
+    row('SUCCESS', 'sha1', 2, '2026-06-10T10:20:00Z');
+    const [s] = h.flakeStats(REPO2, SINCE);
+    expect(s).toMatchObject({ name: 'e2e', event: 'merge_group',
+      flakeEvents: 1, totalRuns: 2, flakeRatePct: 50 });
+    expect(s!.flakeAts).toEqual(['2026-06-10T10:00:00Z']);
+  });
+
+  it('TIMED_OUT and STARTUP_FAILURE are failing-class; CANCELLED is not', () => {
+    row('TIMED_OUT', 'sha1', 1, '2026-06-10T10:00:00Z');
+    row('SUCCESS', 'sha1', 2, '2026-06-10T10:20:00Z');
+    row('STARTUP_FAILURE', 'sha2', 1, '2026-06-10T11:00:00Z');
+    row('SUCCESS', 'sha2', 2, '2026-06-10T11:20:00Z');
+    row('CANCELLED', 'sha3', 1, '2026-06-10T12:00:00Z'); // spot kill — not a flake
+    row('SUCCESS', 'sha3', 2, '2026-06-10T12:20:00Z');
+    const [s] = h.flakeStats(REPO2, SINCE);
+    expect(s).toMatchObject({ flakeEvents: 2, totalRuns: 6 });
+  });
+
+  it('same-sha later SUCCESS without attempts (timestamp order) is a flake', () => {
+    row('FAILURE', 'sha1', null, '2026-06-10T10:00:00Z');
+    row('SUCCESS', 'sha1', null, '2026-06-10T10:30:00Z');
+    const [s] = h.flakeStats(REPO2, SINCE);
+    expect(s).toMatchObject({ flakeEvents: 1, totalRuns: 2, flakeRatePct: 50 });
+  });
+
+  it('failure followed only by SUCCESS on a NEW sha is NOT a flake (real failure, then fixed)', () => {
+    row('FAILURE', 'shaA', 1, '2026-06-10T10:00:00Z');
+    row('SUCCESS', 'shaB', 1, '2026-06-10T11:00:00Z');
+    const [s] = h.flakeStats(REPO2, SINCE);
+    expect(s).toMatchObject({ flakeEvents: 0, totalRuns: 2, flakeRatePct: 0 });
+  });
+
+  it('SUCCESS at a LOWER attempt than the failure does not resolve it (regression, not flake)', () => {
+    row('SUCCESS', 'sha1', 1, '2026-06-10T10:00:00Z');
+    row('FAILURE', 'sha1', 2, '2026-06-10T10:30:00Z');
+    const [s] = h.flakeStats(REPO2, SINCE);
+    expect(s!.flakeEvents).toBe(0);
+  });
+
+  it('rows without head_sha (pre-#34 history) are excluded entirely', () => {
+    h.recordCheckDuration(REPO2, 'e2e', 'merge_group',
+      '2026-06-10T09:59:00Z', '2026-06-10T10:00:00Z', 'FAILURE'); // no sha
+    expect(h.flakeStats(REPO2, SINCE)).toEqual([]);
+  });
+
+  it('window: rows before `since` are ignored', () => {
+    row('FAILURE', 'sha1', 1, '2026-05-01T10:00:00Z');
+    row('SUCCESS', 'sha1', 2, '2026-05-01T10:20:00Z');
+    expect(h.flakeStats(REPO2, '2026-06-01T00:00:00Z')).toEqual([]);
+  });
+
+  it('totalRuns counts distinct (sha, attempt) — duplicate attempt rows collapse, names with spaces survive', () => {
+    const name = 'fast-checks / ESLint';
+    row('FAILURE', 'sha1', 1, '2026-06-10T10:00:00Z', name);
+    row('FAILURE', 'sha1', 1, '2026-06-10T10:00:01Z', name); // same run re-observed
+    row('SUCCESS', 'sha1', 2, '2026-06-10T10:20:00Z', name);
+    const [s] = h.flakeStats(REPO2, SINCE);
+    expect(s!.name).toBe(name);
+    expect(s!.totalRuns).toBe(2);
+  });
+
+  it('stats are per (check, event); flakeStatsByRepo splits per repo', () => {
+    row('FAILURE', 'sha1', 1, '2026-06-10T10:00:00Z', 'e2e', 'merge_group');
+    row('SUCCESS', 'sha1', 2, '2026-06-10T10:20:00Z', 'e2e', 'merge_group');
+    row('SUCCESS', 'sha1', 1, '2026-06-10T10:20:00Z', 'e2e', 'pull_request');
+    row('SUCCESS', 'shaX', 1, '2026-06-10T10:20:00Z', 'e2e', 'merge_group', 'octo/bridge');
+    const stats = h.flakeStats(REPO2, SINCE);
+    expect(stats.map((s) => `${s.name}/${s.event}`).sort())
+      .toEqual(['e2e/merge_group', 'e2e/pull_request']);
+    const byRepo = h.flakeStatsByRepo(SINCE);
+    expect([...byRepo.keys()].sort()).toEqual(['acme/widgets', 'octo/bridge']);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Train-killer ledger (issue #38) — group_failures
+// ---------------------------------------------------------------------------
+
+describe('group failures (issue #38)', () => {
+  const REPO2 = 'acme/widgets';
+
+  it('records once per (repo, group sha, check) — re-ingestion dedupes', () => {
+    expect(h.recordGroupFailure(REPO2, 'e2e', 'oid1', '2026-06-10T10:00:00Z')).toBe(true);
+    expect(h.recordGroupFailure(REPO2, 'e2e', 'oid1', '2026-06-10T10:05:00Z')).toBe(false);
+    expect(h.recordGroupFailure(REPO2, 'unit', 'oid1', '2026-06-10T10:00:00Z')).toBe(true);
+    expect(h.recordGroupFailure(REPO2, 'e2e', 'oid2', '2026-06-10T11:00:00Z')).toBe(true);
+    expect(h.groupFailuresSince('2026-06-01T00:00:00Z')).toHaveLength(3);
+  });
+
+  it('rejects empty identity fields', () => {
+    expect(h.recordGroupFailure(REPO2, '', 'oid1', '2026-06-10T10:00:00Z')).toBe(false);
+    expect(h.recordGroupFailure(REPO2, 'e2e', '', '2026-06-10T10:00:00Z')).toBe(false);
+    expect(h.recordGroupFailure(REPO2, 'e2e', 'oid1', '')).toBe(false);
+  });
+
+  it('groupFailuresSince windows on observed_at and maps fields', () => {
+    h.recordGroupFailure(REPO2, 'e2e', 'old', '2026-05-01T10:00:00Z');
+    h.recordGroupFailure(REPO2, 'e2e', 'new', '2026-06-10T10:00:00Z');
+    const rows = h.groupFailuresSince('2026-06-01T00:00:00Z');
+    expect(rows).toEqual([{ repo: REPO2, checkName: 'e2e', groupSha: 'new',
+      at: '2026-06-10T10:00:00Z' }]);
+  });
+});

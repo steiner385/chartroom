@@ -7,7 +7,7 @@ const check = (over: Partial<CheckView>): CheckView => ({
   name: 'fast-checks / ESLint', status: 'COMPLETED', conclusion: 'SUCCESS', isRequired: true, workflowName: null,
   elapsedSeconds: 180, expectedSeconds: 200, url: 'https://x/run1',
   expectedLowSeconds: null, expectedHighSeconds: null,
-  waitKind: null, blockedOn: null, waitingSeconds: null, expectedRunnerWaitSeconds: null,
+  waitKind: null, blockedOn: null, waitingSeconds: null, expectedRunnerWaitSeconds: null, flakeRatePct: null, likelyFlake: false,
   ...over,
 });
 
@@ -304,7 +304,7 @@ describe('CheckGantt — waitKind rendering', () => {
     const { container } = render(<CheckGantt stage="ci" checks={[
       check({ name: 'unit-tests', status: 'QUEUED', conclusion: null,
         elapsedSeconds: null, expectedSeconds: null,
-        waitKind: 'blocked', blockedOn: 'static-checks', waitingSeconds: null, expectedRunnerWaitSeconds: null }),
+        waitKind: 'blocked', blockedOn: 'static-checks', waitingSeconds: null, expectedRunnerWaitSeconds: null, flakeRatePct: null, likelyFlake: false }),
     ]} />);
     expect(screen.getByText('⊘ blocked on static-checks')).toBeInTheDocument();
     // row keeps the g-queued class (faint gray bar)
@@ -315,7 +315,7 @@ describe('CheckGantt — waitKind rendering', () => {
     render(<CheckGantt stage="ci" checks={[
       check({ name: 'unit-tests', status: 'QUEUED', conclusion: null,
         elapsedSeconds: null, expectedSeconds: null,
-        waitKind: 'blocked', blockedOn: 'static-checks /', waitingSeconds: null, expectedRunnerWaitSeconds: null }),
+        waitKind: 'blocked', blockedOn: 'static-checks /', waitingSeconds: null, expectedRunnerWaitSeconds: null, flakeRatePct: null, likelyFlake: false }),
     ]} />);
     expect(screen.getByText('⊘ blocked on static-checks')).toBeInTheDocument();
   });
@@ -324,7 +324,7 @@ describe('CheckGantt — waitKind rendering', () => {
     render(<CheckGantt stage="ci" checks={[
       check({ name: 'big-tests', status: 'QUEUED', conclusion: null,
         elapsedSeconds: null, expectedSeconds: null,
-        waitKind: 'runner', blockedOn: null, waitingSeconds: 90, expectedRunnerWaitSeconds: null }),
+        waitKind: 'runner', blockedOn: null, waitingSeconds: 90, expectedRunnerWaitSeconds: null, flakeRatePct: null, likelyFlake: false }),
     ]} />);
     expect(screen.getByText('⧗ waiting for runner · 2m')).toBeInTheDocument();
   });
@@ -333,7 +333,7 @@ describe('CheckGantt — waitKind rendering', () => {
     render(<CheckGantt stage="ci" checks={[
       check({ name: 'big-tests', status: 'QUEUED', conclusion: null,
         elapsedSeconds: null, expectedSeconds: null,
-        waitKind: 'runner', blockedOn: null, waitingSeconds: 90, expectedRunnerWaitSeconds: 120 }),
+        waitKind: 'runner', blockedOn: null, waitingSeconds: 90, expectedRunnerWaitSeconds: 120, flakeRatePct: null, likelyFlake: false }),
     ]} />);
     expect(screen.getByText('⧗ waiting for runner · 2m (typical ~2m)')).toBeInTheDocument();
   });
@@ -342,7 +342,7 @@ describe('CheckGantt — waitKind rendering', () => {
     render(<CheckGantt stage="ci" checks={[
       check({ name: 'big-tests', status: 'QUEUED', conclusion: null,
         elapsedSeconds: null, expectedSeconds: null,
-        waitKind: 'runner', blockedOn: null, waitingSeconds: null, expectedRunnerWaitSeconds: null }),
+        waitKind: 'runner', blockedOn: null, waitingSeconds: null, expectedRunnerWaitSeconds: null, flakeRatePct: null, likelyFlake: false }),
     ]} />);
     expect(screen.getByText('⧗ waiting for runner')).toBeInTheDocument();
   });
@@ -351,7 +351,7 @@ describe('CheckGantt — waitKind rendering', () => {
     const { container } = render(<CheckGantt stage="ci" checks={[
       check({ name: 'big-tests', status: 'QUEUED', conclusion: null,
         elapsedSeconds: null, expectedSeconds: null,
-        waitKind: 'runner', blockedOn: null, waitingSeconds: 90, expectedRunnerWaitSeconds: null }),
+        waitKind: 'runner', blockedOn: null, waitingSeconds: 90, expectedRunnerWaitSeconds: null, flakeRatePct: null, likelyFlake: false }),
     ]} />);
     expect(container.querySelector('.g-runner-wait')).not.toBeNull();
   });
@@ -360,7 +360,7 @@ describe('CheckGantt — waitKind rendering', () => {
     const { container } = render(<CheckGantt stage="ci" checks={[
       check({ name: 'big-tests', status: 'QUEUED', conclusion: null,
         elapsedSeconds: null, expectedSeconds: null,
-        waitKind: 'runner', blockedOn: null, waitingSeconds: 250, expectedRunnerWaitSeconds: 120 }),
+        waitKind: 'runner', blockedOn: null, waitingSeconds: 250, expectedRunnerWaitSeconds: 120, flakeRatePct: null, likelyFlake: false }),
     ]} />);
     // 250 > 2×120=240 → amber
     expect(container.querySelector('.g-runner-wait-amber')).not.toBeNull();
@@ -370,7 +370,7 @@ describe('CheckGantt — waitKind rendering', () => {
     const { container } = render(<CheckGantt stage="ci" checks={[
       check({ name: 'big-tests', status: 'QUEUED', conclusion: null,
         elapsedSeconds: null, expectedSeconds: null,
-        waitKind: 'runner', blockedOn: null, waitingSeconds: 240, expectedRunnerWaitSeconds: 120 }),
+        waitKind: 'runner', blockedOn: null, waitingSeconds: 240, expectedRunnerWaitSeconds: 120, flakeRatePct: null, likelyFlake: false }),
     ]} />);
     // 240 = 2×120 → not over threshold (must be strictly greater)
     expect(container.querySelector('.g-runner-wait-amber')).toBeNull();
@@ -380,11 +380,47 @@ describe('CheckGantt — waitKind rendering', () => {
     const { getAllByText } = render(<CheckGantt stage="ci" checks={[
       check({ name: 'u', status: 'QUEUED', conclusion: null,
         elapsedSeconds: null, waitKind: 'unknown',
-        blockedOn: null, waitingSeconds: null, expectedRunnerWaitSeconds: null }),
+        blockedOn: null, waitingSeconds: null, expectedRunnerWaitSeconds: null, flakeRatePct: null, likelyFlake: false }),
       check({ name: 'n', status: 'QUEUED', conclusion: null,
         elapsedSeconds: null, waitKind: null,
-        blockedOn: null, waitingSeconds: null, expectedRunnerWaitSeconds: null }),
+        blockedOn: null, waitingSeconds: null, expectedRunnerWaitSeconds: null, flakeRatePct: null, likelyFlake: false }),
     ]} />);
     expect(getAllByText('—')).toHaveLength(2);
+  });
+});
+
+describe('CheckGantt — flake radar annotation (issue #37)', () => {
+  const failed = (over: Partial<CheckView>) => check({
+    name: 'flaky-e2e', status: 'COMPLETED', conclusion: 'FAILURE', ...over });
+
+  it('a likelyFlake failed row appends the ⚐ annotation with its rate and re-run advice', () => {
+    const { container } = render(<CheckGantt stage="ci" checks={[
+      failed({ elapsedSeconds: 120, likelyFlake: true, flakeRatePct: 23.4 }),
+    ]} />);
+    expect(container.querySelector('.g-t')!.textContent)
+      .toBe('2m ✗ · ⚐ flakes 23% — likely flake, consider re-run');
+  });
+
+  it('the row stays red (g-failed) — the annotation never recolors it', () => {
+    const { container } = render(<CheckGantt stage="ci" checks={[
+      failed({ elapsedSeconds: 120, likelyFlake: true, flakeRatePct: 40 }),
+    ]} />);
+    const row = container.querySelector('.g-row')!;
+    expect(row.classList.contains('g-failed')).toBe(true);
+  });
+
+  it('a failed row that is not likelyFlake renders the plain ✗ text', () => {
+    const { container } = render(<CheckGantt stage="ci" checks={[
+      failed({ elapsedSeconds: 120, likelyFlake: false, flakeRatePct: 10 }),
+    ]} />);
+    expect(container.querySelector('.g-t')!.textContent).toBe('2m ✗');
+  });
+
+  it('likelyFlake never annotates non-failed rows (e.g. a green check)', () => {
+    const { container } = render(<CheckGantt stage="ci" checks={[
+      check({ conclusion: 'SUCCESS', elapsedSeconds: 120,
+        likelyFlake: false, flakeRatePct: 50 }),
+    ]} />);
+    expect(container.querySelector('.g-t')!.textContent).toBe('2m ✓');
   });
 });
