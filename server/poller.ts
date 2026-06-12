@@ -8,7 +8,7 @@ import { ApiAncestry, type AncestryAnswer } from './ancestry';
 import { effectiveRepoSettings, effectiveDeployMap, type AppConfig, type DeployConfig, type RepoSettings } from './config';
 import { parseRepoConfig, REPO_CONFIG_PATH, type RepoFileConfig } from './repo-config';
 import type { WebhookRoute } from './webhooks';
-import type { Notifier } from './notifier';
+import type { Notifier, NotificationsConfig } from './notifier';
 import { deriveCiGraph, activeForEvent, ciGraphToJson, ciGraphFromJson, type CiGraph, type CiGraphNode } from './required-checks';
 import type { PrSnapshot, StageResult, QueueEntry, CheckRun } from './types';
 import { buildSweepQuery, buildMergedPageQuery, buildOpenPageQuery, buildDetailQuery, buildQueueQuery, buildOidRollupQuery, buildBlobQuery } from './queries';
@@ -802,9 +802,22 @@ export class Poller extends EventEmitter {
     return [...this.deps.config.exclude];
   }
 
+  /** Live (post-reconfigure) notifications config — the Notifier's command
+   *  sink reads this through its config getter, so a PUT-applied
+   *  notifications.enabled flip arms/disarms it without a restart. */
+  currentNotifications(): NotificationsConfig {
+    return this.deps.config.notifications;
+  }
+
   reconfigure(cfg: AppConfig): void {
+    const wasEnabled = this.deps.config.notifications.enabled;
     this.deps.config = cfg;
     console.log('[poller] reconfigured (hot-apply)');
+    if (cfg.notifications.enabled !== wasEnabled) {
+      console.log(cfg.notifications.enabled
+        ? '[notifier] command sink armed (hot-apply: notifications.enabled=true)'
+        : '[notifier] command sink disarmed (hot-apply: notifications.enabled=false)');
+    }
     if (!this.running) return;
     this.stop();
     this.start();

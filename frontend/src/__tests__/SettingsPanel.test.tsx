@@ -23,7 +23,7 @@ const CONFIG: ConfigResponse = {
         ready: false, overdue: false, 'prod-live': true },
     },
   },
-  readOnlyKeys: ['tokenSource', 'apiUrl', 'port', 'ancestrySource', 'notifications'],
+  readOnlyKeys: ['tokenSource', 'apiUrl', 'port', 'ancestrySource'],
   sources: { configPath: '/etc/pr-dashboard/config.json', perField: {} },
   repos: {
     'acme/widgets': {
@@ -183,6 +183,8 @@ describe('SettingsPanel', () => {
       expect(body).not.toHaveProperty('apiUrl');
       expect(body).not.toHaveProperty('port');
       expect(body).not.toHaveProperty('repos');
+      // notifications is sent ONLY when the toggle changed (it wasn't touched here)
+      expect(body).not.toHaveProperty('notifications');
       // intervals back in ms
       expect(body.intervals.sweepMs).toBe(90_000);
       expect(body.owners).toEqual(['acme', 'octo']);
@@ -290,20 +292,47 @@ describe('SettingsPanel', () => {
 });
 
 describe('SettingsPanel notifications section (issue #19)', () => {
-  it('shows the read-only notifications block with the file-only hint', async () => {
+  it('renders the enabled toggle live, command/events read-only with the file-only hint', async () => {
     render(<SettingsPanel open onClose={() => {}} />);
     const heading = await screen.findByRole('heading', { name: 'Notifications' });
     const section = heading.closest('section')!;
+    // enabled is a REAL toggle now (the notifications-toggle trap fix)
+    const toggle = within(section).getByRole('button', { name: /desktop command notifications/i });
+    expect(toggle).toHaveAttribute('aria-pressed', 'true');
+    // command/events stay read-only with the file-only hint
     expect(within(section).getByText(/file-only/)).toBeInTheDocument();
     expect(within(section).getByText('notify-send {title} {body}')).toBeInTheDocument();
-    expect(within(section).getByText('true')).toBeInTheDocument();
-    // per-event toggles rendered with their on/off state
     expect(within(section).getByText(/ci-failed: on/)).toBeInTheDocument();
     expect(within(section).getByText(/ready: off/)).toBeInTheDocument();
     expect(within(section).getByText(/prod-live: on/)).toBeInTheDocument();
-    // no inputs — display only
     expect(within(section).queryByRole('textbox')).not.toBeInTheDocument();
     expect(within(section).queryByRole('checkbox')).not.toBeInTheDocument();
+    // one hint line distinguishes the two sinks (command toggle vs header bell)
+    expect(within(section).getByText(/browser pop-ups — the bell in the header/i)).toBeInTheDocument();
+  });
+
+  it('toggle → Save PUTs { notifications: { enabled: false } }', async () => {
+    fetchSpy.mockImplementation((url: string | URL | Request, init?: RequestInit) => {
+      const u = String(url);
+      if (u === '/api/repos') return Promise.resolve(mockFetchOk({ repos: [] }));
+      if (u === '/api/config' && (!init || init.method === undefined)) {
+        return Promise.resolve(mockFetchOk(CONFIG));
+      }
+      return Promise.resolve(mockFetchOk({ applied: ['notifications'], restartRequired: [] }));
+    });
+    render(<SettingsPanel open onClose={() => {}} />);
+    const toggle = await screen.findByRole('button', { name: /desktop command notifications/i });
+    fireEvent.click(toggle);
+    expect(toggle).toHaveAttribute('aria-pressed', 'false');
+    fireEvent.click(screen.getByRole('button', { name: /^save$/i }));
+    await waitFor(() => {
+      const putCall = fetchSpy.mock.calls.find(
+        (call: unknown[]) => (call[1] as RequestInit | undefined)?.method === 'PUT',
+      );
+      expect(putCall).toBeDefined();
+      const body = JSON.parse((putCall![1] as RequestInit).body as string);
+      expect(body.notifications).toEqual({ enabled: false });
+    });
   });
 });
 

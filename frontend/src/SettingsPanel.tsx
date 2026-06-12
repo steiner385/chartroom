@@ -27,6 +27,9 @@ interface FormModel {
   sweepSec: number;
   hotSec: number;
   deploySec: number;
+  /** The DESKTOP COMMAND sink (server-side notify-send) — distinct from the
+   *  browser-notification bell in the header. */
+  notifyCommandEnabled: boolean;
 }
 
 function toForm(c: ConfigResponse): FormModel {
@@ -39,11 +42,15 @@ function toForm(c: ConfigResponse): FormModel {
     sweepSec: Math.round(r.intervals.sweepMs / 1000),
     hotSec: Math.round(r.intervals.hotMs / 1000),
     deploySec: Math.round(r.intervals.deployMs / 1000),
+    notifyCommandEnabled: r.notifications.enabled,
   };
 }
 
-/** Build the PUT body — safe subset only, intervals converted back to ms. */
-function toPatch(f: FormModel): ConfigPatch {
+/** Build the PUT body — safe subset only, intervals converted back to ms.
+ *  notifications rides along ONLY when the toggle changed: the server merges
+ *  `{ enabled }` into the file block, and an unchanged toggle must not turn a
+ *  default-sourced notifications block into a file-sourced one. */
+function toPatch(f: FormModel, initialNotifyEnabled: boolean): ConfigPatch {
   return {
     owners: f.owners,
     exclude: f.exclude,
@@ -54,6 +61,9 @@ function toPatch(f: FormModel): ConfigPatch {
       hotMs: f.hotSec * 1000,
       deployMs: f.deploySec * 1000,
     },
+    ...(f.notifyCommandEnabled !== initialNotifyEnabled
+      ? { notifications: { enabled: f.notifyCommandEnabled } }
+      : {}),
   };
 }
 
@@ -240,7 +250,7 @@ export function SettingsPanel({ open, onClose, returnFocusRef, connected }: Sett
     setForm((prev) => (prev ? { ...prev, ...next } : prev));
 
   const handleSave = async () => {
-    if (!form || ownersEmpty) return;
+    if (!form || !config || ownersEmpty) return;
     setSaving(true);
     setFieldErrors({});
     setAppliedMsg(null);
@@ -248,7 +258,7 @@ export function SettingsPanel({ open, onClose, returnFocusRef, connected }: Sett
       const res = await fetch('/api/config', {
         method: 'PUT',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify(toPatch(form)),
+        body: JSON.stringify(toPatch(form, config.resolved.notifications.enabled)),
       });
       if (res.status === 400) {
         const err = (await res.json()) as ConfigPutError;
@@ -262,6 +272,12 @@ export function SettingsPanel({ open, onClose, returnFocusRef, connected }: Sett
       const result = (await res.json()) as ConfigPutResult;
       const applied = result.applied.length ? result.applied.join(', ') : 'nothing changed';
       setAppliedMsg(`applied: ${applied}`);
+      // sync the changed-detection baseline so a second Save doesn't re-send
+      // an unchanged notifications toggle
+      setConfig((c) => c
+        ? { ...c, resolved: { ...c.resolved, notifications: {
+            ...c.resolved.notifications, enabled: form.notifyCommandEnabled } } }
+        : c);
     } catch (e) {
       setLoadError(e instanceof Error ? e.message : String(e));
     } finally {
@@ -473,16 +489,28 @@ export function SettingsPanel({ open, onClose, returnFocusRef, connected }: Sett
               </dl>
             </section>
 
-            {/* 5. Notifications (read-only) */}
+            {/* 5. Notifications — enabled is live; command/events stay file-only */}
             <section className="settings-section">
               <h3>Notifications</h3>
-              <p className="settings-hint">
-                file-only — edit notifications.* in config.json (the command runs on the
-                server host); browser notifications use the bell in the header
-              </p>
               <dl className="repo-settings-grid">
                 <dt>enabled</dt>
-                <dd><code>{String(config.resolved.notifications.enabled)}</code></dd>
+                <dd>
+                  <button
+                    type="button"
+                    aria-pressed={form.notifyCommandEnabled}
+                    aria-label="Desktop command notifications"
+                    title={form.notifyCommandEnabled
+                      ? 'on — the server runs the command below on alert-worthy transitions'
+                      : 'off — the server command sink is disarmed'}
+                    onClick={() =>
+                      patchForm({ notifyCommandEnabled: !form.notifyCommandEnabled })}
+                  >
+                    {form.notifyCommandEnabled ? 'Enabled' : 'Disabled'}
+                  </button>
+                  {fieldErrors['notifications.enabled'] && (
+                    <p className="settings-field-error">{fieldErrors['notifications.enabled']}</p>
+                  )}
+                </dd>
                 <dt>command</dt>
                 <dd><code>{config.resolved.notifications.command.join(' ') || '(none)'}</code></dd>
                 <dt>events</dt>
@@ -492,6 +520,14 @@ export function SettingsPanel({ open, onClose, returnFocusRef, connected }: Sett
                     .join(' · ')}
                 </dd>
               </dl>
+              <p className="settings-hint">
+                Desktop command notifications — the toggle above; browser pop-ups — the
+                bell in the header.
+              </p>
+              <p className="settings-hint">
+                command and events are file-only — edit notifications.* in config.json
+                (the command runs on the server host)
+              </p>
             </section>
 
             {/* Actions */}

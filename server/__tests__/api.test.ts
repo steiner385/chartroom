@@ -152,7 +152,7 @@ describe('GET /api/config', () => {
     expect(res.status).toBe(200);
     expect(res.body.resolved.owners).toEqual(['acme']);
     expect(res.body.resolved.tokenSource).toBe('gh'); // the MODE string, never a token value
-    expect(res.body.readOnlyKeys).toEqual(['tokenSource', 'apiUrl', 'port', 'app', 'ancestrySource', 'notifications']);
+    expect(res.body.readOnlyKeys).toEqual(['tokenSource', 'apiUrl', 'port', 'app', 'ancestrySource']);
     expect(res.body.sources).toEqual({
       configPath: '/srv/prdash/config.json',
       perField: { owners: 'file', retentionDays: 'default' },
@@ -239,6 +239,22 @@ describe('PUT /api/config', () => {
     expect(onDisk.deploy['acme/widgets'].environments[0].healthUrl).toBe('https://qa.x/health');
     expect(reconfigure).toHaveBeenCalledTimes(1);
     expect(reconfigure.mock.calls[0]![0].retentionDays).toBe(14);
+  });
+
+  it('notifications.enabled carve-out: the toggle round-trips, command stays rejected', async () => {
+    // accepted: enabled-only (flips the pre-configured command on/off)
+    const apply = vi.fn();
+    const ok = await request(configApp({}, apply)).put('/api/config')
+      .send({ notifications: { enabled: false } });
+    expect(ok.status).toBe(200);
+    expect(ok.body).toEqual({ applied: ['notifications'], restartRequired: [] });
+    expect(apply).toHaveBeenCalledWith({ notifications: { enabled: false } });
+    // rejected: any other sub-key (the command template execs on the host)
+    const bad = await request(configApp({}, apply)).put('/api/config')
+      .send({ notifications: { enabled: false, command: ['xcalc'] } });
+    expect(bad.status).toBe(400);
+    expect(bad.body.offendingKeys).toEqual(['notifications.command']);
+    expect(apply).toHaveBeenCalledTimes(1);
   });
 
   it('an apply failure surfaces as 500, not an unhandled rejection', async () => {

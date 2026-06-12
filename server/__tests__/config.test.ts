@@ -492,8 +492,8 @@ describe('resolveOwners', () => {
 
 describe('validateConfigPatch', () => {
   it('exports the safe subset and read-only key lists the API advertises', () => {
-    expect(SAFE_CONFIG_KEYS).toEqual(['owners', 'exclude', 'retentionDays', 'batchSize', 'intervals']);
-    expect(READ_ONLY_CONFIG_KEYS).toEqual(['tokenSource', 'apiUrl', 'port', 'app', 'ancestrySource', 'notifications']);
+    expect(SAFE_CONFIG_KEYS).toEqual(['owners', 'exclude', 'retentionDays', 'batchSize', 'intervals', 'notifications']);
+    expect(READ_ONLY_CONFIG_KEYS).toEqual(['tokenSource', 'apiUrl', 'port', 'app', 'ancestrySource']);
   });
 
   it('accepts the full safe subset and normalizes it', () => {
@@ -576,6 +576,59 @@ describe('validateConfigPatch', () => {
       expect(v.ok).toBe(false);
     }
   });
+
+  // notifications carve-out: ONLY `enabled` is PUT-writable — it can merely
+  // flip the pre-configured command on/off (no injection surface). command/
+  // events/anything else inside the block stay file-only.
+  describe('notifications carve-out', () => {
+    it('accepts { notifications: { enabled: boolean } } — the only writable sub-key', () => {
+      for (const enabled of [true, false]) {
+        const v = validateConfigPatch({ notifications: { enabled } });
+        expect(v).toEqual({ ok: true, patch: { notifications: { enabled } } });
+      }
+    });
+
+    it('accepts the toggle alongside the rest of the safe subset', () => {
+      const v = validateConfigPatch({ batchSize: 4, notifications: { enabled: false } });
+      expect(v).toEqual({ ok: true, patch: { batchSize: 4, notifications: { enabled: false } } });
+    });
+
+    it('rejects command inside notifications (the injection surface), as notifications.command', () => {
+      const v = validateConfigPatch({ notifications: { enabled: true, command: ['xcalc'] } });
+      expect(v.ok).toBe(false);
+      if (!v.ok) expect(v.offendingKeys).toEqual(['notifications.command']);
+    });
+
+    it('rejects events / secretPath / unknown sub-keys, listing each', () => {
+      const v = validateConfigPatch({ notifications: {
+        enabled: false, events: { ready: true }, secretPath: '/tmp/x', banana: 1 } });
+      expect(v.ok).toBe(false);
+      if (!v.ok) {
+        expect(v.offendingKeys.sort())
+          .toEqual(['notifications.banana', 'notifications.events', 'notifications.secretPath']);
+      }
+    });
+
+    it('rejects a non-boolean enabled with a field error', () => {
+      const v = validateConfigPatch({ notifications: { enabled: 'yes' } });
+      expect(v.ok).toBe(false);
+      if (!v.ok) expect(v.fieldErrors['notifications.enabled']).toMatch(/boolean/);
+    });
+
+    it('rejects an empty notifications object (enabled is the point of the carve-out)', () => {
+      const v = validateConfigPatch({ notifications: {} });
+      expect(v.ok).toBe(false);
+      if (!v.ok) expect(v.fieldErrors['notifications.enabled']).toMatch(/required/);
+    });
+
+    it('rejects a non-object notifications value', () => {
+      for (const bad of [true, 'on', 7, ['enabled']]) {
+        const v = validateConfigPatch({ notifications: bad });
+        expect(v.ok).toBe(false);
+        if (!v.ok) expect(v.fieldErrors.notifications).toMatch(/object/);
+      }
+    });
+  });
 });
 
 describe('writeConfigPatch (read-modify-write)', () => {
@@ -616,6 +669,34 @@ describe('writeConfigPatch (read-modify-write)', () => {
     expect(next.owners).toEqual(['acme']);
     expect(next.batchSize).toBe(4);
     expect(JSON.parse(readFileSync(path, 'utf8'))).toEqual({ owners: ['acme'], batchSize: 4 });
+  });
+
+  it('notifications.enabled flips in place — command/events survive byte-meaning-identical', () => {
+    const path = writeConfig({
+      owners: ['acme'],
+      notifications: {
+        enabled: true,
+        command: ['notify-send', '{title}', '{body}'],
+        events: { 'ci-failed': true, ready: false },
+      },
+    });
+    const next = writeConfigPatch(path, { notifications: { enabled: false } });
+    expect(next.notifications.enabled).toBe(false);
+    expect(next.notifications.command).toEqual(['notify-send', '{title}', '{body}']);
+    const onDisk = JSON.parse(readFileSync(path, 'utf8'));
+    expect(onDisk.notifications).toEqual({
+      enabled: false,
+      command: ['notify-send', '{title}', '{body}'],
+      events: { 'ci-failed': true, ready: false },
+    });
+  });
+
+  it('a file without a notifications block gains one carrying only enabled; defaults fill the rest', () => {
+    const path = writeConfig({ owners: ['acme'] });
+    const next = writeConfigPatch(path, { notifications: { enabled: true } });
+    expect(next.notifications.enabled).toBe(true);
+    expect(next.notifications.command).toEqual(['notify-send', '{title}', '{body}']); // DEFAULT_NOTIFICATIONS
+    expect(JSON.parse(readFileSync(path, 'utf8')).notifications).toEqual({ enabled: true });
   });
 });
 
@@ -728,10 +809,10 @@ describe('notifications config', () => {
       .toThrow(/notifications\.events\.ready must be a boolean/);
   });
 
-  it('PIN — is file-only: PUT /api/config rejects the notifications key (deny-default)', () => {
+  it('PIN — command/events are file-only: PUT /api/config rejects every notifications sub-key except enabled', () => {
     const v = validateConfigPatch({ notifications: { enabled: true, command: ['evil'] } });
     expect(v.ok).toBe(false);
-    if (!v.ok) expect(v.offendingKeys).toContain('notifications');
+    if (!v.ok) expect(v.offendingKeys).toContain('notifications.command');
   });
 
   it('configFileSources attributes notifications file-vs-default', () => {
