@@ -459,7 +459,7 @@ describe('POST /api/admin/restart', () => {
 import type { MetricsBucket, MetricsPayload, MetricsWindow } from '../metrics';
 
 const EMPTY_METRICS = (w: MetricsWindow, b: MetricsBucket): MetricsPayload =>
-  ({ window: w, bucket: b, runnerWaits: [], queue: [], slowestJobs: [], velocity: [], trends: [] });
+  ({ window: w, bucket: b, runnerWaits: [], queue: [], slowestJobs: [], velocity: [], trends: [], calibration: [] });
 
 describe('GET /api/metrics', () => {
   function metricsApp() {

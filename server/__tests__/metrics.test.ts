@@ -294,8 +294,70 @@ describe('computeMetrics: empty history', () => {
   it('returns the full payload shape with empty sections', () => {
     expect(computeMetrics(h, '3d', 'hour', NOW)).toEqual({
       window: '3d', bucket: 'hour',
-      runnerWaits: [], queue: [], slowestJobs: [], velocity: [], trends: [],
+      runnerWaits: [], queue: [], slowestJobs: [], velocity: [], trends: [], calibration: [],
     });
+  });
+});
+
+describe('computeMetrics: ETA calibration (issue #35)', () => {
+  it('per (repo, stage): n, signed medianErrorPct (+ = optimistic), p90AbsErrorPct, scatter points', () => {
+    // signed errors: +20%, −10%, +50% → median +20; abs [10,20,50] → p90 50
+    h.recordEtaAccuracy(REPO, 'ci', 100, 120, '2026-06-11T10:00:00Z');
+    h.recordEtaAccuracy(REPO, 'ci', 100, 90, '2026-06-11T10:10:00Z');
+    h.recordEtaAccuracy(REPO, 'ci', 100, 150, '2026-06-11T10:20:00Z');
+    const m = computeMetrics(h, '24h', 'hour', NOW);
+    expect(m.calibration).toEqual([{
+      repo: REPO, stage: 'ci', n: 3,
+      medianErrorPct: 20, p90AbsErrorPct: 50,
+      buckets: [{ bucket: '2026-06-11T10', medianErrorPct: 20, n: 3 }],
+      points: [
+        { predicted: 100, actual: 120 },
+        { predicted: 100, actual: 90 },
+        { predicted: 100, actual: 150 },
+      ],
+    }]);
+  });
+
+  it('buckets signed error per hour/day like every other section', () => {
+    h.recordEtaAccuracy(REPO, 'queue', 100, 110, '2026-06-11T09:00:00Z'); // +10%
+    h.recordEtaAccuracy(REPO, 'queue', 100, 130, '2026-06-11T10:00:00Z'); // +30%
+    h.recordEtaAccuracy(REPO, 'queue', 100, 80, '2026-06-11T10:30:00Z');  // −20%
+    const hour = computeMetrics(h, '24h', 'hour', NOW).calibration[0]!;
+    expect(hour.buckets).toEqual([
+      { bucket: '2026-06-11T09', medianErrorPct: 10, n: 1 },
+      { bucket: '2026-06-11T10', medianErrorPct: -20, n: 2 }, // lower median of [−20, 30]
+    ]);
+    const day = computeMetrics(h, '24h', 'day', NOW).calibration[0]!;
+    expect(day.buckets).toEqual([{ bucket: '2026-06-11', medianErrorPct: 10, n: 3 }]);
+  });
+
+  it('groups sort repo → stage; rows outside the window are dropped', () => {
+    h.recordEtaAccuracy('octo/bridge', 'ci', 100, 110, '2026-06-11T10:00:00Z');
+    h.recordEtaAccuracy(REPO, 'queue', 100, 110, '2026-06-11T10:00:00Z');
+    h.recordEtaAccuracy(REPO, 'ci', 100, 110, '2026-06-11T10:00:00Z');
+    h.recordEtaAccuracy(REPO, 'ci', 100, 900, '2026-06-09T10:00:00Z'); // outside 24h
+    const cal = computeMetrics(h, '24h', 'hour', NOW).calibration;
+    expect(cal.map((c) => [c.repo, c.stage])).toEqual([
+      [REPO, 'ci'], [REPO, 'queue'], ['octo/bridge', 'ci'],
+    ]);
+    expect(cal[0]!.n).toBe(1); // the 2-day-old row is gone
+  });
+
+  it('caps scatter points at the 200 most recent rows (n keeps the full count)', () => {
+    for (let i = 0; i < 230; i++) {
+      const at = new Date(Date.parse('2026-06-11T00:00:00Z') + i * 60_000).toISOString();
+      h.recordEtaAccuracy(REPO, 'ci', 100, 100 + i, at);
+    }
+    const c = computeMetrics(h, '24h', 'hour', NOW).calibration[0]!;
+    expect(c.n).toBe(230);
+    expect(c.points).toHaveLength(200);
+    expect(c.points[0]).toEqual({ predicted: 100, actual: 130 });   // rows 0..29 dropped
+    expect(c.points[199]).toEqual({ predicted: 100, actual: 329 }); // newest kept
+  });
+
+  it('skips predicted=0 rows (no error % exists for them)', () => {
+    h.recordEtaAccuracy(REPO, 'ci', 0, 120, '2026-06-11T10:00:00Z');
+    expect(computeMetrics(h, '24h', 'hour', NOW).calibration).toEqual([]);
   });
 });
 
@@ -308,6 +370,8 @@ describe('computeMetrics: exclude filter (repo toggles)', () => {
     h.upsertMergedPr({ repo: 'acme/dropped', number: 1, title: 't', url: 'u',
       mergedAt: '2026-06-11T10:00:00Z', mergeCommitSha: null, createdAt: null });
     h.recordStateSample('acme/dropped', '2026-06-11T10:00:00Z', { open: 1, ci: 0, queue: 0, failed: 0 });
+    h.recordEtaAccuracy('acme/kept', 'ci', 100, 120, '2026-06-11T10:00:00Z');
+    h.recordEtaAccuracy('acme/dropped', 'ci', 100, 120, '2026-06-11T10:00:00Z');
 
     const m = computeMetrics(h, '24h', 'hour', NOW, ['acme/dropped']);
     const repos = [
@@ -316,6 +380,7 @@ describe('computeMetrics: exclude filter (repo toggles)', () => {
       ...m.slowestJobs.map((r) => r.repo),
       ...m.velocity.map((r) => r.repo),
       ...m.trends.map((r) => r.repo),
+      ...m.calibration.map((r) => r.repo),
     ];
     expect(repos).toContain('acme/kept');
     expect(repos).not.toContain('acme/dropped');
