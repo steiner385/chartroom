@@ -216,21 +216,21 @@ export class HistoryStore {
        FROM state_samples WHERE sampled_at >= ? ORDER BY repo, sampled_at`
     );
     this.stmtSelectRunnerWaitsSince = this.db.prepare(
-      `SELECT repo, event, substr(started_at,1,10) AS date, wait_secs
-       FROM runner_waits WHERE started_at >= ? ORDER BY repo, event, date`
+      `SELECT repo, event, started_at AS at, wait_secs
+       FROM runner_waits WHERE started_at >= ? ORDER BY repo, event, started_at`
     );
     this.stmtSelectDurationsSince = this.db.prepare(
-      `SELECT repo, check_name, event, substr(completed_at,1,10) AS date, duration_secs
+      `SELECT repo, check_name, event, completed_at AS at, duration_secs
        FROM check_durations WHERE conclusion='SUCCESS' AND completed_at >= ?
-       ORDER BY repo, check_name, event, date`
+       ORDER BY repo, check_name, event, completed_at`
     );
     this.stmtSelectQueueWaitsSince = this.db.prepare(
-      `SELECT repo, substr(observed_at,1,10) AS date, wait_secs
-       FROM queue_waits WHERE observed_at >= ? ORDER BY repo, date`
+      `SELECT repo, observed_at AS at, wait_secs
+       FROM queue_waits WHERE observed_at >= ? ORDER BY repo, observed_at`
     );
     this.stmtSelectGroupRunsSince = this.db.prepare(
-      `SELECT repo, substr(completed_at,1,10) AS date, duration_secs
-       FROM group_runs WHERE completed_at >= ? ORDER BY repo, date`
+      `SELECT repo, completed_at AS at, duration_secs
+       FROM group_runs WHERE completed_at >= ? ORDER BY repo, completed_at`
     );
     this.stmtSelectMergedSince = this.db.prepare(
       `SELECT repo, merged_at, created_at, qa_live_at
@@ -427,31 +427,31 @@ export class HistoryStore {
     }));
   }
 
-  /** Runner-pickup waits at/after `since`, with the UTC day pre-bucketed. */
-  runnerWaitsSince(since: string): { repo: string; event: string; date: string; waitSecs: number }[] {
+  /** Runner-pickup waits at/after `since` with full timestamps (bucketing happens in metrics). */
+  runnerWaitsSince(since: string): { repo: string; event: string; at: string; waitSecs: number }[] {
     const rows = this.stmtSelectRunnerWaitsSince.all(since) as Record<string, unknown>[];
     return rows.map((r) => ({ repo: r.repo as string, event: r.event as string,
-      date: r.date as string, waitSecs: r.wait_secs as number }));
+      at: r.at as string, waitSecs: r.wait_secs as number }));
   }
 
-  /** SUCCESS check durations at/after `since`, with the UTC day pre-bucketed. */
-  checkDurationsSince(since: string): { repo: string; name: string; event: string; date: string; durationSecs: number }[] {
+  /** SUCCESS check durations at/after `since` with full timestamps (bucketing happens in metrics). */
+  checkDurationsSince(since: string): { repo: string; name: string; event: string; at: string; durationSecs: number }[] {
     const rows = this.stmtSelectDurationsSince.all(since) as Record<string, unknown>[];
     return rows.map((r) => ({ repo: r.repo as string, name: r.check_name as string,
-      event: r.event as string, date: r.date as string, durationSecs: r.duration_secs as number }));
+      event: r.event as string, at: r.at as string, durationSecs: r.duration_secs as number }));
   }
 
-  /** Enqueue→merge queue waits at/after `since`, with the UTC day pre-bucketed. */
-  queueWaitsSince(since: string): { repo: string; date: string; waitSecs: number }[] {
+  /** Enqueue→merge queue waits at/after `since` with full timestamps (bucketing happens in metrics). */
+  queueWaitsSince(since: string): { repo: string; at: string; waitSecs: number }[] {
     const rows = this.stmtSelectQueueWaitsSince.all(since) as Record<string, unknown>[];
-    return rows.map((r) => ({ repo: r.repo as string, date: r.date as string,
+    return rows.map((r) => ({ repo: r.repo as string, at: r.at as string,
       waitSecs: r.wait_secs as number }));
   }
 
-  /** Whole-group merge-queue run durations at/after `since`, day pre-bucketed. */
-  groupRunsSince(since: string): { repo: string; date: string; durationSecs: number }[] {
+  /** Whole-group merge-queue run durations at/after `since`, full timestamps. */
+  groupRunsSince(since: string): { repo: string; at: string; durationSecs: number }[] {
     const rows = this.stmtSelectGroupRunsSince.all(since) as Record<string, unknown>[];
-    return rows.map((r) => ({ repo: r.repo as string, date: r.date as string,
+    return rows.map((r) => ({ repo: r.repo as string, at: r.at as string,
       durationSecs: r.duration_secs as number }));
   }
 

@@ -2,42 +2,92 @@ import type { HistoryStore } from './history';
 import { percentile } from './math';
 
 /**
- * Metrics tab payload (round 12). This interface is the BINDING CONTRACT with
- * the frontend mirror in `frontend/src/types.ts` — change both together.
+ * Metrics tab payload (metrics-readability revision). This interface is the
+ * BINDING CONTRACT with the frontend mirror in `frontend/src/types.ts` —
+ * change both together.
  *
- * All `p50`/`p90` values are seconds; `meanHours` is hours. `date` is a UTC
- * day (`YYYY-MM-DD`); `at` is a full ISO timestamp.
+ * Granularity: every bucketed series is keyed by `bucket` — an ISO UTC hour
+ * (`YYYY-MM-DDTHH`) when `bucket === 'hour'`, an ISO UTC day (`YYYY-MM-DD`)
+ * when `bucket === 'day'`. Hour buckets are only offered for windows ≤ 7d
+ * (≤ 168 points); longer windows are clamped to day buckets.
+ *
+ * All `p50`/`p90` values are seconds; `meanHours` is hours. Headline stats
+ * carry `{ value, prev }` where `prev` is the same aggregate over the
+ * previous equal-length window (null when not computable).
  */
+
+export const METRICS_WINDOWS = ['24h', '3d', '7d', '14d', '30d'] as const;
+export type MetricsWindow = (typeof METRICS_WINDOWS)[number];
+export type MetricsBucket = 'hour' | 'day';
+
+/** Window key → length in days. */
+export const WINDOW_DAYS: Record<MetricsWindow, number> = {
+  '24h': 1, '3d': 3, '7d': 7, '14d': 14, '30d': 30,
+};
+
+/** Hour buckets are only allowed for windows ≤ this many days. */
+const HOUR_BUCKET_MAX_DAYS = 7;
+
+/** Current-window aggregate + the previous equal window's value for deltas.
+ *  null = not computable (no samples in that window). */
+export interface HeadlineStat { value: number | null; prev: number | null }
+
 export interface MetricsPayload {
-  windowDays: number;
-  runnerWaits: { repo: string; event: string; days: { date: string; p50: number; p90: number; n: number }[] }[];
-  queue: { repo: string; mergesPerDay: { date: string; count: number }[]; queueWaitDays: { date: string; p50: number; n: number }[]; groupRunDays: { date: string; p50: number; n: number }[] }[];
-  slowestJobs: { repo: string; jobs: { name: string; event: string; p50: number; p90: number; variability: number; n: number; trend: { date: string; p50: number }[] }[] }[]; // top 10 by p50, variability = p90/p50
-  velocity: { repo: string; mergedPerDay: { date: string; count: number }[]; mergeToQaDays: { date: string; p50: number; n: number }[]; avgLifespanDays: { date: string; meanHours: number; n: number }[] }[];
-  trends: { repo: string; samples: { at: string; open: number; ci: number; queue: number; failed: number }[] }[]; // raw state_samples within window (≤15min cadence)
+  window: MetricsWindow;
+  bucket: MetricsBucket;
+  runnerWaits: { repo: string; event: string; p50: HeadlineStat;
+    buckets: { bucket: string; p50: number; p90: number; n: number }[] }[];
+  queue: { repo: string;
+    merges: HeadlineStat; queueWaitP50: HeadlineStat; groupRunP50: HeadlineStat;
+    mergesPerBucket: { bucket: string; count: number }[];
+    queueWaitBuckets: { bucket: string; p50: number; n: number }[];
+    groupRunBuckets: { bucket: string; p50: number; n: number }[] }[];
+  slowestJobs: { repo: string; jobs: { name: string; event: string; p50: number; p90: number;
+    variability: number; n: number;
+    trend: { bucket: string; p50: number; p90: number; n: number }[] }[] }[]; // top 10 by p50, variability = p90/p50
+  velocity: { repo: string;
+    merged: HeadlineStat; mergeToQaP50: HeadlineStat; lifespanMeanHours: HeadlineStat;
+    mergedPerBucket: { bucket: string; count: number }[];
+    mergeToQaBuckets: { bucket: string; p50: number; n: number }[];
+    avgLifespanBuckets: { bucket: string; meanHours: number; n: number }[] }[];
+  trends: { repo: string;
+    points: { bucket: string; open: number; ci: number; queue: number; failed: number }[] }[]; // last state sample per bucket (closing value)
 }
 
-export const METRICS_WINDOWS = [7, 14, 30] as const;
-export type MetricsWindow = (typeof METRICS_WINDOWS)[number];
-
-/** Top-N cap for the slowest-jobs leaderboard (per repo). */
-const SLOWEST_JOBS_CAP = 10;
-
 /**
- * Snap an arbitrary `windowDays` query value to the allowed set {7, 14, 30}:
- * missing/unparseable → the 14-day default; any other number → nearest window.
+ * Resolve `GET /api/metrics` query params to a (window, bucket) pair.
+ *  - `window` accepts the METRICS_WINDOWS keys; invalid/missing falls through
+ *    to legacy `windowDays` (snapped to the nearest of 7/14/30), then to '3d'.
+ *  - `bucket` accepts 'hour' | 'day' (default 'hour'), clamped to 'day' for
+ *    windows longer than 7 days.
  */
-export function clampWindowDays(raw: unknown): MetricsWindow {
-  const n = typeof raw === 'number' ? raw
-    : typeof raw === 'string' && raw.trim() !== '' ? Number(raw) : NaN;
-  if (!Number.isFinite(n)) return 14;
-  let best: MetricsWindow = 14;
-  let bestDist = Infinity;
-  for (const w of METRICS_WINDOWS) {
-    const dist = Math.abs(w - n);
-    if (dist < bestDist) { bestDist = dist; best = w; }
+export function resolveMetricsQuery(query: Record<string, unknown>):
+  { window: MetricsWindow; bucket: MetricsBucket } {
+  const window = resolveWindow(query.window, query.windowDays);
+  const requested: MetricsBucket = query.bucket === 'day' ? 'day' : 'hour';
+  const bucket: MetricsBucket =
+    WINDOW_DAYS[window] > HOUR_BUCKET_MAX_DAYS ? 'day' : requested;
+  return { window, bucket };
+}
+
+function resolveWindow(windowRaw: unknown, windowDaysRaw: unknown): MetricsWindow {
+  if (typeof windowRaw === 'string' &&
+      (METRICS_WINDOWS as readonly string[]).includes(windowRaw)) {
+    return windowRaw as MetricsWindow;
   }
-  return best;
+  // Back-compat: pre-granularity clients sent windowDays=7|14|30.
+  const n = typeof windowDaysRaw === 'number' ? windowDaysRaw
+    : typeof windowDaysRaw === 'string' && windowDaysRaw.trim() !== '' ? Number(windowDaysRaw) : NaN;
+  if (Number.isFinite(n)) {
+    let best: 7 | 14 | 30 = 14;
+    let bestDist = Infinity;
+    for (const w of [7, 14, 30] as const) {
+      const dist = Math.abs(w - n);
+      if (dist < bestDist) { bestDist = dist; best = w; }
+    }
+    return best === 7 ? '7d' : best === 14 ? '14d' : '30d';
+  }
+  return '3d';
 }
 
 const p = (values: number[], q: number): number =>
@@ -56,69 +106,121 @@ function groupBy<T>(rows: T[], key: (row: T) => string): Map<string, T[]> {
   return out;
 }
 
-/** Day-bucketed { date, p50, n } summaries from (date, value) pairs, dates ascending. */
-function dayPercentiles(rows: { date: string; value: number }[]): { date: string; p50: number; n: number }[] {
-  return [...groupBy(rows, (r) => r.date)]
+/** Bucketed { bucket, p50, p90, n } summaries from (at, value) pairs, ascending. */
+function bucketPercentiles(rows: { at: string; value: number }[], key: (ts: string) => string):
+  { bucket: string; p50: number; p90: number; n: number }[] {
+  return [...groupBy(rows, (r) => key(r.at))]
     .sort(([a], [b]) => a.localeCompare(b))
-    .map(([date, vals]) => ({ date, p50: p(vals.map((v) => v.value), 0.5), n: vals.length }));
+    .map(([bucket, vals]) => {
+      const xs = vals.map((v) => v.value);
+      return { bucket, p50: p(xs, 0.5), p90: p(xs, 0.9), n: xs.length };
+    });
 }
 
-/** Day-bucketed counts from ISO timestamps, dates ascending. */
-function dayCounts(timestamps: string[]): { date: string; count: number }[] {
-  return [...groupBy(timestamps, (t) => t.slice(0, 10))]
+/** Bucketed counts from ISO timestamps, ascending. */
+function bucketCounts(timestamps: string[], key: (ts: string) => string):
+  { bucket: string; count: number }[] {
+  return [...groupBy(timestamps, key)]
     .sort(([a], [b]) => a.localeCompare(b))
-    .map(([date, ts]) => ({ date, count: ts.length }));
+    .map(([bucket, ts]) => ({ bucket, count: ts.length }));
 }
+
+/** Split a 2×-window read into current-window and previous-window rows. */
+function splitWindow<T>(rows: T[], at: (r: T) => string, since: string): { cur: T[]; prev: T[] } {
+  const cur: T[] = [];
+  const prev: T[] = [];
+  for (const r of rows) (at(r) >= since ? cur : prev).push(r);
+  return { cur, prev };
+}
+
+/** Headline p50 over current vs previous window values (null when empty). */
+function p50Stat(cur: number[], prev: number[]): HeadlineStat {
+  return {
+    value: cur.length ? p(cur, 0.5) : null,
+    prev: prev.length ? p(prev, 0.5) : null,
+  };
+}
+
+const mean = (xs: number[]): number => xs.reduce((s, x) => s + x, 0) / xs.length;
+
+/** Top-N cap for the slowest-jobs leaderboard (per repo). */
+const SLOWEST_JOBS_CAP = 10;
 
 /**
- * Compute the full metrics payload for one window — a single pass over the
- * local SQLite history per section, computed on request (no caching).
+ * Compute the full metrics payload for one (window, bucket) pair — a single
+ * pass over the local SQLite history per section, computed on request (no
+ * caching). Sections with headline deltas read 2× the window and split at the
+ * boundary; repos/groups with rows only in the previous window are omitted.
  */
-export function computeMetrics(history: HistoryStore, windowDays: number,
-  now: Date = new Date()): MetricsPayload {
-  const since = new Date(now.getTime() - windowDays * 86400_000).toISOString();
+export function computeMetrics(history: HistoryStore, window: MetricsWindow,
+  bucket: MetricsBucket, now: Date = new Date()): MetricsPayload {
+  const windowMs = WINDOW_DAYS[window] * 86400_000;
+  const since = new Date(now.getTime() - windowMs).toISOString();
+  const prevSince = new Date(now.getTime() - 2 * windowMs).toISOString();
+  const key = (ts: string): string => ts.slice(0, bucket === 'hour' ? 13 : 10);
 
-  // 1. Runner-wait health: per (repo, event) day buckets with p50/p90.
-  const runnerWaits = [...groupBy(history.runnerWaitsSince(since),
-    (r) => `${r.repo}${SEP}${r.event}`)]
+  // 1. Runner-wait health: per (repo, event) buckets with p50/p90 + headline p50.
+  const rw = splitWindow(history.runnerWaitsSince(prevSince), (r) => r.at, since);
+  const rwPrevByKey = groupBy(rw.prev, (r) => `${r.repo}${SEP}${r.event}`);
+  const runnerWaits = [...groupBy(rw.cur, (r) => `${r.repo}${SEP}${r.event}`)]
     .sort(([a], [b]) => a.localeCompare(b))
-    .map(([key, rows]) => {
-      const [repo, event] = key.split(SEP) as [string, string];
-      const days = [...groupBy(rows, (r) => r.date)]
-        .sort(([a], [b]) => a.localeCompare(b))
-        .map(([date, vals]) => {
-          const waits = vals.map((v) => v.waitSecs);
-          return { date, p50: p(waits, 0.5), p90: p(waits, 0.9), n: waits.length };
-        });
-      return { repo, event, days };
+    .map(([k, rows]) => {
+      const [repo, event] = k.split(SEP) as [string, string];
+      const prevRows = rwPrevByKey.get(k) ?? [];
+      return {
+        repo, event,
+        p50: p50Stat(rows.map((r) => r.waitSecs), prevRows.map((r) => r.waitSecs)),
+        buckets: bucketPercentiles(rows.map((r) => ({ at: r.at, value: r.waitSecs })), key),
+      };
     });
 
-  // Shared merged-PR rows: queue.mergesPerDay + the whole velocity section.
-  const merged = history.mergedSince(since);
-  const mergedByRepo = groupBy(merged, (r) => r.repo);
-  const queueWaitsByRepo = groupBy(history.queueWaitsSince(since), (r) => r.repo);
-  const groupRunsByRepo = groupBy(history.groupRunsSince(since), (r) => r.repo);
+  // Shared merged-PR rows: queue merges + the whole velocity section.
+  const merged = splitWindow(history.mergedSince(prevSince), (r) => r.mergedAt, since);
+  const mergedByRepo = groupBy(merged.cur, (r) => r.repo);
+  const mergedPrevByRepo = groupBy(merged.prev, (r) => r.repo);
+  const qw = splitWindow(history.queueWaitsSince(prevSince), (r) => r.at, since);
+  const queueWaitsByRepo = groupBy(qw.cur, (r) => r.repo);
+  const queueWaitsPrevByRepo = groupBy(qw.prev, (r) => r.repo);
+  const gr = splitWindow(history.groupRunsSince(prevSince), (r) => r.at, since);
+  const groupRunsByRepo = groupBy(gr.cur, (r) => r.repo);
+  const groupRunsPrevByRepo = groupBy(gr.prev, (r) => r.repo);
 
-  // 2. Queue throughput: merges/day + time-in-queue p50 + group-run p50.
+  // 2. Queue throughput: merges + time-in-queue p50 + group-run p50 per bucket.
+  // Repos qualify on CURRENT-window rows only (prev-only repos are omitted).
   const queueRepos = [...new Set([
     ...mergedByRepo.keys(), ...queueWaitsByRepo.keys(), ...groupRunsByRepo.keys(),
   ])].sort();
-  const queue = queueRepos.map((repo) => ({
-    repo,
-    mergesPerDay: dayCounts((mergedByRepo.get(repo) ?? []).map((r) => r.mergedAt)),
-    queueWaitDays: dayPercentiles((queueWaitsByRepo.get(repo) ?? [])
-      .map((r) => ({ date: r.date, value: r.waitSecs }))),
-    groupRunDays: dayPercentiles((groupRunsByRepo.get(repo) ?? [])
-      .map((r) => ({ date: r.date, value: r.durationSecs }))),
-  }));
+  const queue = queueRepos.map((repo) => {
+    const merges = mergedByRepo.get(repo) ?? [];
+    const waits = queueWaitsByRepo.get(repo) ?? [];
+    const runs = groupRunsByRepo.get(repo) ?? [];
+    return {
+      repo,
+      merges: {
+        value: merges.length,
+        prev: (mergedPrevByRepo.get(repo) ?? []).length,
+      },
+      queueWaitP50: p50Stat(waits.map((r) => r.waitSecs),
+        (queueWaitsPrevByRepo.get(repo) ?? []).map((r) => r.waitSecs)),
+      groupRunP50: p50Stat(runs.map((r) => r.durationSecs),
+        (groupRunsPrevByRepo.get(repo) ?? []).map((r) => r.durationSecs)),
+      mergesPerBucket: bucketCounts(merges.map((r) => r.mergedAt), key),
+      queueWaitBuckets: bucketPercentiles(waits.map((r) => ({ at: r.at, value: r.waitSecs })), key)
+        .map(({ bucket: b, p50, n }) => ({ bucket: b, p50, n })),
+      groupRunBuckets: bucketPercentiles(runs.map((r) => ({ at: r.at, value: r.durationSecs })), key)
+        .map(({ bucket: b, p50, n }) => ({ bucket: b, p50, n })),
+    };
+  });
 
-  // 3. Slowest / most-variable jobs: top 10 per repo by window p50.
+  // 3. Slowest / most-variable jobs: top 10 per repo by window p50 (no headline
+  // deltas → current window read only). Trend buckets carry p50 AND p90 so the
+  // leaderboard sparkline can render the p50→p90 band.
   const slowestJobs = [...groupBy(history.checkDurationsSince(since), (r) => r.repo)]
     .sort(([a], [b]) => a.localeCompare(b))
     .map(([repo, rows]) => {
       const jobs = [...groupBy(rows, (r) => `${r.name}${SEP}${r.event}`)]
-        .map(([key, samples]) => {
-          const [name, event] = key.split(SEP) as [string, string];
+        .map(([k, samples]) => {
+          const [name, event] = k.split(SEP) as [string, string];
           const durations = samples.map((s) => s.durationSecs);
           const p50 = p(durations, 0.5);
           const p90 = p(durations, 0.9);
@@ -126,8 +228,7 @@ export function computeMetrics(history: HistoryStore, windowDays: number,
             name, event, p50, p90,
             variability: p90 / p50, // durations are >0 by recordCheckDuration's guard
             n: durations.length,
-            trend: dayPercentiles(samples.map((s) => ({ date: s.date, value: s.durationSecs })))
-              .map((d) => ({ date: d.date, p50: d.p50 })),
+            trend: bucketPercentiles(samples.map((s) => ({ at: s.at, value: s.durationSecs })), key),
           };
         })
         .sort((a, b) => b.p50 - a.p50 || a.name.localeCompare(b.name))
@@ -138,32 +239,49 @@ export function computeMetrics(history: HistoryStore, windowDays: number,
   // 4. Merge velocity + deploy lag (+ lifespan), all from merged_prs.
   const velocity = [...mergedByRepo.keys()].sort().map((repo) => {
     const rows = mergedByRepo.get(repo)!;
+    const prevRows = mergedPrevByRepo.get(repo) ?? [];
+    const toQaSecs = (r: { mergedAt: string; qaLiveAt: string | null }): number =>
+      (Date.parse(r.qaLiveAt!) - Date.parse(r.mergedAt)) / 1000;
+    const lifespanHours = (r: { mergedAt: string; createdAt: string | null }): number =>
+      (Date.parse(r.mergedAt) - Date.parse(r.createdAt!)) / 3600_000;
     const toQa = rows.filter((r) => r.qaLiveAt != null)
-      .map((r) => ({ date: r.mergedAt.slice(0, 10),
-        value: (Date.parse(r.qaLiveAt!) - Date.parse(r.mergedAt)) / 1000 }));
+      .map((r) => ({ at: r.mergedAt, value: toQaSecs(r) }));
     // lifespan = mergedAt − createdAt; pre-migration rows lack created_at → excluded
     const lifespans = rows.filter((r) => r.createdAt != null)
-      .map((r) => ({ date: r.mergedAt.slice(0, 10),
-        hours: (Date.parse(r.mergedAt) - Date.parse(r.createdAt!)) / 3600_000 }));
-    const avgLifespanDays = [...groupBy(lifespans, (l) => l.date)]
+      .map((r) => ({ at: r.mergedAt, hours: lifespanHours(r) }));
+    const prevToQa = prevRows.filter((r) => r.qaLiveAt != null).map(toQaSecs);
+    const prevLifespans = prevRows.filter((r) => r.createdAt != null).map(lifespanHours);
+    const avgLifespanBuckets = [...groupBy(lifespans, (l) => key(l.at))]
       .sort(([a], [b]) => a.localeCompare(b))
-      .map(([date, ls]) => ({ date,
-        meanHours: ls.reduce((sum, l) => sum + l.hours, 0) / ls.length, n: ls.length }));
+      .map(([b, ls]) => ({ bucket: b, meanHours: mean(ls.map((l) => l.hours)), n: ls.length }));
     return {
       repo,
-      mergedPerDay: dayCounts(rows.map((r) => r.mergedAt)),
-      mergeToQaDays: dayPercentiles(toQa),
-      avgLifespanDays,
+      merged: { value: rows.length, prev: prevRows.length },
+      mergeToQaP50: p50Stat(toQa.map((t) => t.value), prevToQa),
+      lifespanMeanHours: {
+        value: lifespans.length ? mean(lifespans.map((l) => l.hours)) : null,
+        prev: prevLifespans.length ? mean(prevLifespans) : null,
+      },
+      mergedPerBucket: bucketCounts(rows.map((r) => r.mergedAt), key),
+      mergeToQaBuckets: bucketPercentiles(toQa, key)
+        .map(({ bucket: b, p50, n }) => ({ bucket: b, p50, n })),
+      avgLifespanBuckets,
     };
   });
 
-  // 5. Trends: raw state samples within the window (≤15min cadence).
+  // 5. Trends: state samples aggregated per bucket — the LAST sample in each
+  // bucket is the bucket's closing value (rows arrive time-ordered per repo).
   const trends = [...groupBy(history.stateSamplesSince(since), (r) => r.repo)]
     .sort(([a], [b]) => a.localeCompare(b))
     .map(([repo, rows]) => ({
       repo,
-      samples: rows.map(({ at, open, ci, queue, failed }) => ({ at, open, ci, queue, failed })),
+      points: [...groupBy(rows, (r) => key(r.at))]
+        .sort(([a], [b]) => a.localeCompare(b))
+        .map(([b, samples]) => {
+          const last = samples[samples.length - 1]!;
+          return { bucket: b, open: last.open, ci: last.ci, queue: last.queue, failed: last.failed };
+        }),
     }));
 
-  return { windowDays, runnerWaits, queue, slowestJobs, velocity, trends };
+  return { window, bucket, runnerWaits, queue, slowestJobs, velocity, trends };
 }

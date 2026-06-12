@@ -4,7 +4,7 @@ import { existsSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import type { DashboardState, RepoSettingsReport } from './poller';
 import { READ_ONLY_CONFIG_KEYS, validateConfigPatch, type AppConfig, type ConfigPatch } from './config';
-import { clampWindowDays, type MetricsPayload, type MetricsWindow } from './metrics';
+import { resolveMetricsQuery, type MetricsBucket, type MetricsPayload, type MetricsWindow } from './metrics';
 import { verifySignature, routeEvent, type WebhookRoute } from './webhooks';
 
 /**
@@ -73,7 +73,7 @@ export function createApp(opts: {
   config?: ConfigApi;
   webhooks?: WebhookApi;
   /** GET /api/metrics — computed per request (one local SQLite pass, no caching). */
-  metrics?: (windowDays: MetricsWindow) => MetricsPayload;
+  metrics?: (window: MetricsWindow, bucket: MetricsBucket) => MetricsPayload;
   /** Restart endpoint knobs — `exit` injectable for tests. */
   restart?: { exit?: (code: number) => void; delayMs?: number };
 }): express.Express {
@@ -118,7 +118,8 @@ export function createApp(opts: {
   if (opts.metrics) {
     const metrics = opts.metrics;
     app.get('/api/metrics', (req, res) => {
-      res.json(metrics(clampWindowDays(req.query.windowDays)));
+      const { window, bucket } = resolveMetricsQuery(req.query);
+      res.json(metrics(window, bucket));
     });
   }
 

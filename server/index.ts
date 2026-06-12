@@ -169,7 +169,7 @@ async function main() {
         poller.reconfigure(next);
       },
     },
-    metrics: (windowDays) => computeMetrics(history, windowDays),
+    metrics: (window, bucket) => computeMetrics(history, window, bucket),
     webhooks: webhookSecret != null ? {
       path: config.webhooks.path,
       secret: webhookSecret,

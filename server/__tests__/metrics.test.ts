@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import { HistoryStore } from '../history';
-import { computeMetrics, clampWindowDays } from '../metrics';
+import { computeMetrics, resolveMetricsQuery, METRICS_WINDOWS, WINDOW_DAYS } from '../metrics';
 
 const REPO = 'acme/widgets';
 const NOW = new Date('2026-06-11T12:00:00Z');
@@ -10,102 +10,190 @@ beforeEach(() => {
   h = new HistoryStore(':memory:');
 });
 
-describe('clampWindowDays', () => {
-  it('accepts the three allowed windows', () => {
-    expect(clampWindowDays('7')).toBe(7);
-    expect(clampWindowDays('14')).toBe(14);
-    expect(clampWindowDays('30')).toBe(30);
-    expect(clampWindowDays(7)).toBe(7);
+describe('resolveMetricsQuery', () => {
+  it('defaults to window=3d bucket=hour', () => {
+    expect(resolveMetricsQuery({})).toEqual({ window: '3d', bucket: 'hour' });
   });
 
-  it('defaults to 14 for missing or unparseable values', () => {
-    expect(clampWindowDays(undefined)).toBe(14);
-    expect(clampWindowDays('abc')).toBe(14);
-    expect(clampWindowDays('')).toBe(14);
-    expect(clampWindowDays(null)).toBe(14);
+  it('accepts every allowed window key', () => {
+    for (const w of METRICS_WINDOWS) {
+      expect(resolveMetricsQuery({ window: w }).window).toBe(w);
+    }
   });
 
-  it('clamps other numbers to the nearest allowed window', () => {
-    expect(clampWindowDays('1')).toBe(7);
-    expect(clampWindowDays('999')).toBe(30);
-    expect(clampWindowDays('21')).toBe(14);
-    expect(clampWindowDays('-5')).toBe(7);
+  it('honors bucket=day for any window', () => {
+    for (const w of METRICS_WINDOWS) {
+      expect(resolveMetricsQuery({ window: w, bucket: 'day' }).bucket).toBe('day');
+    }
+  });
+
+  it('clamping matrix: hour allowed only for windows ≤ 7d', () => {
+    expect(resolveMetricsQuery({ window: '24h', bucket: 'hour' }).bucket).toBe('hour');
+    expect(resolveMetricsQuery({ window: '3d', bucket: 'hour' }).bucket).toBe('hour');
+    expect(resolveMetricsQuery({ window: '7d', bucket: 'hour' }).bucket).toBe('hour');
+    expect(resolveMetricsQuery({ window: '14d', bucket: 'hour' }).bucket).toBe('day');
+    expect(resolveMetricsQuery({ window: '30d', bucket: 'hour' }).bucket).toBe('day');
+  });
+
+  it('default bucket (hour) is also clamped for long windows', () => {
+    expect(resolveMetricsQuery({ window: '14d' }).bucket).toBe('day');
+    expect(resolveMetricsQuery({ window: '30d' }).bucket).toBe('day');
+  });
+
+  it('unknown bucket values fall back to the hour default (then clamp)', () => {
+    expect(resolveMetricsQuery({ window: '3d', bucket: 'minute' }).bucket).toBe('hour');
+    expect(resolveMetricsQuery({ window: '30d', bucket: 'minute' }).bucket).toBe('day');
+  });
+
+  it('back-compat: windowDays=7/14/30 map to 7d/14d/30d', () => {
+    expect(resolveMetricsQuery({ windowDays: '7' }).window).toBe('7d');
+    expect(resolveMetricsQuery({ windowDays: '14' }).window).toBe('14d');
+    expect(resolveMetricsQuery({ windowDays: '30' }).window).toBe('30d');
+    expect(resolveMetricsQuery({ windowDays: 7 }).window).toBe('7d');
+  });
+
+  it('back-compat: other windowDays values snap to the nearest legacy window', () => {
+    expect(resolveMetricsQuery({ windowDays: '1' }).window).toBe('7d');
+    expect(resolveMetricsQuery({ windowDays: '999' }).window).toBe('30d');
+    expect(resolveMetricsQuery({ windowDays: '21' }).window).toBe('14d');
+    expect(resolveMetricsQuery({ windowDays: '-5' }).window).toBe('7d');
+  });
+
+  it('window param wins over windowDays; garbage falls through to the default', () => {
+    expect(resolveMetricsQuery({ window: '24h', windowDays: '30' }).window).toBe('24h');
+    expect(resolveMetricsQuery({ window: '5d', windowDays: '30' }).window).toBe('30d');
+    expect(resolveMetricsQuery({ window: 'abc' }).window).toBe('3d');
+    expect(resolveMetricsQuery({ windowDays: 'abc' }).window).toBe('3d');
+  });
+
+  it('WINDOW_DAYS covers every window key', () => {
+    expect(Object.keys(WINDOW_DAYS).sort()).toEqual([...METRICS_WINDOWS].sort());
+    expect(WINDOW_DAYS['24h']).toBe(1);
+    expect(WINDOW_DAYS['3d']).toBe(3);
   });
 });
 
 describe('computeMetrics: runner waits', () => {
-  it('buckets per (repo, event) by UTC day with p50/p90/n; window-scoped', () => {
-    // pull_request 'build': 3 waits on 06-10, 1 on 06-09, 1 outside the window
+  it('hour bucketing: per (repo, event) ISO-hour buckets with p50/p90/n', () => {
+    // 3 waits in the 10:00 hour, 1 in the 11:00 hour, 1 outside the 24h window
+    h.recordRunnerWait(REPO, 'build', 'pull_request', 10, '2026-06-11T10:05:00Z');
+    h.recordRunnerWait(REPO, 'build', 'pull_request', 20, '2026-06-11T10:25:00Z');
+    h.recordRunnerWait(REPO, 'lint', 'pull_request', 30, '2026-06-11T10:45:00Z');
+    h.recordRunnerWait(REPO, 'build', 'pull_request', 60, '2026-06-11T11:05:00Z');
+    h.recordRunnerWait(REPO, 'build', 'pull_request', 999, '2026-06-09T10:00:00Z'); // outside 24h
+
+    const m = computeMetrics(h, '24h', 'hour', NOW);
+    expect(m.window).toBe('24h');
+    expect(m.bucket).toBe('hour');
+    const pr = m.runnerWaits.find((r) => r.repo === REPO && r.event === 'pull_request')!;
+    expect(pr.buckets).toEqual([
+      { bucket: '2026-06-11T10', p50: 20, p90: 30, n: 3 },
+      { bucket: '2026-06-11T11', p50: 60, p90: 60, n: 1 },
+    ]);
+  });
+
+  it('day bucketing still aggregates whole UTC days; window-scoped', () => {
     h.recordRunnerWait(REPO, 'build', 'pull_request', 10, '2026-06-10T10:00:00Z');
     h.recordRunnerWait(REPO, 'build', 'pull_request', 20, '2026-06-10T11:00:00Z');
     h.recordRunnerWait(REPO, 'build', 'pull_request', 30, '2026-06-10T12:00:00Z');
     h.recordRunnerWait(REPO, 'build', 'pull_request', 60, '2026-06-09T10:00:00Z');
     h.recordRunnerWait(REPO, 'build', 'pull_request', 999, '2026-06-01T10:00:00Z'); // outside 7d
-    // separate event tier
     h.recordRunnerWait(REPO, 'ci', 'merge_group', 100, '2026-06-10T10:00:00Z');
 
-    const m = computeMetrics(h, 7, NOW);
-    expect(m.windowDays).toBe(7);
+    const m = computeMetrics(h, '7d', 'day', NOW);
     const mg = m.runnerWaits.find((r) => r.repo === REPO && r.event === 'merge_group')!;
-    expect(mg.days).toEqual([{ date: '2026-06-10', p50: 100, p90: 100, n: 1 }]);
+    expect(mg.buckets).toEqual([{ bucket: '2026-06-10', p50: 100, p90: 100, n: 1 }]);
     const pr = m.runnerWaits.find((r) => r.repo === REPO && r.event === 'pull_request')!;
-    expect(pr.days).toEqual([
-      { date: '2026-06-09', p50: 60, p90: 60, n: 1 },
-      { date: '2026-06-10', p50: 20, p90: 30, n: 3 },
+    expect(pr.buckets).toEqual([
+      { bucket: '2026-06-09', p50: 60, p90: 60, n: 1 },
+      { bucket: '2026-06-10', p50: 20, p90: 30, n: 3 },
     ]);
+  });
+
+  it('headline p50 with prev-window comparison; prev null without prior samples', () => {
+    // current 24h window: 10, 20 → p50 10; previous 24h window: 100 → prev p50 100
+    h.recordRunnerWait(REPO, 'build', 'pull_request', 10, '2026-06-11T10:00:00Z');
+    h.recordRunnerWait(REPO, 'build', 'pull_request', 20, '2026-06-11T11:00:00Z');
+    h.recordRunnerWait(REPO, 'build', 'pull_request', 100, '2026-06-10T09:00:00Z'); // prev window
+    h.recordRunnerWait(REPO, 'ci', 'merge_group', 40, '2026-06-11T10:00:00Z'); // no prev samples
+
+    const m = computeMetrics(h, '24h', 'hour', NOW);
+    const pr = m.runnerWaits.find((r) => r.event === 'pull_request')!;
+    expect(pr.p50).toEqual({ value: 10, prev: 100 });
+    const mg = m.runnerWaits.find((r) => r.event === 'merge_group')!;
+    expect(mg.p50).toEqual({ value: 40, prev: null });
+  });
+
+  it('a (repo, event) with samples only in the previous window is omitted', () => {
+    h.recordRunnerWait(REPO, 'build', 'pull_request', 100, '2026-06-10T09:00:00Z'); // prev only
+    const m = computeMetrics(h, '24h', 'hour', NOW);
+    expect(m.runnerWaits).toEqual([]);
   });
 });
 
 describe('computeMetrics: queue throughput', () => {
-  it('merges/day counts, queue-wait p50/day, group-run p50/day', () => {
+  it('merge counts, queue-wait p50, group-run p50 per bucket + headlines with prev', () => {
     h.upsertMergedPr({ repo: REPO, number: 1, title: 't', url: 'u',
-      mergedAt: '2026-06-10T10:00:00Z', mergeCommitSha: 'a' });
+      mergedAt: '2026-06-11T10:10:00Z', mergeCommitSha: 'a' });
     h.upsertMergedPr({ repo: REPO, number: 2, title: 't', url: 'u',
-      mergedAt: '2026-06-10T12:00:00Z', mergeCommitSha: 'b' });
+      mergedAt: '2026-06-11T10:40:00Z', mergeCommitSha: 'b' });
     h.upsertMergedPr({ repo: REPO, number: 3, title: 't', url: 'u',
-      mergedAt: '2026-06-09T09:00:00Z', mergeCommitSha: 'c' });
-    h.recordQueueWait(REPO, 120, '2026-06-10T10:00:00Z');
-    h.recordQueueWait(REPO, 240, '2026-06-10T11:00:00Z');
-    h.recordGroupRun(REPO, 600, '2026-06-10T10:30:00Z');
+      mergedAt: '2026-06-11T09:00:00Z', mergeCommitSha: 'c' });
+    // previous 24h window (before 2026-06-10T12:00Z): one merge
+    h.upsertMergedPr({ repo: REPO, number: 4, title: 't', url: 'u',
+      mergedAt: '2026-06-10T09:00:00Z', mergeCommitSha: 'd' });
+    h.recordQueueWait(REPO, 120, '2026-06-11T10:00:00Z');
+    h.recordQueueWait(REPO, 240, '2026-06-11T10:30:00Z');
+    h.recordQueueWait(REPO, 600, '2026-06-10T09:00:00Z'); // prev window
+    h.recordGroupRun(REPO, 600, '2026-06-11T10:30:00Z');
 
-    const q = computeMetrics(h, 7, NOW).queue.find((r) => r.repo === REPO)!;
-    expect(q.mergesPerDay).toEqual([
-      { date: '2026-06-09', count: 1 },
-      { date: '2026-06-10', count: 2 },
+    const q = computeMetrics(h, '24h', 'hour', NOW).queue.find((r) => r.repo === REPO)!;
+    expect(q.mergesPerBucket).toEqual([
+      { bucket: '2026-06-11T09', count: 1 },
+      { bucket: '2026-06-11T10', count: 2 },
     ]);
-    expect(q.queueWaitDays).toEqual([{ date: '2026-06-10', p50: 120, n: 2 }]);
-    expect(q.groupRunDays).toEqual([{ date: '2026-06-10', p50: 600, n: 1 }]);
+    expect(q.queueWaitBuckets).toEqual([{ bucket: '2026-06-11T10', p50: 120, n: 2 }]);
+    expect(q.groupRunBuckets).toEqual([{ bucket: '2026-06-11T10', p50: 600, n: 1 }]);
+    expect(q.merges).toEqual({ value: 3, prev: 1 });
+    expect(q.queueWaitP50).toEqual({ value: 120, prev: 600 });
+    expect(q.groupRunP50).toEqual({ value: 600, prev: null });
+  });
+
+  it('repos with data only in the previous window are omitted', () => {
+    h.upsertMergedPr({ repo: REPO, number: 1, title: 't', url: 'u',
+      mergedAt: '2026-06-10T09:00:00Z', mergeCommitSha: 'a' }); // prev window only
+    expect(computeMetrics(h, '24h', 'hour', NOW).queue).toEqual([]);
   });
 });
 
 describe('computeMetrics: slowest jobs', () => {
-  it('orders by p50 desc, computes variability = p90/p50, builds per-day trend, excludes failures', () => {
+  it('orders by p50 desc, variability = p90/p50, per-bucket trend carries p50 AND p90', () => {
     // 'slow': 100 on 06-09; 200 + 300 on 06-10 → window p50 200, p90 300
     h.recordCheckDuration(REPO, 'slow', 'pull_request', '2026-06-09T10:00:00Z', '2026-06-09T10:01:40Z', 'SUCCESS'); // 100
     h.recordCheckDuration(REPO, 'slow', 'pull_request', '2026-06-10T10:00:00Z', '2026-06-10T10:03:20Z', 'SUCCESS'); // 200
     h.recordCheckDuration(REPO, 'slow', 'pull_request', '2026-06-10T11:00:00Z', '2026-06-10T11:05:00Z', 'SUCCESS'); // 300
-    // 'fast': 20s
     h.recordCheckDuration(REPO, 'fast', 'pull_request', '2026-06-10T10:00:00Z', '2026-06-10T10:00:20Z', 'SUCCESS');
-    // 'spiky': 10, 10, 100 → p50 10, p90 100, variability 10
-    h.recordCheckDuration(REPO, 'spiky', 'pull_request', '2026-06-10T10:00:00Z', '2026-06-10T10:00:10Z', 'SUCCESS');
-    h.recordCheckDuration(REPO, 'spiky', 'pull_request', '2026-06-10T11:00:00Z', '2026-06-10T11:00:10Z', 'SUCCESS');
-    h.recordCheckDuration(REPO, 'spiky', 'pull_request', '2026-06-10T12:00:00Z', '2026-06-10T12:01:40Z', 'SUCCESS');
     // failures never count
     h.recordCheckDuration(REPO, 'slow', 'pull_request', '2026-06-10T13:00:00Z', '2026-06-10T14:00:00Z', 'FAILURE');
 
-    const jobs = computeMetrics(h, 7, NOW).slowestJobs.find((r) => r.repo === REPO)!.jobs;
-    expect(jobs.map((j) => j.name)).toEqual(['slow', 'fast', 'spiky']);
+    const jobs = computeMetrics(h, '7d', 'day', NOW).slowestJobs.find((r) => r.repo === REPO)!.jobs;
+    expect(jobs.map((j) => j.name)).toEqual(['slow', 'fast']);
     const slow = jobs[0]!;
-    expect(slow.event).toBe('pull_request');
     expect(slow.p50).toBe(200);
     expect(slow.p90).toBe(300);
     expect(slow.variability).toBeCloseTo(1.5);
     expect(slow.n).toBe(3);
     expect(slow.trend).toEqual([
-      { date: '2026-06-09', p50: 100 },
-      { date: '2026-06-10', p50: 200 },
+      { bucket: '2026-06-09', p50: 100, p90: 100, n: 1 },
+      { bucket: '2026-06-10', p50: 200, p90: 300, n: 2 },
     ]);
-    expect(jobs[2]!.variability).toBeCloseTo(10);
+  });
+
+  it('hour bucketing applies to the trend', () => {
+    h.recordCheckDuration(REPO, 'ci', 'pull_request', '2026-06-11T10:00:00Z', '2026-06-11T10:01:00Z', 'SUCCESS'); // 60
+    h.recordCheckDuration(REPO, 'ci', 'pull_request', '2026-06-11T11:00:00Z', '2026-06-11T11:02:00Z', 'SUCCESS'); // 120
+    const jobs = computeMetrics(h, '24h', 'hour', NOW).slowestJobs.find((r) => r.repo === REPO)!.jobs;
+    expect(jobs[0]!.trend.map((t) => t.bucket)).toEqual(['2026-06-11T10', '2026-06-11T11']);
   });
 
   it('caps each repo at the top 10 jobs by p50', () => {
@@ -114,79 +202,99 @@ describe('computeMetrics: slowest jobs', () => {
       h.recordCheckDuration('octo/bridge', `job-${String(i).padStart(2, '0')}`, 'pull_request',
         '2026-06-10T10:00:00Z', new Date(Date.parse('2026-06-10T10:00:00Z') + secs * 1000).toISOString(), 'SUCCESS');
     }
-    const jobs = computeMetrics(h, 7, NOW).slowestJobs.find((r) => r.repo === 'octo/bridge')!.jobs;
+    const jobs = computeMetrics(h, '7d', 'day', NOW).slowestJobs.find((r) => r.repo === 'octo/bridge')!.jobs;
     expect(jobs).toHaveLength(10);
-    expect(jobs[0]!.name).toBe('job-12');                 // slowest first
-    expect(jobs.map((j) => j.name)).not.toContain('job-01'); // two cheapest fall off
+    expect(jobs[0]!.name).toBe('job-12');
+    expect(jobs.map((j) => j.name)).not.toContain('job-01');
     expect(jobs.map((j) => j.name)).not.toContain('job-02');
   });
 
   it('same job name under different events stays separate', () => {
     h.recordCheckDuration(REPO, 'ci', 'pull_request', '2026-06-10T10:00:00Z', '2026-06-10T10:01:00Z', 'SUCCESS');
     h.recordCheckDuration(REPO, 'ci', 'merge_group', '2026-06-10T10:00:00Z', '2026-06-10T10:10:00Z', 'SUCCESS');
-    const jobs = computeMetrics(h, 7, NOW).slowestJobs.find((r) => r.repo === REPO)!.jobs;
+    const jobs = computeMetrics(h, '7d', 'day', NOW).slowestJobs.find((r) => r.repo === REPO)!.jobs;
     expect(jobs.map((j) => `${j.name}/${j.event}`).sort()).toEqual(['ci/merge_group', 'ci/pull_request']);
   });
 });
 
 describe('computeMetrics: velocity', () => {
-  it('merged/day, merge→QA p50/day, avg lifespan meanHours/day excluding null created_at', () => {
-    // lifespan 24h, merge→QA 600s
+  it('per-bucket merged counts, merge→QA p50, lifespan meanHours + headlines with prev', () => {
+    // current window (3d): lifespan 24h, merge→QA 600s
     h.upsertMergedPr({ repo: REPO, number: 1, title: 't', url: 'u',
       mergedAt: '2026-06-10T10:00:00Z', mergeCommitSha: 'a', createdAt: '2026-06-09T10:00:00Z' });
     h.markEnvLive(REPO, 1, 'qa', '2026-06-10T10:10:00Z');
     // created_at unknown (pre-migration row) — excluded from lifespan
     h.upsertMergedPr({ repo: REPO, number: 2, title: 't', url: 'u',
       mergedAt: '2026-06-10T12:00:00Z', mergeCommitSha: 'b' });
-    // lifespan 1h, merged the previous day
+    // lifespan 1h, merged the previous day (still inside 3d window)
     h.upsertMergedPr({ repo: REPO, number: 3, title: 't', url: 'u',
       mergedAt: '2026-06-09T09:00:00Z', mergeCommitSha: 'c', createdAt: '2026-06-09T08:00:00Z' });
-    // outside the window entirely
+    // previous 3d window (06-05..06-08): one merge, lifespan 2h
     h.upsertMergedPr({ repo: REPO, number: 4, title: 't', url: 'u',
-      mergedAt: '2026-05-01T09:00:00Z', mergeCommitSha: 'd', createdAt: '2026-05-01T08:00:00Z' });
+      mergedAt: '2026-06-06T09:00:00Z', mergeCommitSha: 'd', createdAt: '2026-06-06T07:00:00Z' });
+    // outside both windows entirely
+    h.upsertMergedPr({ repo: REPO, number: 5, title: 't', url: 'u',
+      mergedAt: '2026-05-01T09:00:00Z', mergeCommitSha: 'e', createdAt: '2026-05-01T08:00:00Z' });
 
-    const v = computeMetrics(h, 7, NOW).velocity.find((r) => r.repo === REPO)!;
-    expect(v.mergedPerDay).toEqual([
-      { date: '2026-06-09', count: 1 },
-      { date: '2026-06-10', count: 2 },
+    const v = computeMetrics(h, '3d', 'day', NOW).velocity.find((r) => r.repo === REPO)!;
+    expect(v.mergedPerBucket).toEqual([
+      { bucket: '2026-06-09', count: 1 },
+      { bucket: '2026-06-10', count: 2 },
     ]);
-    expect(v.mergeToQaDays).toEqual([{ date: '2026-06-10', p50: 600, n: 1 }]);
-    expect(v.avgLifespanDays).toEqual([
-      { date: '2026-06-09', meanHours: 1, n: 1 },
-      { date: '2026-06-10', meanHours: 24, n: 1 }, // n=1: the null-created_at row is excluded
+    expect(v.mergeToQaBuckets).toEqual([{ bucket: '2026-06-10', p50: 600, n: 1 }]);
+    expect(v.avgLifespanBuckets).toEqual([
+      { bucket: '2026-06-09', meanHours: 1, n: 1 },
+      { bucket: '2026-06-10', meanHours: 24, n: 1 }, // null-created_at row excluded
     ]);
+    expect(v.merged).toEqual({ value: 3, prev: 1 });
+    expect(v.mergeToQaP50).toEqual({ value: 600, prev: null });
+    expect(v.lifespanMeanHours.value).toBeCloseTo(12.5); // mean(24h, 1h)
+    expect(v.lifespanMeanHours.prev).toBeCloseTo(2);
   });
 });
 
 describe('computeMetrics: trends (state samples)', () => {
-  it('returns raw window-scoped samples per repo, oldest first', () => {
-    expect(h.recordStateSample(REPO, '2026-06-10T10:00:00Z',
+  it('aggregates per bucket using the LAST sample in each bucket (closing value)', () => {
+    expect(h.recordStateSample(REPO, '2026-06-11T10:00:00Z',
       { open: 5, ci: 2, queue: 1, failed: 0 })).toBe(true);
-    expect(h.recordStateSample(REPO, '2026-06-10T10:20:00Z',
+    expect(h.recordStateSample(REPO, '2026-06-11T10:20:00Z',
       { open: 6, ci: 3, queue: 0, failed: 1 })).toBe(true);
-    h.recordStateSample('octo/bridge', '2026-06-10T10:00:00Z', { open: 1, ci: 0, queue: 0, failed: 0 });
+    expect(h.recordStateSample(REPO, '2026-06-11T11:05:00Z',
+      { open: 7, ci: 1, queue: 0, failed: 0 })).toBe(true);
+    h.recordStateSample('octo/bridge', '2026-06-11T10:00:00Z', { open: 1, ci: 0, queue: 0, failed: 0 });
 
-    const t = computeMetrics(h, 7, NOW).trends.find((r) => r.repo === REPO)!;
-    expect(t.samples).toEqual([
-      { at: '2026-06-10T10:00:00Z', open: 5, ci: 2, queue: 1, failed: 0 },
-      { at: '2026-06-10T10:20:00Z', open: 6, ci: 3, queue: 0, failed: 1 },
+    const t = computeMetrics(h, '24h', 'hour', NOW).trends.find((r) => r.repo === REPO)!;
+    expect(t.points).toEqual([
+      { bucket: '2026-06-11T10', open: 6, ci: 3, queue: 0, failed: 1 }, // last of the 10:00 hour
+      { bucket: '2026-06-11T11', open: 7, ci: 1, queue: 0, failed: 0 },
     ]);
-    expect(computeMetrics(h, 7, NOW).trends.find((r) => r.repo === 'octo/bridge')!.samples).toHaveLength(1);
+    expect(computeMetrics(h, '24h', 'hour', NOW).trends.find((r) => r.repo === 'octo/bridge')!.points)
+      .toHaveLength(1);
+  });
+
+  it('day bucketing takes the last sample of each day', () => {
+    h.recordStateSample(REPO, '2026-06-10T09:00:00Z', { open: 3, ci: 1, queue: 0, failed: 0 });
+    h.recordStateSample(REPO, '2026-06-10T22:00:00Z', { open: 9, ci: 0, queue: 2, failed: 1 });
+    const t = computeMetrics(h, '7d', 'day', NOW).trends.find((r) => r.repo === REPO)!;
+    expect(t.points).toEqual([
+      { bucket: '2026-06-10', open: 9, ci: 0, queue: 2, failed: 1 },
+    ]);
   });
 
   it('samples outside the window are excluded', () => {
     h.recordStateSample(REPO, '2026-06-01T10:00:00Z', { open: 9, ci: 9, queue: 9, failed: 9 });
     h.recordStateSample(REPO, '2026-06-10T10:00:00Z', { open: 1, ci: 0, queue: 0, failed: 0 });
-    const t = computeMetrics(h, 7, NOW).trends.find((r) => r.repo === REPO)!;
-    expect(t.samples).toHaveLength(1);
-    expect(t.samples[0]!.open).toBe(1);
+    const t = computeMetrics(h, '7d', 'day', NOW).trends.find((r) => r.repo === REPO)!;
+    expect(t.points).toHaveLength(1);
+    expect(t.points[0]!.open).toBe(1);
   });
 });
 
 describe('computeMetrics: empty history', () => {
   it('returns the full payload shape with empty sections', () => {
-    expect(computeMetrics(h, 14, NOW)).toEqual({
-      windowDays: 14, runnerWaits: [], queue: [], slowestJobs: [], velocity: [], trends: [],
+    expect(computeMetrics(h, '3d', 'hour', NOW)).toEqual({
+      window: '3d', bucket: 'hour',
+      runnerWaits: [], queue: [], slowestJobs: [], velocity: [], trends: [],
     });
   });
 });
