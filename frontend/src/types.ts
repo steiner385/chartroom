@@ -74,10 +74,11 @@ export interface AppConfig {
   retentionDays: number;
   batchSize: number;
   intervals: AppIntervals;
-  /** read-only (tokenSource/apiUrl/port) */
+  /** read-only (tokenSource/apiUrl/port/ancestrySource) */
   tokenSource: string;
   apiUrl: string;
   port: number;
+  ancestrySource: 'api' | 'clone';
 }
 
 /** Which config layer a per-repo setting value came from. */

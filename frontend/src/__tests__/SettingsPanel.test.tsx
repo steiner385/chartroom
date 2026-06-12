@@ -15,8 +15,9 @@ const CONFIG: ConfigResponse = {
     tokenSource: 'gh',
     apiUrl: 'https://api.github.com/graphql',
     port: 4400,
+    ancestrySource: 'api',
   },
-  readOnlyKeys: ['tokenSource', 'apiUrl', 'port'],
+  readOnlyKeys: ['tokenSource', 'apiUrl', 'port', 'ancestrySource'],
   sources: { configPath: '/etc/pr-dashboard/config.json', perField: {} },
   repos: {
     'acme/widgets': {
@@ -87,6 +88,7 @@ describe('SettingsPanel', () => {
     expect(await screen.findByText('gh')).toBeInTheDocument(); // tokenSource
     expect(screen.getByText('https://api.github.com/graphql')).toBeInTheDocument();
     expect(screen.getByText('4400')).toBeInTheDocument();
+    expect(screen.getByText('api')).toBeInTheDocument(); // ancestrySource (#18)
     expect(screen.getByText('/etc/pr-dashboard/config.json')).toBeInTheDocument();
     expect(screen.getByText(/file-only for security/i)).toBeInTheDocument();
   });
