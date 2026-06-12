@@ -1,110 +1,224 @@
 import { describe, it, expect } from 'vitest';
 import { render } from '@testing-library/react';
-import { Sparkline, Bars, DualLine, type ChartPoint } from '../charts';
+import {
+  AreaSeries, BandSeries, MultiLine, axisTicks, formatBucketLabel, formatBucketTooltip,
+  type ChartPoint, type BandPoint,
+} from '../charts';
 
+const hourBucket = (h: number): string => `2026-06-11T${String(h).padStart(2, '0')}`;
 const pts = (values: (number | null)[]): ChartPoint[] =>
-  values.map((value, i) => ({ label: `d${i}`, value }));
+  values.map((value, i) => ({ bucket: hourBucket(i), value }));
+const band = (values: ([number, number] | null)[]): BandPoint[] =>
+  values.map((v, i) => ({ bucket: hourBucket(i), p50: v?.[0] ?? null, p90: v?.[1] ?? null }));
 
-describe('Sparkline', () => {
-  it('renders one polyline scaled to min/max over the inner box', () => {
-    const { container } = render(<Sparkline points={pts([0, 10, 5])} width={104} height={24} />);
-    const lines = container.querySelectorAll('polyline');
-    expect(lines).toHaveLength(1);
-    // x spans 2..102 (2px padding), y: max(10) → 2, min(0) → 22, mid(5) → 12
-    expect(lines[0]!.getAttribute('points')).toBe('2,22 52,2 102,12');
+describe('formatBucketLabel', () => {
+  it('formats hour buckets as HH:MM (local time)', () => {
+    const label = formatBucketLabel('2026-06-11T14', 'hour');
+    expect(label).toMatch(/^\d{2}:\d{2}$/);
+    // distinct hours yield distinct labels
+    expect(formatBucketLabel('2026-06-11T15', 'hour')).not.toBe(label);
   });
 
-  it('breaks the line at null gaps (separate polylines, no bridging)', () => {
-    const { container } = render(
-      <Sparkline points={pts([1, 2, null, 3, 4])} width={104} height={24} />);
-    expect(container.querySelectorAll('polyline')).toHaveLength(2);
+  it('formats day buckets as "Mon D" (UTC day, no TZ drift)', () => {
+    expect(formatBucketLabel('2026-06-11', 'day')).toBe('Jun 11');
+    expect(formatBucketLabel('2026-01-02', 'day')).toBe('Jan 2');
+  });
+});
+
+describe('formatBucketTooltip', () => {
+  it('hour tooltips carry the day AND the time', () => {
+    const tip = formatBucketTooltip('2026-06-11T14', 'hour');
+    expect(tip).toMatch(/^[A-Z][a-z]{2} \d{1,2} \d{2}:\d{2}$/);
   });
 
-  it('renders an isolated point (no neighbors) as a dot, not a polyline', () => {
-    const { container } = render(
-      <Sparkline points={pts([null, 5, null])} width={104} height={24} />);
-    expect(container.querySelectorAll('polyline')).toHaveLength(0);
-    expect(container.querySelectorAll('circle')).toHaveLength(1);
+  it('day tooltips equal the day label', () => {
+    expect(formatBucketTooltip('2026-06-11', 'day')).toBe('Jun 11');
+  });
+});
+
+describe('axisTicks', () => {
+  it('emits start / middle / end ticks', () => {
+    const ticks = axisTicks(['2026-06-07', '2026-06-08', '2026-06-09', '2026-06-10', '2026-06-11'], 'day');
+    expect(ticks.map((t) => t.index)).toEqual([0, 2, 4]);
+    expect(ticks.map((t) => t.text)).toEqual(['Jun 7', 'Jun 9', 'Jun 11']);
   });
 
-  it('renders nothing for empty or all-null series', () => {
-    expect(render(<Sparkline points={[]} />).container.querySelector('svg')).toBeNull();
-    expect(render(<Sparkline points={pts([null, null])} />).container.querySelector('svg')).toBeNull();
+  it('dedupes indices for short series', () => {
+    expect(axisTicks(['2026-06-11'], 'day').map((t) => t.index)).toEqual([0]);
+    expect(axisTicks(['2026-06-10', '2026-06-11'], 'day').map((t) => t.index)).toEqual([0, 1]);
+    expect(axisTicks([], 'day')).toEqual([]);
+  });
+});
+
+describe('AreaSeries', () => {
+  it('renders a full-width svg with line + area fill', () => {
+    const { container } = render(<AreaSeries points={pts([0, 10, 5])} kind="hour" />);
+    const svg = container.querySelector('svg')!;
+    expect(svg.getAttribute('width')).toBe('100%');
+    expect(svg.getAttribute('viewBox')).toBeTruthy();
+    expect(container.querySelectorAll('polyline')).toHaveLength(1);
+    expect(container.querySelectorAll('polygon')).toHaveLength(1); // soft area fill
   });
 
-  it('uses a CSS-var stroke (theme-aware) and shows min/max labels', () => {
-    const { container } = render(<Sparkline points={pts([60, 120])} />);
-    expect(container.querySelector('polyline')!.getAttribute('stroke')).toBe('var(--accent)');
+  it('draws horizontal gridlines with y-axis labels (0 / mid / max)', () => {
+    const { container } = render(<AreaSeries points={pts([0, 10, 5])} kind="hour" />);
+    expect(container.querySelectorAll('line').length).toBeGreaterThanOrEqual(3);
     const texts = [...container.querySelectorAll('text')].map((t) => t.textContent);
-    expect(texts).toContain('120');
-    expect(texts).toContain('60');
+    expect(texts).toContain('10'); // max
+    expect(texts).toContain('5');  // mid
+    expect(texts).toContain('0');  // baseline
   });
 
-  it('exposes per-point tooltips via <title>', () => {
-    const { container } = render(<Sparkline points={pts([60, 120])} />);
+  it('labels the x axis at start / middle / end with bucket labels', () => {
+    const points = pts([1, 2, 3, 4, 5]);
+    const { container } = render(<AreaSeries points={points} kind="hour" />);
+    const texts = [...container.querySelectorAll('text')].map((t) => t.textContent);
+    for (const i of [0, 2, 4]) {
+      expect(texts).toContain(formatBucketLabel(points[i]!.bucket, 'hour'));
+    }
+  });
+
+  it('breaks line and area at null gaps instead of bridging', () => {
+    const { container } = render(<AreaSeries points={pts([1, 2, null, 3, 4])} kind="hour" />);
+    expect(container.querySelectorAll('polyline')).toHaveLength(2);
+    expect(container.querySelectorAll('polygon')).toHaveLength(2);
+  });
+
+  it('renders the sparse-data placeholder below 3 populated buckets', () => {
+    const { container, getByText } = render(<AreaSeries points={pts([1, 2])} kind="hour" />);
+    expect(container.querySelector('svg')).toBeNull();
+    expect(getByText('collecting data — 2 samples so far')).toBeInTheDocument();
+  });
+
+  it('uses singular wording for one sample', () => {
+    const { getByText } = render(<AreaSeries points={pts([null, 5, null])} kind="hour" />);
+    expect(getByText('collecting data — 1 sample so far')).toBeInTheDocument();
+  });
+
+  it('honors the populated override (zero-filled count series stay guarded)', () => {
+    // 6 aligned buckets, zero-filled — but only 2 real samples behind them
+    const { container, getByText } = render(
+      <AreaSeries points={pts([0, 1, 0, 0, 1, 0])} kind="hour" populated={2} />);
+    expect(container.querySelector('svg')).toBeNull();
+    expect(getByText('collecting data — 2 samples so far')).toBeInTheDocument();
+  });
+
+  it('exposes per-point tooltips (day + time for hour buckets) and no animation', () => {
+    const points = pts([60, 120, 90]);
+    const { container } = render(<AreaSeries points={points} kind="hour" />);
     const titles = [...container.querySelectorAll('title')].map((t) => t.textContent);
-    expect(titles).toContain('d0: 60');
-    expect(titles).toContain('d1: 120');
+    expect(titles).toContain(`${formatBucketTooltip(points[0]!.bucket, 'hour')}: 60`);
+    expect(container.querySelector('animate, animateTransform, animateMotion')).toBeNull();
+  });
+
+  it('strokes with CSS variables (theme-aware)', () => {
+    const { container } = render(<AreaSeries points={pts([1, 2, 3])} kind="hour" />);
+    expect(container.querySelector('polyline')!.getAttribute('stroke')).toBe('var(--accent)');
+  });
+});
+
+describe('BandSeries', () => {
+  it('renders a p50 line + p50→p90 band polygon and labels the band', () => {
+    const { container, getByText } = render(
+      <BandSeries points={band([[10, 20], [15, 30], [12, 25]])} kind="hour" />);
+    expect(container.querySelectorAll('polyline')).toHaveLength(1); // p50 line
+    const polys = container.querySelectorAll('polygon');
+    expect(polys).toHaveLength(1); // the band
+    // band polygon has an up edge and a back edge: 2 coords per bucket
+    expect(polys[0]!.getAttribute('points')!.trim().split(/\s+/)).toHaveLength(6);
+    expect(getByText(/band = p50–p90/)).toBeInTheDocument();
+  });
+
+  it('shows gridlines + axis labels like other full charts', () => {
+    const { container } = render(
+      <BandSeries points={band([[10, 20], [15, 30], [12, 25]])} kind="hour" />);
+    expect(container.querySelectorAll('line').length).toBeGreaterThanOrEqual(3);
+    expect(container.querySelectorAll('text').length).toBeGreaterThanOrEqual(4);
+  });
+
+  it('renders the sparse placeholder below 3 populated buckets', () => {
+    const { container, getByText } = render(
+      <BandSeries points={band([[10, 20], null])} kind="hour" />);
+    expect(container.querySelector('svg')).toBeNull();
+    expect(getByText('collecting data — 1 sample so far')).toBeInTheDocument();
+  });
+
+  it('compact mode: fixed small size, no axes, compact placeholder', () => {
+    const { container } = render(
+      <BandSeries points={band([[10, 20], [15, 30], [12, 25]])} kind="hour" compact />);
+    const svg = container.querySelector('svg')!;
+    expect(svg.getAttribute('width')).toBe('120');
+    expect(container.querySelectorAll('text')).toHaveLength(0);
+    expect(container.querySelectorAll('line')).toHaveLength(0);
+    expect(container.querySelectorAll('polyline')).toHaveLength(1);
+    expect(container.querySelectorAll('polygon')).toHaveLength(1);
+
+    const sparse = render(<BandSeries points={band([[10, 20]])} kind="hour" compact />);
+    expect(sparse.container.querySelector('svg')).toBeNull();
+    expect(sparse.getByText('collecting (1)')).toBeInTheDocument();
+  });
+
+  it('tolerates buckets where p90 is missing (band skips, line continues)', () => {
+    const { container } = render(
+      <BandSeries points={[
+        { bucket: hourBucket(0), p50: 10, p90: 20 },
+        { bucket: hourBucket(1), p50: 15, p90: null },
+        { bucket: hourBucket(2), p50: 12, p90: 24 },
+      ]} kind="hour" />);
+    expect(container.querySelectorAll('polyline')).toHaveLength(1); // p50 unbroken
+    expect(container.querySelectorAll('polygon').length).toBeGreaterThanOrEqual(1);
+  });
+});
+
+describe('MultiLine', () => {
+  const series = [
+    { name: 'open', color: 'var(--accent)', points: pts([5, 6, 7]) },
+    { name: 'ci', color: 'var(--amber)', points: pts([2, 3, 1]) },
+    { name: 'failed', color: 'var(--fail)', points: pts([0, 1, 0]) },
+  ];
+
+  it('renders one polyline per series with its own CSS-var stroke', () => {
+    const { container } = render(<MultiLine series={series} kind="hour" />);
+    const lines = container.querySelectorAll('polyline');
+    expect(lines).toHaveLength(3);
+    expect([...lines].map((l) => l.getAttribute('stroke')))
+      .toEqual(['var(--accent)', 'var(--amber)', 'var(--fail)']);
+  });
+
+  it('renders a legend with a color chip and label per series', () => {
+    const { container, getByText } = render(<MultiLine series={series} kind="hour" />);
+    for (const s of series) expect(getByText(s.name)).toBeInTheDocument();
+    const chips = container.querySelectorAll('.legend-chip');
+    expect(chips).toHaveLength(3);
+    expect((chips[0] as HTMLElement).getAttribute('style')).toContain('var(--accent)');
+  });
+
+  it('shares one y scale across series and draws gridlines + ticks', () => {
+    const { container } = render(<MultiLine series={series} kind="hour" />);
+    const texts = [...container.querySelectorAll('text')].map((t) => t.textContent);
+    expect(texts).toContain('7'); // global max across series
+    expect(container.querySelectorAll('line').length).toBeGreaterThanOrEqual(3);
+  });
+
+  it('per-bucket tooltips combine all series values', () => {
+    const { container } = render(<MultiLine series={series} kind="hour" />);
+    const titles = [...container.querySelectorAll('title')].map((t) => t.textContent);
+    const withAll = titles.find((t) => t?.includes('open 5') && t.includes('ci 2') && t.includes('failed 0'));
+    expect(withAll).toBeTruthy();
+  });
+
+  it('renders the sparse placeholder below 3 populated buckets', () => {
+    const sparse = [
+      { name: 'open', color: 'var(--accent)', points: pts([5, null, null]) },
+      { name: 'ci', color: 'var(--amber)', points: pts([2, 3, null]) },
+    ];
+    const { container, getByText } = render(<MultiLine series={sparse} kind="hour" />);
+    expect(container.querySelector('svg')).toBeNull();
+    expect(getByText('collecting data — 2 samples so far')).toBeInTheDocument();
   });
 
   it('contains no animation elements', () => {
-    const { container } = render(<Sparkline points={pts([1, 2, 3])} />);
+    const { container } = render(<MultiLine series={series} kind="hour" />);
     expect(container.querySelector('animate, animateTransform, animateMotion')).toBeNull();
-  });
-});
-
-describe('Bars', () => {
-  it('renders one rect per point, heights proportional to the max', () => {
-    const { container } = render(
-      <Bars points={[{ label: 'a', value: 1 }, { label: 'b', value: 4 }]} height={24} />);
-    const rects = container.querySelectorAll('rect');
-    expect(rects).toHaveLength(2);
-    const h0 = Number(rects[0]!.getAttribute('height'));
-    const h1 = Number(rects[1]!.getAttribute('height'));
-    expect(h1).toBeGreaterThan(h0);
-    expect(h0 / h1).toBeCloseTo(0.25, 5);
-  });
-
-  it('each bar carries a <title> tooltip and zero-value bars stay visible (hairline)', () => {
-    const { container } = render(
-      <Bars points={[{ label: '2026-06-10', value: 0 }, { label: '2026-06-11', value: 2 }]} />);
-    const titles = [...container.querySelectorAll('title')].map((t) => t.textContent);
-    expect(titles).toContain('2026-06-10: 0');
-    expect(titles).toContain('2026-06-11: 2');
-    expect(Number(container.querySelectorAll('rect')[0]!.getAttribute('height'))).toBeGreaterThan(0);
-  });
-
-  it('renders nothing for an empty series', () => {
-    expect(render(<Bars points={[]} />).container.querySelector('svg')).toBeNull();
-  });
-});
-
-describe('DualLine', () => {
-  it('renders two polylines on a shared scale with distinct CSS-var strokes', () => {
-    const a = pts([10, 20]);   // p50
-    const b = pts([20, 40]);   // p90
-    const { container } = render(<DualLine a={a} b={b} width={104} height={44} />);
-    const lines = container.querySelectorAll('polyline');
-    expect(lines).toHaveLength(2);
-    const strokes = [...lines].map((l) => l.getAttribute('stroke'));
-    expect(new Set(strokes).size).toBe(2);
-    expect(strokes.every((s) => s?.startsWith('var(--'))).toBe(true);
-    // shared scale: b's max (40) sits at the top, a's min (10) at the bottom
-    const aPts = lines[0]!.getAttribute('points')!;
-    const bPts = lines[1]!.getAttribute('points')!;
-    expect(aPts.split(' ')[0]).toBe('2,42'); // 10 = global min → bottom
-    expect(bPts.split(' ')[1]).toBe('102,2'); // 40 = global max → top
-  });
-
-  it('tolerates null gaps in either series', () => {
-    const { container } = render(
-      <DualLine a={pts([1, null, 3])} b={pts([2, 4, null])} width={104} height={44} />);
-    // a splits into two isolated dots; b is one 2-point polyline
-    expect(container.querySelectorAll('polyline')).toHaveLength(1);
-    expect(container.querySelectorAll('circle')).toHaveLength(2);
-  });
-
-  it('renders nothing when both series are empty', () => {
-    expect(render(<DualLine a={[]} b={[]} />).container.querySelector('svg')).toBeNull();
   });
 });

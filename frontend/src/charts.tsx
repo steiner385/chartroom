@@ -1,150 +1,302 @@
 /**
- * Pure SVG chart primitives for the Metrics tab (round 12). No chart deps, no
- * animation. Strokes/fills are CSS variables so every chart stays readable in
- * both light and dark themes. Axis-light: min/max labels only; per-point
- * tooltips via `<title>`.
+ * Pure SVG chart components for the Metrics tab. No chart deps, no animation.
+ * Strokes/fills are CSS variables so every chart stays readable in both light
+ * and dark themes.
+ *
+ * Readability (metrics-readability redesign):
+ *  - charts render full panel width (viewBox + width:100%), 120–160 units tall
+ *  - dashed horizontal gridlines at max / mid plus a baseline, each y-labeled
+ *  - x-axis bucket labels at start / middle / end (HH:MM local for hour
+ *    buckets, "Mon D" for day buckets)
+ *  - sparse-data guard: a series with <3 populated buckets renders a
+ *    "collecting data — n samples so far" placeholder instead of floating dots
  */
 
+export type BucketKind = 'hour' | 'day';
+
 export interface ChartPoint {
-  label: string;
-  /** null = gap (no data that day) — lines break instead of bridging. */
+  /** Bucket key — ISO UTC hour (`YYYY-MM-DDTHH`) or day (`YYYY-MM-DD`). */
+  bucket: string;
+  /** null = gap (no data in that bucket) — lines break instead of bridging. */
   value: number | null;
 }
 
-const PAD = 2;          // px inset on every side of the plot box
-const LABEL_FONT = 7;   // min/max label font size
+export interface BandPoint { bucket: string; p50: number | null; p90: number | null }
+
+export interface LineSeries { name: string; color: string; points: ChartPoint[] }
+
+export interface AxisTick { index: number; text: string }
+
+// Geometry is in viewBox units; the svg scales to the panel width (width:100%).
+const VB_W = 1000;
+const PAD_L = 48; const PAD_R = 14; const PAD_T = 12; const PAD_B = 24;
+const FONT = 12;
 
 /** Default value formatter for labels and tooltips. */
 const fmt = (v: number): string => String(Math.round(v * 10) / 10);
 
-interface Scale { x: (i: number) => number; y: (v: number) => number; min: number; max: number; }
+/** Axis label for a bucket key: local HH:MM for hours, "Jun 11" for days. */
+export function formatBucketLabel(bucket: string, kind: BucketKind): string {
+  if (kind === 'hour') {
+    return new Date(`${bucket}:00:00Z`).toLocaleTimeString('en-US',
+      { hour: '2-digit', minute: '2-digit', hour12: false });
+  }
+  return new Date(`${bucket}T00:00:00Z`).toLocaleDateString('en-US',
+    { month: 'short', day: 'numeric', timeZone: 'UTC' });
+}
 
-function makeScale(values: number[], count: number, width: number, height: number): Scale {
-  const min = Math.min(...values);
-  const max = Math.max(...values);
-  const span = max - min || 1;
+/** Tooltip label: day + local time for hour buckets, day for day buckets. */
+export function formatBucketTooltip(bucket: string, kind: BucketKind): string {
+  if (kind === 'hour') {
+    const day = new Date(`${bucket}:00:00Z`).toLocaleDateString('en-US',
+      { month: 'short', day: 'numeric' });
+    return `${day} ${formatBucketLabel(bucket, 'hour')}`;
+  }
+  return formatBucketLabel(bucket, 'day');
+}
+
+/** Start / middle / end x-axis ticks, deduped for short series. */
+export function axisTicks(buckets: string[], kind: BucketKind): AxisTick[] {
+  if (!buckets.length) return [];
+  const idx = [...new Set([0, Math.floor((buckets.length - 1) / 2), buckets.length - 1])];
+  return idx.map((index) => ({ index, text: formatBucketLabel(buckets[index]!, kind) }));
+}
+
+interface Geom { x: (i: number) => number; y: (v: number) => number; h: number }
+
+function makeGeom(count: number, yMax: number, height: number): Geom {
   return {
-    min, max,
-    x: (i) => count === 1 ? width / 2 : PAD + (i * (width - 2 * PAD)) / (count - 1),
-    y: (v) => PAD + ((max - v) * (height - 2 * PAD)) / span,
+    x: (i) => count <= 1 ? PAD_L + (VB_W - PAD_L - PAD_R) / 2
+      : PAD_L + (i * (VB_W - PAD_L - PAD_R)) / (count - 1),
+    y: (v) => height - PAD_B - (v / yMax) * (height - PAD_T - PAD_B),
+    h: height,
   };
 }
 
+/** Sparse-data guard placeholder ("collecting data — n samples so far"). */
+function Placeholder({ n, compact }: { n: number; compact?: boolean }) {
+  return (
+    <div className={compact ? 'chart-placeholder compact' : 'chart-placeholder'}>
+      {compact ? `collecting (${n})` : `collecting data — ${n} sample${n === 1 ? '' : 's'} so far`}
+    </div>
+  );
+}
+
+/** Dashed gridlines at max + mid, a solid baseline at 0, all y-labeled. */
+function GridAndAxes({ geom, yMax, format, ticks, count }: {
+  geom: Geom; yMax: number; format: (v: number) => string; ticks: AxisTick[]; count: number;
+}) {
+  const yLabel = (v: number, solid = false) => (
+    <g key={`y${v}`}>
+      <line x1={PAD_L} x2={VB_W - PAD_R} y1={geom.y(v)} y2={geom.y(v)}
+        stroke="var(--border)" strokeDasharray={solid ? undefined : '3 4'} />
+      <text x={PAD_L - 7} y={geom.y(v) + FONT / 2 - 1} textAnchor="end" fontSize={FONT}
+        fill="var(--muted)">{format(v)}</text>
+    </g>
+  );
+  return (
+    <g>
+      {yLabel(yMax)}
+      {yLabel(yMax / 2)}
+      {yLabel(0, true)}
+      {ticks.map((t) => (
+        <text key={`x${t.index}`} x={geom.x(t.index)} y={geom.h - 6}
+          textAnchor={t.index === 0 ? 'start' : t.index === count - 1 ? 'end' : 'middle'}
+          fontSize={FONT} fill="var(--muted)">{t.text}</text>
+      ))}
+    </g>
+  );
+}
+
 /** Consecutive non-null runs of a series: [startIndex, values[]] segments. */
-function segments(points: ChartPoint[]): { start: number; values: number[] }[] {
+function segments(values: (number | null)[]): { start: number; values: number[] }[] {
   const out: { start: number; values: number[] }[] = [];
   let current: { start: number; values: number[] } | null = null;
-  points.forEach((p, i) => {
-    if (p.value == null) { current = null; return; }
+  values.forEach((v, i) => {
+    if (v == null) { current = null; return; }
     if (!current) { current = { start: i, values: [] }; out.push(current); }
-    current.values.push(p.value);
+    current.values.push(v);
   });
   return out;
 }
 
 /** One series' segments as polylines (runs) and circles (isolated points). */
-function seriesShapes(points: ChartPoint[], scale: Scale, stroke: string, keyPrefix: string) {
-  return segments(points).map((seg, si) => {
+function lineShapes(values: (number | null)[], geom: Geom, stroke: string, keyPrefix: string) {
+  return segments(values).map((seg, si) => {
     if (seg.values.length === 1) {
-      return <circle key={`${keyPrefix}c${si}`} cx={scale.x(seg.start)} cy={scale.y(seg.values[0]!)}
-        r={1.5} fill={stroke} />;
+      return <circle key={`${keyPrefix}c${si}`} cx={geom.x(seg.start)} cy={geom.y(seg.values[0]!)}
+        r={3.5} fill={stroke} />;
     }
-    const pts = seg.values
-      .map((v, j) => `${scale.x(seg.start + j)},${scale.y(v)}`).join(' ');
+    const pts = seg.values.map((v, j) => `${geom.x(seg.start + j)},${geom.y(v)}`).join(' ');
     return <polyline key={`${keyPrefix}l${si}`} points={pts} fill="none"
-      stroke={stroke} strokeWidth={1.5} />;
+      stroke={stroke} strokeWidth={2} />;
   });
 }
 
-/** Invisible hover targets carrying the per-point `<title>` tooltips. */
-function tooltipTargets(points: ChartPoint[], scale: Scale, height: number,
-  format: (v: number) => string) {
-  const step = points.length > 1 ? scale.x(1) - scale.x(0) : 0;
-  return points.map((p, i) => p.value == null ? null : (
-    <rect key={`t${i}`} x={scale.x(i) - step / 2} y={0} width={Math.max(step, 4)} height={height}
-      fill="transparent">
-      <title>{`${p.label}: ${format(p.value)}`}</title>
-    </rect>
-  ));
+/** Invisible hover targets carrying per-bucket `<title>` tooltips. */
+function tooltipTargets(buckets: string[], geom: Geom, kind: BucketKind,
+  text: (i: number) => string | null) {
+  const step = buckets.length > 1 ? geom.x(1) - geom.x(0) : VB_W - PAD_L - PAD_R;
+  return buckets.map((_, i) => {
+    const t = text(i);
+    return t == null ? null : (
+      <rect key={`t${i}`} x={geom.x(i) - step / 2} y={0} width={Math.max(step, 4)} height={geom.h}
+        fill="transparent">
+        <title>{t}</title>
+      </rect>
+    );
+  });
 }
 
-function minMaxLabels(scale: Scale, width: number, height: number, format: (v: number) => string) {
-  return (
-    <>
-      <text x={width - PAD} y={PAD + LABEL_FONT} textAnchor="end" fontSize={LABEL_FONT}
-        fill="var(--muted)">{format(scale.max)}</text>
-      <text x={width - PAD} y={height - PAD} textAnchor="end" fontSize={LABEL_FONT}
-        fill="var(--muted)">{format(scale.min)}</text>
-    </>
-  );
-}
-
-export function Sparkline({ points, width = 140, height = 32, color = 'var(--accent)',
-  format = fmt, label }: {
-  points: ChartPoint[]; width?: number; height?: number; color?: string;
+/**
+ * Counts / single-percentile series over time: line + soft area fill down to
+ * the zero baseline. `populated` overrides the sparse-data count for series
+ * that were zero-filled onto the full window axis (real sample count).
+ */
+export function AreaSeries({ points, kind, height = 140, color = 'var(--accent)',
+  format = fmt, label, populated }: {
+  points: ChartPoint[]; kind: BucketKind; height?: number; color?: string;
   format?: (v: number) => string;
   /** Accessible name for the chart (aria-label). */
   label?: string;
+  /** Real sample count behind the series (sparse-data guard override). */
+  populated?: number;
 }) {
-  const values = points.flatMap((p) => (p.value == null ? [] : [p.value]));
-  if (!values.length) return null;
-  const scale = makeScale(values, points.length, width, height);
+  const values = points.map((p) => p.value);
+  const present = values.filter((v): v is number => v != null);
+  const n = populated ?? present.length;
+  if (n < 3) return <Placeholder n={n} />;
+  const yMax = Math.max(...present, 0) || 1;
+  const geom = makeGeom(points.length, yMax, height);
+  const yBase = geom.y(0);
   return (
-    <svg className="sparkline" width={width} height={height} viewBox={`0 0 ${width} ${height}`}
+    <svg className="chart-svg" width="100%" viewBox={`0 0 ${VB_W} ${height}`}
       role="img" aria-label={label}>
-      {seriesShapes(points, scale, color, 's')}
-      {minMaxLabels(scale, width, height, format)}
-      {tooltipTargets(points, scale, height, format)}
+      <GridAndAxes geom={geom} yMax={yMax} format={format}
+        ticks={axisTicks(points.map((p) => p.bucket), kind)} count={points.length} />
+      {segments(values).map((seg, si) => {
+        if (seg.values.length === 1) return null; // the dot from lineShapes suffices
+        const top = seg.values.map((v, j) => `${geom.x(seg.start + j)},${geom.y(v)}`).join(' ');
+        const closing = `${geom.x(seg.start + seg.values.length - 1)},${yBase} ${geom.x(seg.start)},${yBase}`;
+        return <polygon key={`a${si}`} points={`${top} ${closing}`} fill={color} fillOpacity={0.14} />;
+      })}
+      {lineShapes(values, geom, color, 's')}
+      {tooltipTargets(points.map((p) => p.bucket), geom, kind, (i) =>
+        points[i]!.value == null ? null
+          : `${formatBucketTooltip(points[i]!.bucket, kind)}: ${format(points[i]!.value!)}`)}
     </svg>
   );
 }
 
-export function Bars({ points, width = 140, height = 32, color = 'var(--accent)',
-  format = fmt, label }: {
-  points: { label: string; value: number }[]; width?: number; height?: number; color?: string;
+/**
+ * Percentile series with spread: solid p50 line + shaded p50→p90 band (same
+ * visual language as the Gantt expected-duration band). `compact` renders a
+ * small fixed-size variant for table cells (no axes, no caption).
+ */
+export function BandSeries({ points, kind, height = 140, color = 'var(--accent)',
+  format = fmt, label, compact = false }: {
+  points: BandPoint[]; kind: BucketKind; height?: number; color?: string;
+  format?: (v: number) => string; label?: string; compact?: boolean;
+}) {
+  const p50s = points.map((p) => p.p50);
+  const n = p50s.filter((v) => v != null).length;
+  if (n < 3) return <Placeholder n={n} compact={compact} />;
+  const present = points.flatMap((p) => [p.p50, p.p90]).filter((v): v is number => v != null);
+  const yMax = Math.max(...present, 0) || 1;
+
+  const W = compact ? 120 : VB_W;
+  const H = compact ? 26 : height;
+  const padL = compact ? 2 : PAD_L; const padR = compact ? 2 : PAD_R;
+  const padT = compact ? 3 : PAD_T; const padB = compact ? 3 : PAD_B;
+  const geom: Geom = {
+    x: (i) => points.length <= 1 ? padL + (W - padL - padR) / 2
+      : padL + (i * (W - padL - padR)) / (points.length - 1),
+    y: (v) => H - padB - (v / yMax) * (H - padT - padB),
+    h: H,
+  };
+
+  // Band polygons per contiguous run where BOTH p50 and p90 are present:
+  // top edge follows p90 left→right, bottom edge follows p50 right→left.
+  const bandIdx = points.map((p, i) => (p.p50 != null && p.p90 != null ? i : null));
+  const bandRuns: number[][] = [];
+  let run: number[] = [];
+  for (const i of bandIdx) {
+    if (i == null) { if (run.length) { bandRuns.push(run); run = []; } continue; }
+    run.push(i);
+  }
+  if (run.length) bandRuns.push(run);
+
+  const svg = (
+    <svg className={compact ? 'chart-svg-compact' : 'chart-svg'}
+      width={compact ? W : '100%'} height={compact ? H : undefined}
+      viewBox={`0 0 ${W} ${H}`} role="img" aria-label={label}>
+      {!compact && (
+        <GridAndAxes geom={geom} yMax={yMax} format={format}
+          ticks={axisTicks(points.map((p) => p.bucket), kind)} count={points.length} />
+      )}
+      {bandRuns.map((idxs, bi) => {
+        const top = idxs.map((i) => `${geom.x(i)},${geom.y(points[i]!.p90!)}`).join(' ');
+        const back = [...idxs].reverse().map((i) => `${geom.x(i)},${geom.y(points[i]!.p50!)}`).join(' ');
+        return <polygon key={`b${bi}`} points={`${top} ${back}`}
+          fill={color} fillOpacity={0.18} stroke={color} strokeOpacity={0.25} strokeWidth={1} />;
+      })}
+      {lineShapes(p50s, geom, color, 'p')}
+      {tooltipTargets(points.map((p) => p.bucket), geom, kind, (i) => {
+        const pt = points[i]!;
+        if (pt.p50 == null) return null;
+        const spread = pt.p90 != null ? ` (p90 ${format(pt.p90)})` : '';
+        return `${formatBucketTooltip(pt.bucket, kind)}: p50 ${format(pt.p50)}${spread}`;
+      })}
+    </svg>
+  );
+  if (compact) return svg;
+  return (
+    <div className="chart-frame">
+      {svg}
+      <div className="chart-caption">line = p50 · band = p50–p90</div>
+    </div>
+  );
+}
+
+/**
+ * Several aligned series on one shared scale, with a color-chip legend —
+ * the Trends panel's open/ci/queue/failed multi-line chart.
+ */
+export function MultiLine({ series, kind, height = 160, format = fmt, label }: {
+  series: LineSeries[]; kind: BucketKind; height?: number;
   format?: (v: number) => string; label?: string;
 }) {
-  if (!points.length) return null;
-  const max = Math.max(...points.map((p) => p.value), 1);
-  const innerH = height - 2 * PAD;
-  const slot = (width - 2 * PAD) / points.length;
-  const barW = Math.max(slot - 2, 1);
+  const count = Math.max(...series.map((s) => s.points.length), 0);
+  const buckets = (series[0]?.points ?? []).map((p) => p.bucket);
+  // populated = buckets where ANY series has a value
+  const populated = buckets.filter((_, i) =>
+    series.some((s) => s.points[i]?.value != null)).length;
+  if (populated < 3) return <Placeholder n={populated} />;
+  const present = series.flatMap((s) => s.points)
+    .map((p) => p.value).filter((v): v is number => v != null);
+  const yMax = Math.max(...present, 0) || 1;
+  const geom = makeGeom(count, yMax, height);
   return (
-    <svg className="bars" width={width} height={height} viewBox={`0 0 ${width} ${height}`}
-      role="img" aria-label={label}>
-      {points.map((p, i) => {
-        // zero-value days stay visible as a 1px hairline (a gap reads as "no data")
-        const h = Math.max((p.value / max) * innerH, 1);
-        return (
-          <rect key={i} x={PAD + i * slot + (slot - barW) / 2} y={height - PAD - h}
-            width={barW} height={h} fill={color}>
-            <title>{`${p.label}: ${format(p.value)}`}</title>
-          </rect>
-        );
-      })}
-      <text x={width - PAD} y={PAD + LABEL_FONT} textAnchor="end" fontSize={LABEL_FONT}
-        fill="var(--muted)">{format(max)}</text>
-    </svg>
-  );
-}
-
-/** Two aligned series (p50/p90 pairs) on a shared scale. */
-export function DualLine({ a, b, width = 220, height = 48,
-  colorA = 'var(--accent)', colorB = 'var(--amber)', format = fmt, label }: {
-  a: ChartPoint[]; b: ChartPoint[]; width?: number; height?: number;
-  colorA?: string; colorB?: string; format?: (v: number) => string; label?: string;
-}) {
-  const values = [...a, ...b].flatMap((p) => (p.value == null ? [] : [p.value]));
-  if (!values.length) return null;
-  const count = Math.max(a.length, b.length);
-  const scale = makeScale(values, count, width, height);
-  return (
-    <svg className="dual-line" width={width} height={height} viewBox={`0 0 ${width} ${height}`}
-      role="img" aria-label={label}>
-      {seriesShapes(a, scale, colorA, 'a')}
-      {seriesShapes(b, scale, colorB, 'b')}
-      {minMaxLabels(scale, width, height, format)}
-      {tooltipTargets(a, scale, height, format)}
-    </svg>
+    <div className="chart-frame">
+      <svg className="chart-svg" width="100%" viewBox={`0 0 ${VB_W} ${height}`}
+        role="img" aria-label={label}>
+        <GridAndAxes geom={geom} yMax={yMax} format={format}
+          ticks={axisTicks(buckets, kind)} count={count} />
+        {series.map((s, si) => lineShapes(s.points.map((p) => p.value), geom, s.color, `s${si}`))}
+        {tooltipTargets(buckets, geom, kind, (i) => {
+          const parts = series.flatMap((s) =>
+            s.points[i]?.value == null ? [] : [`${s.name} ${format(s.points[i]!.value!)}`]);
+          return parts.length ? `${formatBucketTooltip(buckets[i]!, kind)} — ${parts.join(' · ')}` : null;
+        })}
+      </svg>
+      <div className="chart-legend">
+        {series.map((s) => (
+          <span key={s.name} className="legend-item">
+            <i className="legend-chip" style={{ background: s.color }} aria-hidden="true" />
+            {s.name}
+          </span>
+        ))}
+      </div>
+    </div>
   );
 }

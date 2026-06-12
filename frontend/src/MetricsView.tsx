@@ -1,41 +1,66 @@
 import { useEffect, useState, type ReactNode } from 'react';
-import type { MetricsPayload } from './types';
-import { Sparkline, Bars, DualLine, type ChartPoint } from './charts';
+import type { HeadlineStat, MetricsBucket, MetricsPayload, MetricsWindow } from './types';
+import {
+  AreaSeries, BandSeries, MultiLine,
+  type BandPoint, type ChartPoint, type LineSeries,
+} from './charts';
 import { formatDur } from './format';
 
-const WINDOWS = [7, 14, 30] as const;
-type WindowDays = (typeof WINDOWS)[number];
+const WINDOWS = ['24h', '3d', '7d', '14d', '30d'] as const;
+const WINDOW_DAYS: Record<MetricsWindow, number> = {
+  '24h': 1, '3d': 3, '7d': 7, '14d': 14, '30d': 30,
+};
+/** Mirrors the server clamp: hour buckets only for windows ≤ 7 days. */
+const HOUR_BUCKET_MAX_DAYS = 7;
 
-/** The window's UTC dates (YYYY-MM-DD), oldest first — the shared x-axis. */
-function windowDates(windowDays: number, now: Date = new Date()): string[] {
+/** The window's full bucket axis (UTC keys), oldest first. */
+function windowBuckets(window: MetricsWindow, bucket: MetricsBucket, now: Date): string[] {
+  const days = WINDOW_DAYS[window];
   const out: string[] = [];
-  for (let i = windowDays - 1; i >= 0; i--) {
-    out.push(new Date(now.getTime() - i * 86400_000).toISOString().slice(0, 10));
+  if (bucket === 'day') {
+    for (let i = days - 1; i >= 0; i--) {
+      out.push(new Date(now.getTime() - i * 86400_000).toISOString().slice(0, 10));
+    }
+  } else {
+    for (let i = days * 24 - 1; i >= 0; i--) {
+      out.push(new Date(now.getTime() - i * 3600_000).toISOString().slice(0, 13));
+    }
   }
   return out;
 }
 
-/** Align sparse day buckets onto the full window axis; missing days → null gaps. */
-function alignDays<T extends { date: string }>(dates: string[], days: T[],
-  pick: (d: T) => number): ChartPoint[] {
-  const byDate = new Map(days.map((d) => [d.date, pick(d)]));
-  return dates.map((date) => ({ label: date, value: byDate.get(date) ?? null }));
+/** Align sparse buckets onto the full window axis; missing buckets → null gaps. */
+function align<T extends { bucket: string }>(axis: string[], rows: T[],
+  pick: (r: T) => number): ChartPoint[] {
+  const by = new Map(rows.map((r) => [r.bucket, pick(r)]));
+  return axis.map((bucket) => ({ bucket, value: by.get(bucket) ?? null }));
 }
 
-/** Bars want a count for every day — missing days are real zeroes, not gaps. */
-function alignCounts(dates: string[], days: { date: string; count: number }[]):
-  { label: string; value: number }[] {
-  const byDate = new Map(days.map((d) => [d.date, d.count]));
-  return dates.map((date) => ({ label: date, value: byDate.get(date) ?? 0 }));
+/** Count series: missing buckets are real zeroes, not gaps. */
+function alignCounts(axis: string[], rows: { bucket: string; count: number }[]): ChartPoint[] {
+  const by = new Map(rows.map((r) => [r.bucket, r.count]));
+  return axis.map((bucket) => ({ bucket, value: by.get(bucket) ?? 0 }));
 }
 
-/** Lower median (same convention as server/math.ts). */
-function median(xs: number[]): number {
-  const s = [...xs].sort((a, b) => a - b);
-  return s[Math.floor((s.length - 1) / 2)]!;
+/** p50/p90 buckets onto the full axis for the band charts. */
+function alignBand(axis: string[], rows: { bucket: string; p50: number; p90?: number }[]): BandPoint[] {
+  const by = new Map(rows.map((r) => [r.bucket, r]));
+  return axis.map((bucket) => {
+    const r = by.get(bucket);
+    return { bucket, p50: r?.p50 ?? null, p90: r?.p90 ?? null };
+  });
+}
+
+/** "+50% vs prev" / "≈ prev"; null when the delta isn't computable. */
+function deltaText(stat: HeadlineStat): string | null {
+  if (stat.value == null || stat.prev == null || stat.prev === 0) return null;
+  const pct = Math.round(((stat.value - stat.prev) / stat.prev) * 100);
+  if (pct === 0) return '≈ prev';
+  return `${pct > 0 ? '+' : ''}${pct}% vs prev`;
 }
 
 const fmtHours = (h: number): string => formatDur(h * 3600);
+const fmtCount = (v: number): string => String(Math.round(v));
 
 function Panel({ title, empty, children }: {
   title: string; empty: boolean; children: ReactNode;
@@ -48,25 +73,52 @@ function Panel({ title, empty, children }: {
   );
 }
 
-function MetricStat({ label, value }: { label: string; value: string }) {
+function MetricStat({ label, value, delta }: {
+  label: string; value: string; delta?: string | null;
+}) {
   return (
     <div className="metric-stat">
       <b>{value}</b>
       <span>{label}</span>
+      {delta != null && <em className="metric-delta">{delta}</em>}
     </div>
   );
 }
 
-export function MetricsView() {
-  const [windowDays, setWindowDays] = useState<WindowDays>(14);
+/** Labeled full-width chart block inside a repo sub-section. */
+function ChartBlock({ label, children }: { label: string; children: ReactNode }) {
+  return (
+    <div className="metric-chart-block">
+      <span className="metric-label">{label}</span>
+      {children}
+    </div>
+  );
+}
+
+const TREND_SERIES = [
+  { key: 'open', color: 'var(--accent)' },
+  { key: 'ci', color: 'var(--amber)' },
+  { key: 'queue', color: 'var(--purple)' },
+  { key: 'failed', color: 'var(--fail)' },
+] as const;
+
+export function MetricsView({ now }: {
+  /** Injectable clock (tests) — the window axis is derived from it. */
+  now?: () => Date;
+} = {}) {
+  const [window, setWindow] = useState<MetricsWindow>('3d');
+  const [bucketPref, setBucketPref] = useState<MetricsBucket>('hour');
   const [payload, setPayload] = useState<MetricsPayload | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [refreshTick, setRefreshTick] = useState(0);
 
+  const hourDisabled = WINDOW_DAYS[window] > HOUR_BUCKET_MAX_DAYS;
+  const bucket: MetricsBucket = hourDisabled ? 'day' : bucketPref;
+
   useEffect(() => {
     let cancelled = false;
     setError(null);
-    fetch(`/api/metrics?windowDays=${windowDays}`)
+    fetch(`/api/metrics?window=${window}&bucket=${bucket}`)
       .then((res) => {
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         return res.json() as Promise<MetricsPayload>;
@@ -76,16 +128,30 @@ export function MetricsView() {
         if (!cancelled) setError(e instanceof Error ? e.message : String(e));
       });
     return () => { cancelled = true; };
-  }, [windowDays, refreshTick]);
+  }, [window, bucket, refreshTick]);
 
   const controls = (
     <div className="metrics-controls">
-      {WINDOWS.map((w) => (
-        <button key={w} type="button" className="metrics-window-btn"
-          aria-pressed={windowDays === w} onClick={() => setWindowDays(w)}>
-          {w}d
+      <div className="metrics-group" role="group" aria-label="Window">
+        {WINDOWS.map((w) => (
+          <button key={w} type="button" className="metrics-window-btn"
+            aria-pressed={window === w} onClick={() => setWindow(w)}>
+            {w}
+          </button>
+        ))}
+      </div>
+      <span className="metrics-sep" aria-hidden="true" />
+      <div className="metrics-group" role="group" aria-label="Bucket size">
+        <button type="button" className="metrics-window-btn" disabled={hourDisabled}
+          title={hourDisabled ? 'hourly buckets are available for windows up to 7d' : undefined}
+          aria-pressed={bucket === 'hour'} onClick={() => setBucketPref('hour')}>
+          hourly
         </button>
-      ))}
+        <button type="button" className="metrics-window-btn"
+          aria-pressed={bucket === 'day'} onClick={() => setBucketPref('day')}>
+          daily
+        </button>
+      </div>
       <button type="button" className="metrics-refresh" aria-label="Refresh metrics"
         onClick={() => setRefreshTick((t) => t + 1)}>
         ↻
@@ -110,25 +176,50 @@ export function MetricsView() {
     );
   }
 
-  const dates = windowDates(payload.windowDays);
+  const kind = payload.bucket;
+  const noun = kind === 'hour' ? 'hour' : 'day';
+  const axis = windowBuckets(payload.window, payload.bucket, (now ?? (() => new Date()))());
 
-  // group runner waits by repo so each repo renders one sub-section with its event tiers
+  // Repos with zero data in a panel are omitted entirely (not zero rows).
+  const trendRepos = payload.trends.filter((t) => t.points.length);
   const runnerByRepo = new Map<string, typeof payload.runnerWaits>();
   for (const rw of payload.runnerWaits) {
-    if (!rw.days.length) continue;
+    if (!rw.buckets.length) continue;
     runnerByRepo.set(rw.repo, [...(runnerByRepo.get(rw.repo) ?? []), rw]);
   }
-
   const queueRepos = payload.queue.filter((q) =>
-    q.mergesPerDay.length || q.queueWaitDays.length || q.groupRunDays.length);
+    q.mergesPerBucket.length || q.queueWaitBuckets.length || q.groupRunBuckets.length);
   const jobRepos = payload.slowestJobs.filter((r) => r.jobs.length);
   const velocityRepos = payload.velocity.filter((v) =>
-    v.mergedPerDay.length || v.mergeToQaDays.length || v.avgLifespanDays.length);
-  const trendRepos = payload.trends.filter((t) => t.samples.length);
+    v.mergedPerBucket.length || v.mergeToQaBuckets.length || v.avgLifespanBuckets.length);
 
   return (
     <div className="metrics">
       {controls}
+
+      <Panel title="Trends" empty={trendRepos.length === 0}>
+        {trendRepos.map((t) => {
+          const latest = t.points[t.points.length - 1]!;
+          const series: LineSeries[] = TREND_SERIES.map((s) => ({
+            name: s.key, color: s.color,
+            points: align(axis, t.points, (p) => p[s.key]),
+          }));
+          return (
+            <div key={t.repo} className="metric-repo">
+              <h3>{t.repo}</h3>
+              <div className="metric-row">
+                {TREND_SERIES.map((s) => (
+                  <MetricStat key={s.key} label={s.key} value={String(latest[s.key])} />
+                ))}
+              </div>
+              <ChartBlock label={`PRs by state per ${noun}`}>
+                <MultiLine series={series} kind={kind}
+                  label={`${t.repo} open/ci/queue/failed PR counts per ${noun}`} />
+              </ChartBlock>
+            </div>
+          );
+        })}
+      </Panel>
 
       <Panel title="Runner-wait health" empty={runnerByRepo.size === 0}>
         {[...runnerByRepo.entries()].map(([repo, tiers]) => (
@@ -136,17 +227,18 @@ export function MetricsView() {
             <h3>{repo}</h3>
             <div className="metric-row">
               {tiers.map((tier) => (
-                <div key={tier.event} className="metric-cell">
-                  <MetricStat label={tier.event}
-                    value={formatDur(median(tier.days.map((d) => d.p50)))} />
-                  <DualLine
-                    a={alignDays(dates, tier.days, (d) => d.p50)}
-                    b={alignDays(dates, tier.days, (d) => d.p90)}
-                    format={formatDur}
-                    label={`${repo} ${tier.event} runner wait p50/p90 by day`} />
-                </div>
+                <MetricStat key={tier.event} label={`${tier.event} p50 wait`}
+                  value={tier.p50.value != null ? formatDur(tier.p50.value) : '–'}
+                  delta={deltaText(tier.p50)} />
               ))}
             </div>
+            {tiers.map((tier) => (
+              <ChartBlock key={tier.event} label={`${tier.event} wait per ${noun}`}>
+                <BandSeries points={alignBand(axis, tier.buckets)} kind={kind}
+                  format={formatDur}
+                  label={`${repo} ${tier.event} runner wait p50/p90 per ${noun}`} />
+              </ChartBlock>
+            ))}
           </div>
         ))}
       </Panel>
@@ -156,22 +248,28 @@ export function MetricsView() {
           <div key={q.repo} className="metric-repo">
             <h3>{q.repo}</h3>
             <div className="metric-row">
-              <div className="metric-cell">
-                <span className="metric-label">merges / day</span>
-                <Bars points={alignCounts(dates, q.mergesPerDay)}
-                  label={`${q.repo} merges per day`} />
-              </div>
-              <div className="metric-cell">
-                <span className="metric-label">time in queue (p50)</span>
-                <Sparkline points={alignDays(dates, q.queueWaitDays, (d) => d.p50)}
-                  format={formatDur} label={`${q.repo} time in queue p50 by day`} />
-              </div>
-              <div className="metric-cell">
-                <span className="metric-label">group run (p50)</span>
-                <Sparkline points={alignDays(dates, q.groupRunDays, (d) => d.p50)}
-                  format={formatDur} label={`${q.repo} merge-group run p50 by day`} />
-              </div>
+              <MetricStat label="merges" value={String(q.merges.value ?? 0)}
+                delta={deltaText(q.merges)} />
+              <MetricStat label="time in queue (p50)"
+                value={q.queueWaitP50.value != null ? formatDur(q.queueWaitP50.value) : '–'}
+                delta={deltaText(q.queueWaitP50)} />
+              <MetricStat label="group run (p50)"
+                value={q.groupRunP50.value != null ? formatDur(q.groupRunP50.value) : '–'}
+                delta={deltaText(q.groupRunP50)} />
             </div>
+            <ChartBlock label={`merges per ${noun}`}>
+              <AreaSeries points={alignCounts(axis, q.mergesPerBucket)} kind={kind}
+                format={fmtCount} populated={q.mergesPerBucket.length}
+                label={`${q.repo} merges per ${noun}`} />
+            </ChartBlock>
+            <ChartBlock label={`time in queue (p50) per ${noun}`}>
+              <AreaSeries points={align(axis, q.queueWaitBuckets, (b) => b.p50)} kind={kind}
+                format={formatDur} label={`${q.repo} time in queue p50 per ${noun}`} />
+            </ChartBlock>
+            <ChartBlock label={`merge-group run (p50) per ${noun}`}>
+              <AreaSeries points={align(axis, q.groupRunBuckets, (b) => b.p50)} kind={kind}
+                format={formatDur} label={`${q.repo} merge-group run p50 per ${noun}`} />
+            </ChartBlock>
           </div>
         ))}
       </Panel>
@@ -184,7 +282,7 @@ export function MetricsView() {
               <thead>
                 <tr>
                   <th>job</th><th>event</th><th>p50</th><th>p90</th>
-                  <th>p90/p50</th><th>n</th><th>trend</th>
+                  <th>p90/p50</th><th>n</th><th>trend (p50 + band)</th>
                 </tr>
               </thead>
               <tbody>
@@ -198,10 +296,9 @@ export function MetricsView() {
                       {j.variability.toFixed(1)}×
                     </td>
                     <td>{j.n}</td>
-                    <td>
-                      <Sparkline points={alignDays(dates, j.trend, (d) => d.p50)}
-                        width={90} height={20} format={formatDur}
-                        label={`${j.name} p50 trend`} />
+                    <td className="metric-trend-cell">
+                      <BandSeries compact points={alignBand(axis, j.trend)} kind={kind}
+                        format={formatDur} label={`${j.name} p50 trend`} />
                     </td>
                   </tr>
                 ))}
@@ -216,48 +313,30 @@ export function MetricsView() {
           <div key={v.repo} className="metric-repo">
             <h3>{v.repo}</h3>
             <div className="metric-row">
-              <div className="metric-cell">
-                <span className="metric-label">merged / day</span>
-                <Bars points={alignCounts(dates, v.mergedPerDay)}
-                  label={`${v.repo} merged per day`} />
-              </div>
-              <div className="metric-cell">
-                <span className="metric-label">merge → QA (p50)</span>
-                <Sparkline points={alignDays(dates, v.mergeToQaDays, (d) => d.p50)}
-                  format={formatDur} label={`${v.repo} merge to QA p50 by day`} />
-              </div>
-              <div className="metric-cell">
-                <span className="metric-label">avg PR lifespan</span>
-                <Sparkline points={alignDays(dates, v.avgLifespanDays, (d) => d.meanHours)}
-                  format={fmtHours} label={`${v.repo} average PR lifespan by day`} />
-              </div>
+              <MetricStat label="merged" value={String(v.merged.value ?? 0)}
+                delta={deltaText(v.merged)} />
+              <MetricStat label="merge → QA (p50)"
+                value={v.mergeToQaP50.value != null ? formatDur(v.mergeToQaP50.value) : '–'}
+                delta={deltaText(v.mergeToQaP50)} />
+              <MetricStat label="avg PR lifespan"
+                value={v.lifespanMeanHours.value != null ? fmtHours(v.lifespanMeanHours.value) : '–'}
+                delta={deltaText(v.lifespanMeanHours)} />
             </div>
+            <ChartBlock label={`merged per ${noun}`}>
+              <AreaSeries points={alignCounts(axis, v.mergedPerBucket)} kind={kind}
+                format={fmtCount} populated={v.mergedPerBucket.length}
+                label={`${v.repo} merged per ${noun}`} />
+            </ChartBlock>
+            <ChartBlock label={`merge → QA (p50) per ${noun}`}>
+              <AreaSeries points={align(axis, v.mergeToQaBuckets, (b) => b.p50)} kind={kind}
+                format={formatDur} label={`${v.repo} merge to QA p50 per ${noun}`} />
+            </ChartBlock>
+            <ChartBlock label={`avg PR lifespan per ${noun}`}>
+              <AreaSeries points={align(axis, v.avgLifespanBuckets, (b) => b.meanHours)} kind={kind}
+                format={fmtHours} label={`${v.repo} average PR lifespan per ${noun}`} />
+            </ChartBlock>
           </div>
         ))}
-      </Panel>
-
-      <Panel title="Trends" empty={trendRepos.length === 0}>
-        {trendRepos.map((t) => {
-          const counters = ['open', 'ci', 'queue', 'failed'] as const;
-          const latest = t.samples[t.samples.length - 1]!;
-          return (
-            <div key={t.repo} className="metric-repo">
-              <h3>{t.repo}</h3>
-              <div className="metric-row">
-                {counters.map((counter) => (
-                  <div key={counter} className="metric-cell">
-                    <MetricStat label={counter} value={String(latest[counter])} />
-                    <Sparkline
-                      points={t.samples.map((s) => ({
-                        label: new Date(s.at).toLocaleString(), value: s[counter] }))}
-                      format={(v) => String(Math.round(v))}
-                      label={`${t.repo} ${counter} PRs over time`} />
-                  </div>
-                ))}
-              </div>
-            </div>
-          );
-        })}
       </Panel>
     </div>
   );

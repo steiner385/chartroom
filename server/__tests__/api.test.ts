@@ -409,10 +409,10 @@ describe('POST /api/admin/restart', () => {
 // Round 12 (metrics tab): GET /api/metrics
 // ---------------------------------------------------------------------------
 
-import type { MetricsPayload } from '../metrics';
+import type { MetricsBucket, MetricsPayload, MetricsWindow } from '../metrics';
 
-const EMPTY_METRICS = (w: number): MetricsPayload =>
-  ({ windowDays: w, runnerWaits: [], queue: [], slowestJobs: [], velocity: [], trends: [] });
+const EMPTY_METRICS = (w: MetricsWindow, b: MetricsBucket): MetricsPayload =>
+  ({ window: w, bucket: b, runnerWaits: [], queue: [], slowestJobs: [], velocity: [], trends: [] });
 
 describe('GET /api/metrics', () => {
   function metricsApp() {
@@ -421,29 +421,36 @@ describe('GET /api/metrics', () => {
     return { app, metrics };
   }
 
-  it('defaults to a 14-day window', async () => {
+  it('defaults to window=3d bucket=hour', async () => {
     const { app, metrics } = metricsApp();
     const res = await request(app).get('/api/metrics');
     expect(res.status).toBe(200);
-    expect(metrics).toHaveBeenCalledWith(14);
-    expect(res.body).toEqual(EMPTY_METRICS(14));
+    expect(metrics).toHaveBeenCalledWith('3d', 'hour');
+    expect(res.body).toEqual(EMPTY_METRICS('3d', 'hour'));
   });
 
-  it('accepts windowDays 7/14/30', async () => {
+  it('accepts window + bucket query params', async () => {
     const { app, metrics } = metricsApp();
-    for (const w of [7, 14, 30]) {
-      const res = await request(app).get(`/api/metrics?windowDays=${w}`);
-      expect(res.status).toBe(200);
-      expect(res.body.windowDays).toBe(w);
-    }
-    expect(metrics.mock.calls.map((c) => c[0])).toEqual([7, 14, 30]);
+    const res = await request(app).get('/api/metrics?window=7d&bucket=day');
+    expect(res.status).toBe(200);
+    expect(metrics).toHaveBeenCalledWith('7d', 'day');
+    expect(res.body.window).toBe('7d');
+    expect(res.body.bucket).toBe('day');
   });
 
-  it('clamps out-of-set values and rejects garbage to the default', async () => {
-    const { app } = metricsApp();
-    expect((await request(app).get('/api/metrics?windowDays=999')).body.windowDays).toBe(30);
-    expect((await request(app).get('/api/metrics?windowDays=1')).body.windowDays).toBe(7);
-    expect((await request(app).get('/api/metrics?windowDays=abc')).body.windowDays).toBe(14);
+  it('clamps hour buckets to day for windows > 7d', async () => {
+    const { app, metrics } = metricsApp();
+    const res = await request(app).get('/api/metrics?window=14d&bucket=hour');
+    expect(metrics).toHaveBeenCalledWith('14d', 'day');
+    expect(res.body.bucket).toBe('day');
+  });
+
+  it('back-compat: accepts legacy windowDays values', async () => {
+    const { app, metrics } = metricsApp();
+    expect((await request(app).get('/api/metrics?windowDays=7')).body.window).toBe('7d');
+    expect((await request(app).get('/api/metrics?windowDays=30')).body.window).toBe('30d');
+    expect((await request(app).get('/api/metrics?windowDays=999')).body.window).toBe('30d');
+    expect(metrics.mock.calls).toEqual([['7d', 'hour'], ['30d', 'day'], ['30d', 'day']]);
   });
 
   it('is absent when no metrics fn is wired (404, not a crash)', async () => {
