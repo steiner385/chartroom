@@ -55,6 +55,28 @@ export interface DashboardState {
   repos: { repo: string; hasDeploy: boolean; prs: PrView[]; queue: RepoQueueView | null }[];
 }
 
+// ---- Notifications (issue #19) ----
+// Mirrors of server/notifier.ts — the payload of the named `notification` SSE
+// event and the file-only `notifications` config block (read-only in the UI).
+
+export type NotificationEventType =
+  | 'ci-failed' | 'group-failed' | 'queue-blocked' | 'ready' | 'overdue' | 'prod-live';
+
+export interface NotificationEvent {
+  repo: string;
+  prNumber: number;
+  /** PR title. */
+  title: string;
+  type: NotificationEventType;
+  detail: string;
+}
+
+export interface NotificationsConfig {
+  enabled: boolean;
+  command: string[];
+  events: Record<NotificationEventType, boolean>;
+}
+
 // ---- Config API mirrors (GET/PUT /api/config) ----
 // These mirror the server shapes in server/config.ts + server/poller.ts. The UI
 // only edits the safe subset (owners/exclude/retentionDays/batchSize/intervals);
@@ -74,11 +96,12 @@ export interface AppConfig {
   retentionDays: number;
   batchSize: number;
   intervals: AppIntervals;
-  /** read-only (tokenSource/apiUrl/port/ancestrySource) */
+  /** read-only (tokenSource/apiUrl/port/ancestrySource/notifications) */
   tokenSource: string;
   apiUrl: string;
   port: number;
   ancestrySource: 'api' | 'clone';
+  notifications: NotificationsConfig;
 }
 
 /** Which config layer a per-repo setting value came from. */

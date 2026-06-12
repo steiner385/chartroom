@@ -48,7 +48,7 @@ function isFailed(pr: PrView): boolean {
 }
 
 export function App() {
-  const { state, connected } = useDashboard();
+  const { state, connected, notifySupported, notifyEnabled, toggleNotify } = useDashboard();
   const [activeFilter, setActiveFilter] = useState<Bucket | null>(null);
   const [collapsedRepos, setCollapsedRepos] = useState<Set<string>>(() => readCollapsedSet());
   const [settingsOpen, setSettingsOpen] = useState(false);
@@ -108,6 +108,20 @@ export function App() {
         >
           <span aria-hidden="true">?</span>
         </button>
+        {notifySupported && (
+          <button
+            type="button"
+            className="notify-bell"
+            aria-pressed={notifyEnabled}
+            aria-label="Browser notifications"
+            title={notifyEnabled
+              ? 'Browser notifications on — tab must stay open to receive them'
+              : 'Enable browser notifications (tab must stay open to receive them)'}
+            onClick={toggleNotify}
+          >
+            <span aria-hidden="true">{notifyEnabled ? '🔔' : '🔕'}</span>
+          </button>
+        )}
         <button
           type="button"
           ref={gearRef}

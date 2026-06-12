@@ -16,8 +16,14 @@ const CONFIG: ConfigResponse = {
     apiUrl: 'https://api.github.com/graphql',
     port: 4400,
     ancestrySource: 'api',
+    notifications: {
+      enabled: true,
+      command: ['notify-send', '{title}', '{body}'],
+      events: { 'ci-failed': true, 'group-failed': true, 'queue-blocked': true,
+        ready: false, overdue: false, 'prod-live': true },
+    },
   },
-  readOnlyKeys: ['tokenSource', 'apiUrl', 'port', 'ancestrySource'],
+  readOnlyKeys: ['tokenSource', 'apiUrl', 'port', 'ancestrySource', 'notifications'],
   sources: { configPath: '/etc/pr-dashboard/config.json', perField: {} },
   repos: {
     'acme/widgets': {
@@ -274,5 +280,23 @@ describe('SettingsPanel', () => {
     rerender(<SettingsPanel open={true} onClose={() => {}} connected={false} />);
     rerender(<SettingsPanel open={true} onClose={() => {}} connected={true} />);
     expect(await screen.findByText(/back online/i)).toBeInTheDocument();
+  });
+});
+
+describe('SettingsPanel notifications section (issue #19)', () => {
+  it('shows the read-only notifications block with the file-only hint', async () => {
+    render(<SettingsPanel open onClose={() => {}} />);
+    const heading = await screen.findByRole('heading', { name: 'Notifications' });
+    const section = heading.closest('section')!;
+    expect(within(section).getByText(/file-only/)).toBeInTheDocument();
+    expect(within(section).getByText('notify-send {title} {body}')).toBeInTheDocument();
+    expect(within(section).getByText('true')).toBeInTheDocument();
+    // per-event toggles rendered with their on/off state
+    expect(within(section).getByText(/ci-failed: on/)).toBeInTheDocument();
+    expect(within(section).getByText(/ready: off/)).toBeInTheDocument();
+    expect(within(section).getByText(/prod-live: on/)).toBeInTheDocument();
+    // no inputs — display only
+    expect(within(section).queryByRole('textbox')).not.toBeInTheDocument();
+    expect(within(section).queryByRole('checkbox')).not.toBeInTheDocument();
   });
 });

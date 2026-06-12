@@ -214,6 +214,55 @@ UI rides out the bounce on the existing SSE auto-reconnect.
 
 ---
 
+## Notifications
+
+The poller already detects every alert-worthy transition; the notifier layer
+(issue #19) turns them into desktop notifications. Six event types:
+
+| Type | Fires when | Default |
+|---|---|---|
+| `ci-failed` | a PR enters `parked/ci-failed` (a required check failed) | on |
+| `group-failed` | a queued PR's merge-group build fails | on |
+| `queue-blocked` | a queue entry goes UNMERGEABLE (genuine conflict or cascade victim — the detail names the conflicting culprit PR) | on |
+| `ready` | a PR's checks go green (`ci` -> `ready/armed` or `ready/idle`) | off |
+| `overdue` | a stage's ETA is exceeded (`overdue` flips true) | off |
+| `prod-live` | a merged PR's commit becomes prod ancestry ("shipped") | on |
+
+**Debounce:** one notification per (PR, event type) while the condition holds;
+if the condition clears (e.g. the failing check is retried green) and later
+re-enters, it fires again. `prod-live` fires once per PR per process lifetime.
+
+### Sink A — host command (`notifications` in config.json, file-only)
+
+```json
+"notifications": {
+  "enabled": true,
+  "command": ["notify-send", "{title}", "{body}"],
+  "events": { "ci-failed": true, "group-failed": true, "queue-blocked": true,
+              "ready": false, "overdue": false, "prod-live": true }
+}
+```
+
+- `command` is an **argv array**, run via `execFile` — never a shell, so a
+  hostile PR title can't inject. `{title}`/`{body}` are substituted in any
+  argument (never in `command[0]`, the executable).
+- The whole block is **file-only**: `PUT /api/config` rejects it (the command
+  executes on the host, so it must never be writable from the browser).
+- Command failures are logged once and never crash a poll cycle.
+- A type set `false` in `events` fires neither sink.
+
+### Sink B — browser notifications (the header bell)
+
+Notification events also ride the SSE stream as named `notification` frames.
+The bell button in the header toggles browser Web Notifications: turning it on
+requests `Notification` permission and persists the choice in localStorage.
+Works regardless of `notifications.enabled` (that flag gates only the host
+command); the per-type `events` toggles apply to both sinks.
+
+**Caveat:** there is no service worker — the dashboard tab must be open
+(backgrounded is fine) to receive browser notifications. For tab-independent
+delivery, use the command sink.
+
 ## In-repo `.pr-dashboard.yml`
 
 Any watched repo can carry its own dashboard settings in a `.pr-dashboard.yml`
