@@ -74,6 +74,8 @@ export function createApp(opts: {
   webhooks?: WebhookApi;
   /** GET /api/metrics — computed per request (one local SQLite pass, no caching). */
   metrics?: (window: MetricsWindow, bucket: MetricsBucket) => MetricsPayload;
+  /** GET /api/repos — discovered repos with their excluded flags (settings toggles). */
+  repos?: () => { repo: string; excluded: boolean }[];
   /** Restart endpoint knobs — `exit` injectable for tests. */
   restart?: { exit?: (code: number) => void; delayMs?: number };
 }): express.Express {
@@ -114,6 +116,13 @@ export function createApp(opts: {
   app.get('/api/state', (_req, res) => {
     res.json(opts.getState());
   });
+
+  if (opts.repos) {
+    const repos = opts.repos;
+    app.get('/api/repos', (_req, res) => {
+      res.json({ repos: repos() });
+    });
+  }
 
   if (opts.metrics) {
     const metrics = opts.metrics;

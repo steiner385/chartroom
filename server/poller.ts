@@ -228,6 +228,7 @@ export class Poller extends EventEmitter {
   private deriveThrottle = new RetryThrottle(PREFIX_DERIVE_INTERVAL_MS); // 24h on success, backoff on failure
   private envShas = new Map<string, string | null>();     // repo/env → deployed sha
   private propagating = new Set<string>();                // merged PR keys whose sha is 'missing'
+  private discovered = new Set<string>();                  // every repo ever seen by a sweep (incl. excluded)
   private seenNotLive = new Set<string>();                // "repo#number/env" observed not-live here
   private ancestryCheckedAt = new Map<string, number>();  // "sha:deployedSha" → last check (ms)
   private inaccessibleOwners = new Set<string>();        // owners with repository-inaccessible evidence (process lifetime)
@@ -265,6 +266,10 @@ export class Poller extends EventEmitter {
    * never arms the refresh throttles, so the first cycle still fetches fresh.
    */
   private restorePersisted(): void {
+    try {
+      const raw = this.deps.history.getMeta('discoveredRepos');
+      if (raw) for (const r of JSON.parse(raw) as string[]) this.discovered.add(r);
+    } catch { /* corrupt meta — rediscovered by the next sweep */ }
     const { history } = this.deps;
     for (const { key, value } of history.listMeta('repoConfig:')) {
       const repo = key.slice('repoConfig:'.length);
@@ -368,6 +373,7 @@ export class Poller extends EventEmitter {
   private ingestSweepNode(node: any, seenOpen: Set<string>): void {
     const { history, config } = this.deps;
     const repo = node.repository.nameWithOwner as string;
+    this.noteDiscovered(repo);
     if (config.exclude.includes(repo)) return;
     const key = `${repo}#${node.number}`;
     if (node.mergedAt) {
@@ -765,6 +771,30 @@ export class Poller extends EventEmitter {
    * sweep, which prunes by the new exclude/retention). No fetch state is lost —
    * caches, history, and in-repo configs all survive the swap.
    */
+  private noteDiscovered(repo: string): void {
+    if (this.discovered.has(repo)) return;
+    this.discovered.add(repo);
+    this.deps.history.setMeta('discoveredRepos', JSON.stringify([...this.discovered].sort()));
+  }
+
+  /** Settings-panel repo toggle list: every repo we know about (sweep-discovered
+   *  even when excluded, anything with history traces, and the exclude list
+   *  itself) with its current excluded flag. */
+  repoToggleList(): { repo: string; excluded: boolean }[] {
+    const all = new Set<string>([
+      ...this.discovered,
+      ...this.deps.history.distinctRepos(),
+      ...this.deps.config.exclude,
+    ]);
+    const excluded = new Set(this.deps.config.exclude);
+    return [...all].sort().map((repo) => ({ repo, excluded: excluded.has(repo) }));
+  }
+
+  /** Live (post-reconfigure) exclude list — metrics filtering reads this. */
+  currentExclude(): string[] {
+    return [...this.deps.config.exclude];
+  }
+
   reconfigure(cfg: AppConfig): void {
     this.deps.config = cfg;
     console.log('[poller] reconfigured (hot-apply)');

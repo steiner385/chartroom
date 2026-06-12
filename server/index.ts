@@ -172,7 +172,8 @@ async function main() {
         poller.reconfigure(next);
       },
     },
-    metrics: (window, bucket) => computeMetrics(history, window, bucket),
+    metrics: (window, bucket) => computeMetrics(history, window, bucket, new Date(), poller.currentExclude()),
+    repos: () => poller.repoToggleList(),
     webhooks: webhookSecret != null ? {
       path: config.webhooks.path,
       secret: webhookSecret,

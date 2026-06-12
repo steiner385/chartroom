@@ -505,3 +505,18 @@ describe('GET /api/metrics', () => {
     expect((await request(app).get('/api/metrics')).status).toBe(404);
   });
 });
+
+describe('GET /api/repos', () => {
+  it('serves the toggle list; 404 when not wired', async () => {
+    const app = createApp({ getState: () => STATE, bus: new EventEmitter(),
+      repos: () => [{ repo: 'acme/a', excluded: false }, { repo: 'acme/b', excluded: true }] });
+    const res = await request(app).get('/api/repos');
+    expect(res.status).toBe(200);
+    expect(res.body.repos).toEqual([
+      { repo: 'acme/a', excluded: false },
+      { repo: 'acme/b', excluded: true },
+    ]);
+    const bare = createApp({ getState: () => STATE, bus: new EventEmitter() });
+    expect((await request(bare).get('/api/repos')).status).toBe(404);
+  });
+});

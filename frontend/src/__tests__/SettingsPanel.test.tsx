@@ -49,8 +49,14 @@ let fetchSpy: ReturnType<typeof vi.spyOn>;
 
 beforeEach(() => {
   fetchSpy = vi.spyOn(globalThis, 'fetch');
-  // default: GET /api/config returns CONFIG
-  fetchSpy.mockResolvedValue(mockFetchOk(CONFIG));
+  // default: route by URL — /api/config → CONFIG, /api/repos → discovered list
+  fetchSpy.mockImplementation(async (url: unknown) =>
+    String(url) === '/api/repos'
+      ? mockFetchOk({ repos: [
+          { repo: 'acme/widgets', excluded: false },
+          { repo: 'acme/legacy', excluded: true },
+        ] })
+      : mockFetchOk(CONFIG));
 });
 
 afterEach(() => {
@@ -101,7 +107,7 @@ describe('SettingsPanel', () => {
 
   it('renders per-repo read-only section with source tags', async () => {
     render(<SettingsPanel open={true} onClose={() => {}} />);
-    expect(await screen.findByText('acme/widgets')).toBeInTheDocument();
+    expect((await screen.findAllByText('acme/widgets')).length).toBeGreaterThan(0);
     // source tags present
     expect(screen.getAllByText('in-repo').length).toBeGreaterThan(0);
     expect(screen.getByText('derived')).toBeInTheDocument();
@@ -298,5 +304,33 @@ describe('SettingsPanel notifications section (issue #19)', () => {
     // no inputs — display only
     expect(within(section).queryByRole('textbox')).not.toBeInTheDocument();
     expect(within(section).queryByRole('checkbox')).not.toBeInTheDocument();
+  });
+});
+
+describe('repo include/exclude toggles', () => {
+  it('lists discovered repos with toggle state and PUTs the updated exclude on save', async () => {
+    render(<SettingsPanel open={true} onClose={() => {}} />);
+    await waitFor(() => expect(fetchSpy).toHaveBeenCalledWith('/api/repos'));
+
+    // both repos listed in the toggle list; states reflect the draft exclude
+    await screen.findAllByText('acme/widgets');
+    const list = document.querySelector('.repo-toggle-list')!;
+    expect(within(list as HTMLElement).getByText('acme/widgets')).toBeInTheDocument();
+    expect(within(list as HTMLElement).getByText('acme/legacy')).toBeInTheDocument();
+
+    // exclude acme/widgets via its toggle
+    const row = within(list as HTMLElement).getByText('acme/widgets').closest('li')!;
+    fireEvent.click(within(row).getByRole('button'));
+    expect(within(row).getByRole('button')).toHaveAttribute('aria-pressed', 'false');
+
+    // save → PUT body carries the updated exclude including acme/widgets
+    fetchSpy.mockResolvedValueOnce(mockFetchOk({ applied: ['exclude'], restartRequired: [] }));
+    fireEvent.click(screen.getByRole('button', { name: /save/i }));
+    await waitFor(() => {
+      const put = fetchSpy.mock.calls.find(([, init]: unknown[]) => (init as RequestInit)?.method === 'PUT');
+      expect(put).toBeTruthy();
+      const body = JSON.parse(String((put![1] as RequestInit).body));
+      expect(body.exclude).toContain('acme/widgets');
+    });
   });
 });
