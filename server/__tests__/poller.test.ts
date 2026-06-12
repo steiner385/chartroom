@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { Poller, RetryThrottle, describeError, ingestCheckSet, ingestGroupFailures, type DashboardState } from '../poller';
+import { Poller, RetryThrottle, describeError, ingestCheckSet, ingestGroupFailures, maxPlausibleSuccessSecs, type DashboardState } from '../poller';
 import { HistoryStore } from '../history';
 import { deriveCiGraph } from '../required-checks';
 import type { CheckRun } from '../types';
@@ -4496,5 +4496,104 @@ describe('Poller queue ops console (#39) + merge ETA simulation (#40)', () => {
     expect(queue.health.state).toBe('cap-backlog');
     expect(queue.health.detail).toContain('wait or raise cap');
     expect(events.filter((e) => e.type === 'queue-stalled')).toHaveLength(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Duration ingestion guard (issue #61) — a SUCCESS sample cannot legitimately
+// exceed the job's own timeout; wait-contaminated spans must never reach
+// check_durations (they poison p99 / expected medians / the timeout lint).
+// ---------------------------------------------------------------------------
+
+describe('duration ingestion guard (issue #61)', () => {
+  const check = (over: Partial<CheckRun>): CheckRun => ({
+    name: 'Changed scope', rawName: 'Changed scope', status: 'COMPLETED', conclusion: 'SUCCESS',
+    startedAt: '2026-06-12T02:28:27Z', completedAt: '2026-06-12T02:28:45Z',
+    event: 'pull_request', workflowName: 'CI', runNumber: 1, runAttempt: 1,
+    isRequired: true, url: null, ...over,
+  });
+  const span = (secs: number): Pick<CheckRun, 'startedAt' | 'completedAt'> => ({
+    startedAt: '2026-06-12T02:00:00Z',
+    completedAt: new Date(Date.parse('2026-06-12T02:00:00Z') + secs * 1000).toISOString(),
+  });
+
+  it('maxPlausibleSuccessSecs: timeout×1.5 when known, 4h absolute fallback', () => {
+    expect(maxPlausibleSuccessSecs(8)).toBe(8 * 60 * 1.5);
+    expect(maxPlausibleSuccessSecs(null)).toBe(4 * 3600);
+  });
+
+  it('rejects a SUCCESS sample exceeding the job timeout × 1.5', () => {
+    const spy = vi.spyOn(history, 'recordCheckDuration');
+    ingestCheckSet(history, 'acme/widgets', [check(span(51_027))], () => null,
+      undefined, null, null, 'sha1', () => 8); // timeout-minutes: 8
+    expect(spy).not.toHaveBeenCalled();
+    spy.mockRestore();
+  });
+
+  it('accepts a SUCCESS sample at/below the timeout cap', () => {
+    const spy = vi.spyOn(history, 'recordCheckDuration');
+    ingestCheckSet(history, 'acme/widgets', [check(span(8 * 60 * 1.5))], () => null,
+      undefined, null, null, 'sha1', () => 8); // exactly at cap — kept
+    expect(spy).toHaveBeenCalledTimes(1);
+    spy.mockRestore();
+  });
+
+  it('unknown timeout: 4h absolute cap (reject above, accept below)', () => {
+    const spy = vi.spyOn(history, 'recordCheckDuration');
+    ingestCheckSet(history, 'acme/widgets', [check(span(4 * 3600 + 1))], () => null);
+    expect(spy).not.toHaveBeenCalled();
+    ingestCheckSet(history, 'acme/widgets', [check(span(3.9 * 3600))], () => null);
+    expect(spy).toHaveBeenCalledTimes(1);
+    spy.mockRestore();
+  });
+
+  it('non-SUCCESS conclusions still record (flake radar needs the identity rows)', () => {
+    const spy = vi.spyOn(history, 'recordCheckDuration');
+    ingestCheckSet(history, 'acme/widgets', [check({ ...span(51_027), conclusion: 'FAILURE' })],
+      () => null, undefined, null, null, 'sha1', () => 8);
+    expect(spy).toHaveBeenCalledTimes(1);
+    spy.mockRestore();
+  });
+
+  it('timeoutMinutesFor resolves a check name to its graph node timeout', () => {
+    const p = new Poller({ router: asRouter(fakeClient()), history, deploy: noDeploy(),
+      config: CONFIG, now: () => NOW });
+    expect(p.timeoutMinutesFor('acme/widgets', 'quick')).toBeNull(); // no graph yet
+    p.adoptDerivedGraph('acme/widgets', deriveCiGraph(`
+jobs:
+  quick:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+  ci:
+    needs: [quick]
+    runs-on: ubuntu-latest
+`)!);
+    expect(p.timeoutMinutesFor('acme/widgets', 'quick')).toBe(8);
+    expect(p.timeoutMinutesFor('acme/widgets', 'ci')).toBeNull(); // no timeout set
+    expect(p.timeoutMinutesFor('acme/widgets', 'no-such-check')).toBeNull();
+    expect(p.timeoutMinutesFor('octo/unknown', 'quick')).toBeNull();
+  });
+
+  it('detail-cycle ingestion applies the guard in the live path (4h fallback)', async () => {
+    const contaminated = {
+      ...CHECK_DONE,
+      startedAt: '2026-06-12T02:28:27Z', completedAt: '2026-06-12T16:38:54Z', // 51,027s
+    };
+    const detail = {
+      r0: { nameWithOwner: 'acme/widgets', pr8962: {
+        number: 8962, title: 't', url: 'u', isDraft: false, mergeStateStatus: 'BLOCKED',
+        mergedAt: null, headRefOid: 'head8962', autoMergeRequest: null, mergeCommit: null,
+        mergeQueueEntry: null,
+        commits: { nodes: [{ commit: { statusCheckRollup: { state: 'PENDING',
+          contexts: { pageInfo: { hasNextPage: false }, nodes: [contaminated] } } } }] },
+      } },
+    };
+    const spy = vi.spyOn(history, 'recordCheckDuration');
+    const p = new Poller({ router: asRouter(fakeClient(SWEEP_RESPONSE, detail)), history,
+      deploy: noDeploy(), config: CONFIG, now: () => NOW });
+    await p.sweepOnce();
+    await p.detailOnce();
+    expect(spy).not.toHaveBeenCalled();
+    spy.mockRestore();
   });
 });

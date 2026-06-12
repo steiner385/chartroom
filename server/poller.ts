@@ -56,6 +56,23 @@ export interface PrView {
   mergeEtaSim: MergeEtaSimulation | null;
 }
 
+/** Absolute plausibility cap (secs) for a SUCCESS duration sample when the
+ *  job's timeout is unknown (issue #61). Nothing in the watched fleets runs
+ *  anywhere near this; stall-spanning contamination starts well above it. */
+export const SUCCESS_DURATION_CAP_SECS = 4 * 3600;
+/** Margin over a known `timeout-minutes`: a SUCCESS physically cannot outlive
+ *  its own timeout; ×1.5 absorbs graph-derivation slop (min-merged node
+ *  timeouts, enforcement lag). */
+export const SUCCESS_TIMEOUT_CAP_FACTOR = 1.5;
+
+/** Max plausible runtime (secs) for a SUCCESS sample of a job whose derived
+ *  `timeout-minutes` is `timeoutMinutes` (null = unknown → absolute cap). */
+export function maxPlausibleSuccessSecs(timeoutMinutes: number | null): number {
+  return timeoutMinutes != null
+    ? timeoutMinutes * 60 * SUCCESS_TIMEOUT_CAP_FACTOR
+    : SUCCESS_DURATION_CAP_SECS;
+}
+
 /**
  * Shared check-set ingestion (detail fetch, group-rollup fetch, backfill):
  * records completed-check durations AND runner-pickup wait samples derived from
@@ -66,9 +83,19 @@ export function ingestCheckSet(history: HistoryStore, repo: string, checks: Chec
   activeFor: NeedActivePredicate = () => true,
   graphKeys: readonly string[] | null = null,
   rollupWorkflowName: string | null = null,
-  headSha: string | null = null): void {
+  headSha: string | null = null,
+  timeoutMinutesFor: (canonicalName: string) => number | null = () => null): void {
   for (const c of checks) {
     if (c.status === 'COMPLETED') {
+      // Plausibility guard (issue #61): a SUCCESS span exceeding the job's own
+      // timeout (×1.5) — or 4h when no timeout is derivable — is wait/re-run
+      // contamination, not runtime. Drop the sample rather than poison the
+      // p99 tail (timeout lint) and expected medians. Non-SUCCESS rows always
+      // record: flake radar consumes their identity, never their duration.
+      if ((c.conclusion ?? '') === 'SUCCESS' && c.startedAt && c.completedAt) {
+        const secs = (Date.parse(c.completedAt) - Date.parse(c.startedAt)) / 1000;
+        if (secs > maxPlausibleSuccessSecs(timeoutMinutesFor(c.name))) continue;
+      }
       // headSha: the commit this check set was fetched for (PR head / group head /
       // default-branch commit); runAttempt rides on each check (issue #34)
       history.recordCheckDuration(repo, c.name, c.event, c.startedAt, c.completedAt,
@@ -669,7 +696,8 @@ export class Poller extends EventEmitter {
         }
         ingestCheckSet(history, repo, snap.checks, (n) => this.needsFor(repo, n),
           (p, e) => this.needActiveFor(repo, p, e), this.graphKeysFor(repo),
-          this.rollupWorkflowFor(repo), snap.headSha || null);
+          this.rollupWorkflowFor(repo), snap.headSha || null,
+          (n) => this.timeoutMinutesFor(repo, n));
       }
     }
   }
@@ -717,7 +745,8 @@ export class Poller extends EventEmitter {
             this.groupChecks.set(commit.oid, checks);
             ingestCheckSet(this.deps.history, repo, checks, (n) => this.needsFor(repo, n),
               (p, e) => this.needActiveFor(repo, p, e), this.graphKeysFor(repo),
-              this.rollupWorkflowFor(repo), commit.oid as string);
+              this.rollupWorkflowFor(repo), commit.oid as string,
+              (n) => this.timeoutMinutesFor(repo, n));
             // failed-group attribution (#38): maybeRecordGroupRun skips failed
             // groups (their wall-clock would skew medians) — culprits record here
             ingestGroupFailures(this.deps.history, repo, commit.oid as string, checks);
@@ -1053,6 +1082,16 @@ export class Poller extends EventEmitter {
     if (!graph) return null;
     const node = matchingPrefix(canonicalCheckName, graph.keys());
     return node !== null ? graph.get(node)!.needs : null;
+  }
+
+  /** Derived `timeout-minutes` for the graph node a check name maps to — feeds
+   *  the duration-ingestion plausibility guard (issue #61). Null when the repo
+   *  has no derived graph, the name matches no node, or the node sets none. */
+  timeoutMinutesFor(repo: string, canonicalCheckName: string): number | null {
+    const graph = this.derivedGraph.get(repo);
+    if (!graph) return null;
+    const node = matchingPrefix(canonicalCheckName, graph.keys());
+    return node !== null ? graph.get(node)!.timeoutMinutes : null;
   }
 
   /** All derived-graph node prefixes for a repo — lets the wait matcher assign a

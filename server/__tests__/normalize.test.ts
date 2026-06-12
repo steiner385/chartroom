@@ -119,6 +119,87 @@ describe('matrix-shard family aggregation', () => {
   });
 });
 
+describe('cross-run re-run families (issue #61)', () => {
+  // Live repro: sha 5bd0942 had THREE 'Changed scope' runs (queue-recover
+  // delete-and-recreate during the 2026-06-12 dispatch stall), each ~20s.
+  // min-start→max-finish across them fabricated a 51,027s duration.
+  const rerun = (runNumber: number, startedAt: string, completedAt: string,
+    over: Partial<CheckRun> = {}): CheckRun => run({
+    name: 'Changed scope', rawName: 'Changed scope', workflowName: 'CI',
+    runNumber, runAttempt: 1, startedAt, completedAt, ...over,
+  });
+
+  it('collapses to the LATEST workflow run only — never spans re-run gaps', () => {
+    const out = dedupeChecks([
+      rerun(101, '2026-06-12T02:28:27Z', '2026-06-12T02:28:45Z'),
+      rerun(108, '2026-06-12T10:48:25Z', '2026-06-12T10:48:41Z'),
+      rerun(115, '2026-06-12T16:38:35Z', '2026-06-12T16:38:54Z'),
+    ]);
+    expect(out).toHaveLength(1);
+    expect(out[0].startedAt).toBe('2026-06-12T16:38:35Z');
+    expect(out[0].completedAt).toBe('2026-06-12T16:38:54Z');
+    expect(out[0].shardCount).toBe(1);
+  });
+
+  it('a stale FAILURE from an older run never outranks the latest run’s SUCCESS', () => {
+    const out = dedupeChecks([
+      rerun(101, '2026-06-12T02:28:27Z', '2026-06-12T02:28:45Z', { conclusion: 'FAILURE' }),
+      rerun(115, '2026-06-12T16:38:35Z', '2026-06-12T16:38:54Z', { conclusion: 'SUCCESS' }),
+    ]);
+    expect(out).toHaveLength(1);
+    expect(out[0].conclusion).toBe('SUCCESS');
+  });
+
+  it('matrix shards sharing one runNumber still aggregate min start → max finish', () => {
+    const shard = (i: number): CheckRun => run({
+      name: 'Unit Tests (shard/8)', rawName: `Unit Tests (${i}/8)`,
+      workflowName: 'CI', runNumber: 200,
+      startedAt: `2026-06-12T10:0${i}:00Z`, completedAt: `2026-06-12T10:1${i}:00Z`,
+    });
+    const out = dedupeChecks([shard(1), shard(2), shard(3)]);
+    expect(out).toHaveLength(1);
+    expect(out[0].shardCount).toBe(3);
+    expect(out[0].startedAt).toBe('2026-06-12T10:01:00Z');
+    expect(out[0].completedAt).toBe('2026-06-12T10:13:00Z');
+  });
+
+  it('mixed generations: only the latest run’s shards aggregate; older leftovers drop', () => {
+    const shard = (i: number, runNumber: number, h: string): CheckRun => run({
+      name: 'Unit Tests (shard/8)', rawName: `Unit Tests (${i}/8)`,
+      workflowName: 'CI', runNumber,
+      startedAt: `2026-06-12T${h}:0${i}:00Z`, completedAt: `2026-06-12T${h}:1${i}:00Z`,
+    });
+    const out = dedupeChecks([
+      shard(1, 200, '02'), shard(2, 200, '02'), // old run
+      shard(1, 205, '16'), shard(2, 205, '16'), // latest run
+    ]);
+    expect(out).toHaveLength(1);
+    expect(out[0].shardCount).toBe(2);
+    expect(out[0].startedAt).toBe('2026-06-12T16:01:00Z');
+    expect(out[0].completedAt).toBe('2026-06-12T16:12:00Z');
+  });
+
+  it('members without run identity keep legacy behavior when no numbered member exists', () => {
+    const out = dedupeChecks([
+      run({ name: 'Legacy', runNumber: null, startedAt: '2026-06-12T10:00:00Z', completedAt: '2026-06-12T10:01:00Z' }),
+      run({ name: 'Legacy', runNumber: null, startedAt: '2026-06-12T11:00:00Z', completedAt: '2026-06-12T11:01:00Z', conclusion: 'FAILURE' }),
+    ]);
+    expect(out).toHaveLength(1);
+    expect(out[0].shardCount).toBe(2);
+    expect(out[0].conclusion).toBe('FAILURE'); // worst across the (legacy) family
+  });
+
+  it('unattributable null-runNumber members drop when a numbered member exists', () => {
+    const out = dedupeChecks([
+      run({ name: 'X', runNumber: null, startedAt: '2026-06-12T02:00:00Z', completedAt: '2026-06-12T02:01:00Z' }),
+      run({ name: 'X', runNumber: 300, startedAt: '2026-06-12T16:00:00Z', completedAt: '2026-06-12T16:01:00Z' }),
+    ]);
+    expect(out).toHaveLength(1);
+    expect(out[0].shardCount).toBe(1);
+    expect(out[0].startedAt).toBe('2026-06-12T16:00:00Z');
+  });
+});
+
 describe('familyDisplayName', () => {
   it('families label with the matrix denominator, not the surviving shard', () => {
     const fam = dedupeChecks([

@@ -149,7 +149,7 @@ async function main() {
       }
       await backfillRepo(repoClient, history, repo, 5, (n) => poller.needsFor(repo, n),
         (p, e) => poller.needActiveFor(repo, p, e), poller.graphKeysFor(repo),
-        poller.rollupWorkflowFor(repo))
+        poller.rollupWorkflowFor(repo), (n) => poller.timeoutMinutesFor(repo, n))
         .catch((e) => console.warn(`backfill ${repo}: ${e}`));
     }
     history.setMeta('backfilled', new Date().toISOString());
