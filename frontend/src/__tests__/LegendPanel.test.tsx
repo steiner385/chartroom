@@ -114,6 +114,15 @@ describe('LegendPanel', () => {
     expect(screen.getAllByText(/⊘ blocked on/).length).toBeGreaterThan(0);
   });
 
+  it('job bars section shows one required example row (no g-advisory) and one advisory example row (g-advisory) with correct name styling', () => {
+    const { container } = render(<LegendPanel open={true} onClose={() => {}} />);
+    // advisory example row: must have g-advisory class
+    expect(container.querySelector('.legend-gantt .g-row.g-advisory')).not.toBeNull();
+    // required example row: must NOT have g-advisory class — at least one g-row without it
+    const rows = Array.from(container.querySelectorAll('.legend-gantt .g-row'));
+    expect(rows.some((r) => !r.classList.contains('g-advisory'))).toBe(true);
+  });
+
   it('queue train section renders one mini car per type with the real classes', () => {
     const { container } = render(<LegendPanel open={true} onClose={() => {}} />);
     expect(container.querySelector('.legend-train .car.building:not(.failed)')).not.toBeNull();

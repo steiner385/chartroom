@@ -37,13 +37,13 @@ function ExampleCar({ cls, header, body }: { cls: string; header: string; body: 
 }
 
 /** Mini Gantt bar row reusing the live `.g-row` / `.g-bar` classes. */
-function ExampleBar({ kind, name, fillPct, time, band, tick }: {
+function ExampleBar({ kind, name, fillPct, time, band, tick, nameTitle }: {
   kind: string; name: string; fillPct: number; time: string;
-  band?: [number, number]; tick?: number;
+  band?: [number, number]; tick?: number; nameTitle?: string;
 }) {
   return (
     <li className={`g-row ${kind}`}>
-      <span className="g-name">{name}</span>
+      <span className="g-name" title={nameTitle}>{name}</span>
       <span className="g-bar">
         {band && <span className="band" style={{ left: `${band[0]}%`, width: `${band[1] - band[0]}%` }} />}
         <i style={{ width: `${fillPct}%` }} />
@@ -168,11 +168,19 @@ export function LegendPanel({ open, onClose, returnFocusRef }: LegendPanelProps)
                 time="⧗ waiting for runner" />
               <ExampleBar kind="g-queued g-runner-wait g-runner-wait-amber" name="slow runner wait"
                 fillPct={15} time="⧗ 2× typical" />
+              <ExampleBar kind="g-done" name="required job" fillPct={60} time="3m ✓" />
+              <ExampleBar kind="g-done g-advisory" name="advisory job" fillPct={50} time="2m ✓"
+                nameTitle="advisory — does not gate merging" />
             </ul>
             <p className="legend-caption">
               Bar fill = elapsed time on a shared scale. Tinted <b>band</b> = the job&apos;s typical
               p10–p90 duration range; dark <b>tick</b> = its typical (p50) duration.
               Striped fill = waiting for a CI runner (amber once the wait exceeds 2× typical).
+            </p>
+            <p className="legend-caption">
+              <b>Required</b> job names render normally — a failure blocks merge.{' '}
+              <em style={{ color: 'var(--muted)' }}>Advisory</em> job names are italic and muted — they
+              run but do not gate merging (hover for tooltip).
             </p>
             <p className="legend-caption">
               <code>⧗ waiting for runner</code> — queued, no runner assigned yet ·{' '}

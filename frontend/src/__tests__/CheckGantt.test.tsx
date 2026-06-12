@@ -203,6 +203,32 @@ describe('CheckGantt', () => {
     expect(screen.queryByText('advisory')).not.toBeInTheDocument();
   });
 
+  it('advisory row gets class g-advisory and required row does not', () => {
+    const { container } = render(<CheckGantt stage="ci" checks={[
+      check({ name: 'req-check', isRequired: true }),
+      check({ name: 'lighthouse', isRequired: false }),
+    ]} />);
+    const rows = Array.from(container.querySelectorAll('.g-row'));
+    const reqRow = rows.find((r) => r.textContent?.includes('req-check'))!;
+    const advRow = rows.find((r) => r.textContent?.includes('lighthouse'))!;
+    expect(advRow.classList.contains('g-advisory')).toBe(true);
+    expect(reqRow.classList.contains('g-advisory')).toBe(false);
+  });
+
+  it('advisory row name element has title="advisory — does not gate merging"', () => {
+    const { container } = render(<CheckGantt stage="ci" checks={[
+      check({ name: 'req-check', isRequired: true }),
+      check({ name: 'lighthouse', isRequired: false }),
+    ]} />);
+    const rows = Array.from(container.querySelectorAll('.g-row'));
+    const advRow = rows.find((r) => r.textContent?.includes('lighthouse'))!;
+    const reqRow = rows.find((r) => r.textContent?.includes('req-check'))!;
+    const advName = advRow.querySelector('.g-name') as HTMLElement;
+    const reqName = reqRow.querySelector('.g-name') as HTMLElement;
+    expect(advName.title).toBe('advisory — does not gate merging');
+    expect(reqName.title).toBe('');
+  });
+
 });
 
 
