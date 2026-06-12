@@ -39,6 +39,14 @@ describe('DeployWatcher', () => {
     expect(await w.isAncestor('a/b', 'deadbeefdeadbeefdeadbeefdeadbeefdeadbeef', shas.second)).toBe('missing');
   });
 
+  it('hasClone reflects whether the bare clone exists (api-mode fallback predicate)', async () => {
+    const w = new DeployWatcher(join(work, 'clones-has'));
+    expect(w.hasClone('a/b')).toBe(false);
+    await w.ensureClone('a/b', srcRepo);
+    expect(w.hasClone('a/b')).toBe(true);
+    expect(w.hasClone('a/other')).toBe(false);
+  });
+
   it('answers no for an orphan commit never merged to main', async () => {
     const w = new DeployWatcher(join(work, 'clones'));
     await w.ensureClone('a/b', srcRepo);

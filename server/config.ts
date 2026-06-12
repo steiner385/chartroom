@@ -11,7 +11,14 @@ export interface EnvConfig {
   /** JSON key in the /health payload that carries the deployed commit sha. */
   shaKey: string;
 }
-export interface DeployConfig { environments: EnvConfig[]; cloneUrl: string; defaultBranch: string; }
+export interface DeployConfig {
+  environments: EnvConfig[];
+  /** Git URL for the local bare clone. Used only when `ancestrySource` is
+   *  'clone' (or as the fallback target of a pre-existing clone in 'api' mode);
+   *  optional in user config — defaults to the repo's GitHub URL. */
+  cloneUrl: string;
+  defaultBranch: string;
+}
 export interface RepoConfig {
   /** A check whose canonical name starts with any of these prefixes is treated as
    *  required even before GitHub marks it isRequired. Needed for repos whose single
@@ -65,6 +72,12 @@ export interface AppConfig {
   rateLimitFloor: number;
   /** Optional signed webhook receiver — out-of-band poller nudges. */
   webhooks: WebhooksConfig;
+  /** How deploy ancestry ("is this merge commit contained in the deployed
+   *  sha?") is answered: 'api' (default) = GitHub compare API, no local clones;
+   *  'clone' = local bare clones in data/clones/ (the pre-#18 mechanism).
+   *  In 'api' mode clones are never created; a pre-existing clone is used as a
+   *  best-effort fallback when the compare API fails transport-wise. */
+  ancestrySource: 'api' | 'clone';
   /** Hostname allowlist for IN-REPO (`.pr-dashboard.yml`-sourced) deploy URLs:
    *  exact match or `*.suffix` wildcard (subdomains only — list the apex
    *  separately). Unset → no filtering. Instance-config deploy entries are
@@ -88,6 +101,7 @@ export const DEFAULTS: AppConfig = {
   tokenSource: 'gh',
   apiUrl: 'https://api.github.com/graphql',
   rateLimitFloor: 1000,
+  ancestrySource: 'api',
   webhooks: { enabled: false, path: '/api/webhooks/github' },
   deploy: {},
   repos: {},
@@ -153,10 +167,17 @@ export function _resetDeployAllowlistWarnings(): void { warnedDeployDrops.clear(
  * entry would make this instance touch (cloneUrl = `git fetch` target,
  * healthUrls = polled endpoints) must have an allowlisted host, or the whole
  * entry is dropped with a once-logged warning. A host that cannot be derived
- * fails closed.
+ * fails closed. With ancestrySource 'api' the instance never touches the
+ * cloneUrl (no clone is ever created), so only healthUrls are checked.
  */
-function inRepoDeployAllowed(repo: string, dc: DeployConfig, allowlist: readonly string[]): boolean {
-  for (const url of [dc.cloneUrl, ...dc.environments.map((e) => e.healthUrl)]) {
+function inRepoDeployAllowed(
+  repo: string, dc: DeployConfig, allowlist: readonly string[],
+  ancestrySource: AppConfig['ancestrySource'],
+): boolean {
+  const urls = ancestrySource === 'clone'
+    ? [dc.cloneUrl, ...dc.environments.map((e) => e.healthUrl)]
+    : dc.environments.map((e) => e.healthUrl);
+  for (const url of urls) {
     const host = deployUrlHost(url);
     if (host !== null && allowlist.some((p) => hostMatches(host, p))) continue;
     const key = `${repo}|${url}`;
@@ -186,7 +207,7 @@ export function effectiveDeployMap(
   for (const [repo, fc] of fileCfgs) {
     if (!fc.deploy) continue;
     if (repo in config.deploy) continue; // shadowed by the override below — never takes effect
-    if (allowlist && !inRepoDeployAllowed(repo, fc.deploy, allowlist)) continue;
+    if (allowlist && !inRepoDeployAllowed(repo, fc.deploy, allowlist, config.ancestrySource)) continue;
     map[repo] = fc.deploy;
   }
   for (const [repo, dc] of Object.entries(config.deploy)) map[repo] = dc;
@@ -267,7 +288,7 @@ export const SAFE_CONFIG_KEYS = ['owners', 'exclude', 'retentionDays', 'batchSiz
 export type SafeConfigKey = (typeof SAFE_CONFIG_KEYS)[number];
 
 /** Instance-config keys surfaced read-only in the UI (file-only for security). */
-export const READ_ONLY_CONFIG_KEYS = ['tokenSource', 'apiUrl', 'port', 'app'] as const;
+export const READ_ONLY_CONFIG_KEYS = ['tokenSource', 'apiUrl', 'port', 'app', 'ancestrySource'] as const;
 
 const INTERVAL_KEYS = ['sweepMs', 'hotMs', 'deployMs'] as const;
 
@@ -409,6 +430,9 @@ export function loadConfig(path?: string): AppConfig {
   };
   if (merged.tokenSource !== 'gh' && merged.tokenSource !== 'env' && merged.tokenSource !== 'app') {
     throw new Error(`config: tokenSource must be "gh", "env", or "app" (got "${String(merged.tokenSource)}")`);
+  }
+  if (merged.ancestrySource !== 'api' && merged.ancestrySource !== 'clone') {
+    throw new Error(`config: ancestrySource must be "api" or "clone" (got "${String(merged.ancestrySource)}")`);
   }
   if (merged.tokenSource === 'app') {
     const a = merged.app;

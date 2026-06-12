@@ -331,8 +331,9 @@ deploy:
     - name: qa
       healthUrl: ${healthUrl}
 `)!;
-  const withAllowlist = (deployUrlAllowlist?: string[]): AppConfig =>
-    ({ ...DEFAULTS, deployUrlAllowlist });
+  const withAllowlist = (deployUrlAllowlist?: string[],
+    ancestrySource: AppConfig['ancestrySource'] = 'clone'): AppConfig =>
+    ({ ...DEFAULTS, deployUrlAllowlist, ancestrySource });
   const spyWarn = () => vi.spyOn(console, 'warn').mockImplementation(() => {});
   let warn: ReturnType<typeof spyWarn>;
   beforeEach(() => {
@@ -391,6 +392,17 @@ deploy:
     const bad = effectiveDeployMap(cfg, new Map([['acme/gizmos',
       inRepoDeploy('https://qa.gizmos.dev/health', 'git@evil.example:acme/gizmos.git')]]));
     expect(bad).toEqual({});
+  });
+
+  it("ancestrySource 'api' (the default): cloneUrl is never touched, so its host is not checked", () => {
+    const cfg = withAllowlist(['qa.gizmos.dev'], 'api'); // github.com (default cloneUrl) NOT allowlisted
+    const map = effectiveDeployMap(cfg,
+      new Map([['acme/gizmos', inRepoDeploy('https://qa.gizmos.dev/health')]]));
+    expect(map['acme/gizmos']).toBeDefined(); // kept — only healthUrl hosts matter in api mode
+    expect(warn).not.toHaveBeenCalled();
+    // a non-allowlisted healthUrl still drops the entry in api mode
+    expect(effectiveDeployMap(cfg,
+      new Map([['acme/gizmos', inRepoDeploy('https://qa.evil.example/health')]]))).toEqual({});
   });
 
   it('*.suffix wildcard matches subdomains (not the bare apex)', () => {
@@ -481,7 +493,7 @@ describe('resolveOwners', () => {
 describe('validateConfigPatch', () => {
   it('exports the safe subset and read-only key lists the API advertises', () => {
     expect(SAFE_CONFIG_KEYS).toEqual(['owners', 'exclude', 'retentionDays', 'batchSize', 'intervals']);
-    expect(READ_ONLY_CONFIG_KEYS).toEqual(['tokenSource', 'apiUrl', 'port', 'app']);
+    expect(READ_ONLY_CONFIG_KEYS).toEqual(['tokenSource', 'apiUrl', 'port', 'app', 'ancestrySource']);
   });
 
   it('accepts the full safe subset and normalizes it', () => {
@@ -625,5 +637,39 @@ describe('configFileSources', () => {
 
   it('internal hotMsExplicit flag is never surfaced as a config field', () => {
     expect(configFileSources(writeConfig({ intervals: { hotMs: 5000 } }))).not.toHaveProperty('hotMsExplicit');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Issue #18: compare-API ancestry — ancestrySource config
+// ---------------------------------------------------------------------------
+
+describe('ancestrySource', () => {
+  it("defaults to 'api' (no local clones required)", () => {
+    expect(loadConfig('/nonexistent/config.json').ancestrySource).toBe('api');
+    expect(loadConfig(writeConfig({})).ancestrySource).toBe('api');
+  });
+
+  it("accepts 'clone' (the pre-#18 bare-clone mechanism)", () => {
+    expect(loadConfig(writeConfig({ ancestrySource: 'clone' })).ancestrySource).toBe('clone');
+  });
+
+  it('rejects anything else with a clear error', () => {
+    expect(() => loadConfig(writeConfig({ ancestrySource: 'git' })))
+      .toThrow(/ancestrySource must be "api" or "clone".*git/);
+  });
+
+  it('a deploy entry without cloneUrl is valid (cloneUrl is optional; GitHub URL default)', () => {
+    const cfg = loadConfig(writeConfig({ deploy: { 'acme/widgets': {
+      environments: [{ name: 'qa', healthUrl: 'https://qa.widgets.example.com/health' }] } } }));
+    expect(cfg.ancestrySource).toBe('api');
+    // default fill kept for clone mode / clone fallback — never fetched in api mode
+    expect(cfg.deploy['acme/widgets']!.cloneUrl).toBe('https://github.com/acme/widgets.git');
+  });
+
+  it('is file-only: PUT /api/config rejects it (not in the safe subset)', () => {
+    const v = validateConfigPatch({ ancestrySource: 'clone' });
+    expect(v.ok).toBe(false);
+    if (!v.ok) expect(v.offendingKeys).toContain('ancestrySource');
   });
 });
