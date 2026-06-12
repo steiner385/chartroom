@@ -62,6 +62,9 @@ export interface StageTransition {
   next: StageResult;
   /** The queue's conflicting-culprit PR number, when known (queue-blocked detail). */
   queueCulprit?: number | null;
+  /** Failing-class check names of the PR's merge-group build, when known
+   *  (group-failed detail names the train killer — issue #38). */
+  groupCulpritChecks?: string[] | null;
 }
 
 const LABELS: Record<NotificationEventType, string> = {
@@ -109,7 +112,10 @@ const CONDITIONS: Record<StageEventType, Condition> = {
 function detailFor(type: StageEventType, t: StageTransition): string {
   switch (type) {
     case 'ci-failed': return 'a required check failed';
-    case 'group-failed': return 'the merge-queue group build failed';
+    case 'group-failed':
+      return t.groupCulpritChecks?.length
+        ? `the merge-queue group build failed — culprit: ${t.groupCulpritChecks.join(', ')}`
+        : 'the merge-queue group build failed';
     case 'queue-blocked':
       if (t.next.substate === 'unmergeable') {
         return 'conflicts with the base branch — facing ejection from the queue';

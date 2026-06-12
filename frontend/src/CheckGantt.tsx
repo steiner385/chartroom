@@ -22,11 +22,19 @@ function rowKind(c: CheckView): RowKind {
   return 'failed';
 }
 
+/** Flake-radar annotation for a failing check (issue #37). */
+function flakeText(c: CheckView): string {
+  return ` · ⚐ flakes ${Math.round(c.flakeRatePct ?? 0)}% — likely flake, consider re-run`;
+}
+
 function timeText(c: CheckView, kind: RowKind): string {
   const elapsed = c.elapsedSeconds != null ? formatDur(c.elapsedSeconds) : '';
   switch (kind) {
     case 'done': return elapsed ? `${elapsed} ✓` : '✓';
-    case 'failed': return elapsed ? `${elapsed} ✗` : '✗';
+    case 'failed': {
+      const base = elapsed ? `${elapsed} ✗` : '✗';
+      return c.likelyFlake ? base + flakeText(c) : base;
+    }
     case 'skipped': return '–';
     case 'queued': {
       if (c.waitKind === 'blocked') {

@@ -6,6 +6,7 @@ import type { MetricsBucket, MetricsPayload, MetricsWindow } from '../types';
 const EMPTY: MetricsPayload = {
   window: '3d', bucket: 'hour',
   runnerWaits: [], queue: [], slowestJobs: [], velocity: [], trends: [], calibration: [],
+  flakiness: [], trainKillers: [],
 };
 
 const H = (h: number): string => `2026-06-11T${String(h).padStart(2, '0')}`;
@@ -85,6 +86,26 @@ const PAYLOAD: MetricsPayload = {
         { bucket: H(10), medianErrorPct: -6, n: 5 },
       ],
       points: [{ predicted: 900, actual: 840 }, { predicted: 800, actual: 760 }] },
+  ],
+  flakiness: [
+    { repo: 'acme/widgets', checks: [
+      { name: 'HighFiveCue suite', event: 'pull_request',
+        flakeEvents: 3, totalRuns: 13, flakeRatePct: 23.07,
+        trend: [
+          { bucket: H(8), flakeEvents: 1, runs: 5 },
+          { bucket: H(9), flakeEvents: 1, runs: 4 },
+          { bucket: H(10), flakeEvents: 1, runs: 4 },
+        ] },
+      { name: 'steady-job', event: 'merge_group',
+        flakeEvents: 1, totalRuns: 10, flakeRatePct: 10,
+        trend: [{ bucket: H(10), flakeEvents: 1, runs: 10 }] },
+    ] },
+  ],
+  trainKillers: [
+    { repo: 'acme/widgets', batchSize: 6, medianGroupRunSecs: 1800, checks: [
+      { name: 'merge-group e2e', ejects: 7, estCostTrainHours: 21, flakeRatePct: 90 },
+      { name: 'db-migrations', ejects: 2, estCostTrainHours: 6, flakeRatePct: null },
+    ] },
   ],
 };
 
@@ -190,7 +211,7 @@ describe('MetricsView', () => {
     mockFetchOk(EMPTY);
     render(<MetricsView now={NOW} />);
     await screen.findByRole('heading', { name: 'Trends' });
-    expect(screen.getAllByText('no data yet')).toHaveLength(6);
+    expect(screen.getAllByText('no data yet')).toHaveLength(8);
   });
 
   it('trends panel: one multi-line chart per repo with a legend and latest headline stats', async () => {
@@ -331,5 +352,75 @@ describe('MetricsView', () => {
     expect(within(panel).getByText('merge_group p50 wait')).toBeInTheDocument();
     // pull_request tier has 3 populated buckets → a real chart with the band caption
     expect(within(panel).getAllByText(/band = p50–p90/).length).toBeGreaterThanOrEqual(1);
+  });
+});
+
+describe('MetricsView — flakiest jobs panel (issue #37)', () => {
+  it('renders the per-repo flake table: job, event, rate, events/runs, trend sparkline', async () => {
+    mockFetchOk();
+    render(<MetricsView now={NOW} />);
+    await waitFor(() => expect(screen.getByText('HighFiveCue suite')).toBeInTheDocument());
+    const panel = screen.getByRole('heading', { name: 'Flakiest jobs' }).closest('section')!;
+    const row = within(panel).getByText('HighFiveCue suite').closest('tr')!;
+    expect(within(row).getByText('pull_request')).toBeInTheDocument();
+    expect(within(row).getByText('23%')).toBeInTheDocument();
+    expect(within(row).getByText('3 / 13')).toBeInTheDocument();
+    // trend sparkline (compact band chart) present in the row
+    expect(row.querySelector('.chart-svg-compact, .chart-placeholder')).not.toBeNull();
+    // ≥20% rates highlight; the 10% row does not
+    expect(within(row).getByText('23%').classList.contains('var-high')).toBe(true);
+    const steady = within(panel).getByText('steady-job').closest('tr')!;
+    expect(within(steady).getByText('10%').classList.contains('var-high')).toBe(false);
+  });
+
+  it('shows the empty placeholder without flake data', async () => {
+    mockFetchOk(EMPTY);
+    render(<MetricsView now={NOW} />);
+    await screen.findByRole('heading', { name: 'Flakiest jobs' });
+    const panel = screen.getByRole('heading', { name: 'Flakiest jobs' }).closest('section')!;
+    expect(within(panel).getByText('no data yet')).toBeInTheDocument();
+  });
+});
+
+describe('MetricsView — train killers panel (issue #38)', () => {
+  it('renders the ranked table with ejects, est. cost, and the flake cross-reference', async () => {
+    mockFetchOk();
+    render(<MetricsView now={NOW} />);
+    await waitFor(() => expect(screen.getByText('merge-group e2e')).toBeInTheDocument());
+    const panel = screen.getByRole('heading', { name: 'Train killers' }).closest('section')!;
+    const killer = within(panel).getByText('merge-group e2e').closest('tr')!;
+    expect(within(killer).getByText('7')).toBeInTheDocument();      // ejects
+    expect(within(killer).getByText('21.0')).toBeInTheDocument();   // train-hours
+    expect(within(killer).getByText(/90%/)).toBeInTheDocument();    // flake cross-ref
+  });
+
+  it("highlights 'killer AND flaky' rows amber (tk-flaky); flake-unknown rows show – and stay plain", async () => {
+    mockFetchOk();
+    render(<MetricsView now={NOW} />);
+    await waitFor(() => expect(screen.getByText('merge-group e2e')).toBeInTheDocument());
+    const panel = screen.getByRole('heading', { name: 'Train killers' }).closest('section')!;
+    const flakyRow = within(panel).getByText('merge-group e2e').closest('tr')!;
+    expect(flakyRow.classList.contains('tk-flaky')).toBe(true);
+    expect(within(flakyRow).getByText(/⚐ flaky/)).toBeInTheDocument();
+    const plainRow = within(panel).getByText('db-migrations').closest('tr')!;
+    expect(plainRow.classList.contains('tk-flaky')).toBe(false);
+    expect(within(plainRow).getByText('–')).toBeInTheDocument();
+  });
+
+  it('documents the cost approximation (median group run × batch size) under the table', async () => {
+    mockFetchOk();
+    render(<MetricsView now={NOW} />);
+    await waitFor(() => expect(screen.getByText('merge-group e2e')).toBeInTheDocument());
+    const panel = screen.getByRole('heading', { name: 'Train killers' }).closest('section')!;
+    expect(within(panel).getByText(/cost ≈ ejects × median group run/)).toBeInTheDocument();
+    expect(within(panel).getByText(/batch size \(6\)/)).toBeInTheDocument();
+  });
+
+  it('shows the empty placeholder without train-killer data', async () => {
+    mockFetchOk(EMPTY);
+    render(<MetricsView now={NOW} />);
+    await screen.findByRole('heading', { name: 'Train killers' });
+    const panel = screen.getByRole('heading', { name: 'Train killers' }).closest('section')!;
+    expect(within(panel).getByText('no data yet')).toBeInTheDocument();
   });
 });

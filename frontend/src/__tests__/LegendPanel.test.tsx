@@ -147,3 +147,11 @@ describe('LegendPanel', () => {
     expect(dtLabels).toEqual(['CI running', 'In queue', 'Awaiting prod', 'Failed', 'Ready / other']);
   });
 });
+
+describe('LegendPanel — flake radar legend line (issue #37)', () => {
+  it('documents the ⚐ flakes annotation in the job-bars section', () => {
+    render(<LegendPanel open={true} onClose={() => {}} />);
+    expect(screen.getByText('⚐ flakes N%')).toBeInTheDocument();
+    expect(screen.getByText(/likely a flake; consider a\s+re-run/)).toBeInTheDocument();
+  });
+});

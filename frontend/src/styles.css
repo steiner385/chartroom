@@ -412,6 +412,10 @@ section h2 { font-size: 14px; margin: 18px 0 8px; color: var(--muted); }
   white-space: nowrap; }
 .metric-trend-cell { width: 124px; }
 .var-high { color: var(--amber); font-weight: 700; }
+/* train killers that are ALSO flaky (#38): amber-highlighted rows */
+.tk-flaky td { background: color-mix(in srgb, var(--amber) 12%, transparent); }
+.tk-flaky .metric-job-name { color: var(--amber); font-weight: 700; }
+.metric-note { font-size: 11px; color: var(--muted); font-style: italic; margin: 6px 0 0; }
 
 /* --- Legend slide-over (reuses the settings overlay/panel shell) --- */
 /* the legend's example "active" node must not pulse — the slide-in is the

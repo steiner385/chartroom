@@ -2,7 +2,7 @@ import { EventEmitter } from 'node:events';
 import type { GithubClient } from './github';
 import { RateLimitError } from './github';
 import type { ClientRouter } from './client-router';
-import type { HistoryStore, MergedPrRecord } from './history';
+import { FAILING_CONCLUSIONS, FLAKE_MIN_RUNS, type HistoryStore, type MergedPrRecord } from './history';
 import type { DeployWatcher } from './deploy-watcher';
 import { ApiAncestry, type AncestryAnswer } from './ancestry';
 import { effectiveRepoSettings, effectiveDeployMap, type AppConfig, type DeployConfig, type RepoSettings } from './config';
@@ -31,6 +31,12 @@ export interface CheckView {
   expectedLowSeconds: number | null; expectedHighSeconds: number | null;
   waitKind: 'runner' | 'blocked' | 'unknown' | null; blockedOn: string | null;
   waitingSeconds: number | null; expectedRunnerWaitSeconds: number | null;
+  /** Flake radar (issue #37): the check's 7-day flake rate when it has enough
+   *  history (≥ FLAKE_MIN_RUNS distinct (sha, attempt) samples); null otherwise. */
+  flakeRatePct: number | null;
+  /** True when the check is CURRENTLY failing-class AND its flake rate is
+   *  ≥ LIKELY_FLAKE_MIN_RATE_PCT — "likely flake, consider re-run". */
+  likelyFlake: boolean;
 }
 
 export interface PrView {
@@ -65,6 +71,36 @@ export function ingestCheckSet(history: HistoryStore, repo: string, checks: Chec
   }
   for (const s of extractRunnerWaits(checks, needsFor, activeFor, graphKeys, rollupWorkflowName)) {
     history.recordRunnerWait(repo, s.name, s.event, s.waitSecs, s.startedAt);
+  }
+}
+
+/** Flake-rate map key — check names contain spaces and ' / ', so a NUL it is. */
+const flakeKey = (name: string, event: string): string => `${name}\u0000${event}`;
+
+/** A currently-failing-class flake rate at/above this reads as "likely flake". */
+export const LIKELY_FLAKE_MIN_RATE_PCT = 20;
+
+/** Live likelyFlake annotations look back this far (the 7-day flake window). */
+const FLAKE_LOOKBACK_MS = 7 * 86400_000;
+
+/** Re-query a repo's flake rates from history at most this often (the lookup is
+ *  effectively cached per build — buildState runs well under this cadence). */
+const FLAKE_CACHE_TTL_MS = 60_000;
+
+/**
+ * Train-killer attribution (issue #38): record each failing-class COMPLETED
+ * check of a merge-group build as a culprit for that group sha. INSERT OR
+ * IGNORE in HistoryStore makes this once per (repo, group sha, check) no matter
+ * how many poll cycles re-ingest the same rollup. Non-failing conclusions
+ * (SUCCESS/SKIPPED/NEUTRAL/CANCELLED — cancellation is an ejection side effect,
+ * not a verdict) and still-running checks never record.
+ */
+export function ingestGroupFailures(history: HistoryStore, repo: string,
+  groupSha: string, checks: CheckRun[]): void {
+  for (const c of checks) {
+    if (c.status !== 'COMPLETED' || !FAILING_CONCLUSIONS.has(c.conclusion ?? '')) continue;
+    if (!c.completedAt) continue;
+    history.recordGroupFailure(repo, c.name, groupSha, c.completedAt);
   }
 }
 /** Which config layer a per-repo setting value came from (GET /api/config). */
@@ -239,6 +275,7 @@ export class Poller extends EventEmitter {
   private seenNotLive = new Set<string>();                // "repo#number/env" observed not-live here
   private ancestryCheckedAt = new Map<string, number>();  // "sha:deployedSha" → last check (ms)
   private inaccessibleOwners = new Set<string>();        // owners with repository-inaccessible evidence (process lifetime)
+  private flakeRateCache = new Map<string, { at: number; rates: Map<string, number> }>(); // repo → name\0event → ratePct (#37)
   private warnedAncestryFallback = new Set<string>();    // repos whose api→clone ancestry fallback was logged (log once)
   private ancestryViaApiLogged = new Set<string>();      // repos whose first compare-API ancestry answer was logged (log once)
   private readonly apiAncestry: ApiAncestry;              // ancestrySource 'api' (the default)
@@ -644,6 +681,9 @@ export class Poller extends EventEmitter {
             ingestCheckSet(this.deps.history, repo, checks, (n) => this.needsFor(repo, n),
               (p, e) => this.needActiveFor(repo, p, e), this.graphKeysFor(repo),
               this.rollupWorkflowFor(repo), commit.oid as string);
+            // failed-group attribution (#38): maybeRecordGroupRun skips failed
+            // groups (their wall-clock would skew medians) — culprits record here
+            ingestGroupFailures(this.deps.history, repo, commit.oid as string, checks);
             this.maybeRecordGroupRun(repo, commit.oid, checks);
           }
         }
@@ -1412,19 +1452,24 @@ export class Poller extends EventEmitter {
     if (!rawStage) return null;
     const stage = this.calibrateStage(pr.repo, rawStage);
     this.stages.set(key, stage);
+    // Queued PRs: the merge-group build's checks (already fetched into
+    // groupChecks by queueOnce). Covered members whose own snapshot carries no
+    // groupHeadOid use the covering building group's oid — the run actually
+    // driving their queue-stage ETA.
+    const effectiveGroupOid = pr.queue ? (pr.queue.groupHeadOid ?? coveringOid) : null;
     this.deps.notifier?.observe({ repo: pr.repo, prNumber: pr.number, title: pr.title,
       prev: prevStage, next: stage,
-      queueCulprit: stage.stage === 'queue' ? this.unmergeableCulpritFor(pr.repo) : null });
+      queueCulprit: stage.stage === 'queue' ? this.unmergeableCulpritFor(pr.repo) : null,
+      // group-failed detail (#38): name the culprit check(s) when the group's
+      // rollup already shows failing-class conclusions
+      groupCulpritChecks: stage.stage === 'queue'
+        ? this.groupCulpritNamesFor(effectiveGroupOid) : null });
     this.trackStageEta(key, pr.repo, stage, now);
     const queueAheadCount = stage.stage === 'queue' && queueProgress != null
       ? queueProgress.aheadCount
       : null;
-    // Queued PRs: expose the merge-group build's checks as their own labeled
-    // payload (already fetched into groupChecks by queueOnce; isRequired true via
-    // mapRollupContexts; merge_group-event history supplies expected durations).
-    // Covered members whose own snapshot carries no groupHeadOid use the covering
-    // building group's oid — the run actually driving their queue-stage ETA.
-    const effectiveGroupOid = pr.queue ? (pr.queue.groupHeadOid ?? coveringOid) : null;
+    // (groupChecks payload: isRequired true via mapRollupContexts;
+    // merge_group-event history supplies expected durations)
     const storedGroup = effectiveGroupOid
       ? this.groupChecks.get(effectiveGroupOid) : undefined;
     const groupChecks = storedGroup?.length
@@ -1483,13 +1528,26 @@ export class Poller extends EventEmitter {
     return this.toCheckViews(pr.repo, pr.checks, now, prefixes);
   }
 
+  /** Failing-class check names of a merge-group build (notifier group-failed
+   *  detail, #38); null when the oid/rollup is unknown or nothing failed yet. */
+  private groupCulpritNamesFor(oid: string | null): string[] | null {
+    if (!oid) return null;
+    const names = (this.groupChecks.get(oid) ?? [])
+      .filter((c) => c.status === 'COMPLETED' && FAILING_CONCLUSIONS.has(c.conclusion ?? ''))
+      .map((c) => c.name);
+    return names.length ? names : null;
+  }
+
   /** Map a CheckRun set (head-commit PR checks or a merge-group build's checks)
    *  to CheckViews — shared by `checks` and `groupChecks` in PrView. */
   private toCheckViews(repo: string, checks: CheckRun[], now: Date, prefixes?: string[]): CheckView[] {
     const graphKeys = this.graphKeysFor(repo); // computed once per set, not per check
     const rollupWf = this.rollupWorkflowFor(repo);
+    const flakeRates = this.flakeRatesFor(repo); // 7-day rates, cached per build (#37)
     return checks.map((c) => {
       const inRollupWorkflow = workflowScopeAllows(c.workflowName, rollupWf);
+      const flakeRatePct = flakeRates.get(flakeKey(c.name, c.event)) ?? null;
+      const failingNow = c.status === 'COMPLETED' && FAILING_CONCLUSIONS.has(c.conclusion ?? '');
       // waitKind applies to live queued checks only; everything else carries nulls.
       // The derived needs graph describes the rollup workflow's jobs — a check
       // from a foreign workflow must not be assigned a node (needs: null → unknown).
@@ -1519,6 +1577,9 @@ export class Poller extends EventEmitter {
         // checks aren't eligible to run yet, so skip the history lookups entirely
         expectedRunnerWaitSeconds: wait?.kind === 'runner'
           ? this.expectedRunnerWaitFor(repo, c.name, c.event) : null,
+        flakeRatePct,
+        likelyFlake: failingNow && flakeRatePct != null
+          && flakeRatePct >= LIKELY_FLAKE_MIN_RATE_PCT,
       };
     });
   }
@@ -1533,6 +1594,24 @@ export class Poller extends EventEmitter {
   private calibrateStage(repo: string, stage: StageResult): StageResult {
     if (!CALIBRATED_STAGES.has(stage.stage) || stage.etaSeconds == null) return stage;
     return applyEtaCalibration(stage, this.deps.history.calibrationFactor(repo, stage.stage));
+  }
+
+  /**
+   * 7-day flake rates for a repo (issue #37), keyed name+NUL+event, only for
+   * checks with ≥ FLAKE_MIN_RUNS samples. Cached for FLAKE_CACHE_TTL_MS so the
+   * history query runs at most once a minute per repo (≈ once per build).
+   */
+  private flakeRatesFor(repo: string): Map<string, number> {
+    const nowMs = this.now().getTime();
+    const cached = this.flakeRateCache.get(repo);
+    if (cached && nowMs - cached.at < FLAKE_CACHE_TTL_MS) return cached.rates;
+    const since = new Date(nowMs - FLAKE_LOOKBACK_MS).toISOString();
+    const rates = new Map<string, number>();
+    for (const s of this.deps.history.flakeStats(repo, since)) {
+      if (s.totalRuns >= FLAKE_MIN_RUNS) rates.set(flakeKey(s.name, s.event), s.flakeRatePct);
+    }
+    this.flakeRateCache.set(repo, { at: nowMs, rates });
+    return rates;
   }
 
   /** Learned pickup-wait estimate: name-level median, falling back to the event pool. */

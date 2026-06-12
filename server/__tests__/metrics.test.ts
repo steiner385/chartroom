@@ -295,6 +295,7 @@ describe('computeMetrics: empty history', () => {
     expect(computeMetrics(h, '3d', 'hour', NOW)).toEqual({
       window: '3d', bucket: 'hour',
       runnerWaits: [], queue: [], slowestJobs: [], velocity: [], trends: [], calibration: [],
+      flakiness: [], trainKillers: [],
     });
   });
 });
@@ -384,5 +385,116 @@ describe('computeMetrics: exclude filter (repo toggles)', () => {
     ];
     expect(repos).toContain('acme/kept');
     expect(repos).not.toContain('acme/dropped');
+  });
+});
+
+describe('computeMetrics: flakiness (issue #37)', () => {
+  /** One sha+attempt-aware check_durations row, 60s duration. */
+  const row = (conclusion: string, sha: string, attempt: number, completedAt: string,
+    name = 'e2e', event = 'merge_group', repo = REPO) =>
+    h.recordCheckDuration(repo, name, event,
+      new Date(Date.parse(completedAt) - 60_000).toISOString(), completedAt,
+      conclusion, sha, attempt);
+
+  /** Seed `n` clean runs + `flakes` fail→pass pairs for one check. */
+  const seed = (name: string, flakes: number, cleanRuns: number, repo = REPO) => {
+    for (let i = 0; i < flakes; i++) {
+      row('FAILURE', `f${i}`, 1, `2026-06-11T0${i}:00:00Z`, name, 'merge_group', repo);
+      row('SUCCESS', `f${i}`, 2, `2026-06-11T0${i}:20:00Z`, name, 'merge_group', repo);
+    }
+    for (let i = 0; i < cleanRuns; i++) {
+      row('SUCCESS', `c${i}`, 1, `2026-06-11T1${i}:00:00Z`, name, 'merge_group', repo);
+    }
+  };
+
+  it('reports per-check flake events, runs, rate, and per-bucket trend', () => {
+    seed('e2e', 2, 6); // 2 flakes / 10 runs = 20%
+    const f = computeMetrics(h, '24h', 'hour', NOW).flakiness;
+    expect(f).toHaveLength(1);
+    expect(f[0]!.repo).toBe(REPO);
+    const c = f[0]!.checks[0]!;
+    expect(c).toMatchObject({ name: 'e2e', event: 'merge_group',
+      flakeEvents: 2, totalRuns: 10, flakeRatePct: 20 });
+    // trend buckets: every bucket with runs; flake counts joined in
+    expect(c.trend).toContainEqual({ bucket: '2026-06-11T00', flakeEvents: 1, runs: 2 });
+    expect(c.trend).toContainEqual({ bucket: '2026-06-11T10', flakeEvents: 0, runs: 1 });
+  });
+
+  it('min-runs threshold: checks with under 5 runs are excluded', () => {
+    seed('thin', 1, 2); // 4 runs total — below the floor
+    seed('thick', 1, 3); // 5 runs — at the floor
+    const checks = computeMetrics(h, '24h', 'hour', NOW).flakiness[0]!.checks;
+    expect(checks.map((c) => c.name)).toEqual(['thick']);
+  });
+
+  it('never-flaky checks are excluded; ordering is by flake rate desc', () => {
+    seed('steady', 0, 8);
+    seed('worst', 3, 3); // 50%
+    seed('mild', 1, 8);  // 10%
+    const checks = computeMetrics(h, '24h', 'hour', NOW).flakiness[0]!.checks;
+    expect(checks.map((c) => c.name)).toEqual(['worst', 'mild']);
+  });
+
+  it('window-scoped and exclude-filtered like every section', () => {
+    seed('e2e', 1, 5);
+    seed('other', 1, 5, 'acme/dropped');
+    // outside the 24h window entirely
+    row('FAILURE', 'old', 1, '2026-06-01T10:00:00Z', 'ancient');
+    row('SUCCESS', 'old', 2, '2026-06-01T10:20:00Z', 'ancient');
+    const f = computeMetrics(h, '24h', 'hour', NOW, ['acme/dropped']).flakiness;
+    expect(f.map((r) => r.repo)).toEqual([REPO]);
+    expect(f[0]!.checks.map((c) => c.name)).toEqual(['e2e']);
+  });
+});
+
+describe('computeMetrics: train killers (issue #38)', () => {
+  it('ranks checks by ejects; cost = ejects × median group run × batchSize in hours', () => {
+    h.recordGroupFailure(REPO, 'e2e', 'oid1', '2026-06-11T08:00:00Z');
+    h.recordGroupFailure(REPO, 'e2e', 'oid2', '2026-06-11T09:00:00Z');
+    h.recordGroupFailure(REPO, 'unit', 'oid3', '2026-06-11T10:00:00Z');
+    h.recordGroupRun(REPO, 1800, '2026-06-11T07:00:00Z'); // median group run 30m
+    const tk = computeMetrics(h, '24h', 'hour', NOW, [], () => 6).trainKillers;
+    expect(tk).toHaveLength(1);
+    expect(tk[0]!).toMatchObject({ repo: REPO, batchSize: 6, medianGroupRunSecs: 1800 });
+    expect(tk[0]!.checks).toEqual([
+      // 2 ejects × 1800s × 6 = 21600s = 6h
+      { name: 'e2e', ejects: 2, estCostTrainHours: 6, flakeRatePct: null },
+      { name: 'unit', ejects: 1, estCostTrainHours: 3, flakeRatePct: null },
+    ]);
+  });
+
+  it('estCostTrainHours is null without an observed group-run median; batchSize defaults to 1', () => {
+    h.recordGroupFailure(REPO, 'e2e', 'oid1', '2026-06-11T08:00:00Z');
+    const tk = computeMetrics(h, '24h', 'hour', NOW).trainKillers[0]!;
+    expect(tk.batchSize).toBe(1);
+    expect(tk.medianGroupRunSecs).toBeNull();
+    expect(tk.checks[0]!.estCostTrainHours).toBeNull();
+  });
+
+  it('cross-references the flake rate for the same check name (killer AND flaky)', () => {
+    // 'e2e' flakes 25% (1 flake / 4 runs is under min-runs → seed 5 runs: 1/5 = 20%)
+    for (let i = 0; i < 4; i++) {
+      h.recordCheckDuration(REPO, 'e2e', 'merge_group',
+        `2026-06-11T0${i}:00:00Z`, `2026-06-11T0${i}:01:00Z`, 'SUCCESS', `sha${i}`, 1);
+    }
+    h.recordCheckDuration(REPO, 'e2e', 'merge_group',
+      '2026-06-11T05:00:00Z', '2026-06-11T05:01:00Z', 'FAILURE', 'shaF', 1);
+    h.recordCheckDuration(REPO, 'e2e', 'merge_group',
+      '2026-06-11T05:20:00Z', '2026-06-11T05:21:00Z', 'SUCCESS', 'shaF', 2);
+    h.recordGroupFailure(REPO, 'e2e', 'oid1', '2026-06-11T08:00:00Z');
+    h.recordGroupFailure(REPO, 'never-flaky', 'oid2', '2026-06-11T09:00:00Z');
+    const checks = computeMetrics(h, '24h', 'hour', NOW).trainKillers[0]!.checks;
+    const e2e = checks.find((c) => c.name === 'e2e')!;
+    expect(e2e.flakeRatePct).toBeCloseTo((1 / 6) * 100); // 1 flake / 6 distinct runs
+    expect(checks.find((c) => c.name === 'never-flaky')!.flakeRatePct).toBeNull();
+  });
+
+  it('window-scoped and exclude-filtered', () => {
+    h.recordGroupFailure(REPO, 'e2e', 'old', '2026-06-01T08:00:00Z'); // outside 24h
+    h.recordGroupFailure('acme/dropped', 'e2e', 'oid1', '2026-06-11T08:00:00Z');
+    h.recordGroupFailure(REPO, 'unit', 'oid2', '2026-06-11T09:00:00Z');
+    const tk = computeMetrics(h, '24h', 'hour', NOW, ['acme/dropped']).trainKillers;
+    expect(tk.map((r) => r.repo)).toEqual([REPO]);
+    expect(tk[0]!.checks.map((c) => c.name)).toEqual(['unit']);
   });
 });

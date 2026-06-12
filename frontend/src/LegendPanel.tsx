@@ -187,6 +187,12 @@ export function LegendPanel({ open, onClose, returnFocusRef }: LegendPanelProps)
               <code>⊘ blocked on X</code> — waiting for upstream job X to finish ·{' '}
               <code>–</code> — skipped
             </p>
+            <p className="legend-caption">
+              <code>⚐ flakes N%</code> — this failing check has failed-then-passed on the
+              same commit in N% of its recent runs (7 days) — likely a flake; consider a
+              re-run before debugging. The row stays red: a flake rate is a probability,
+              not a verdict.
+            </p>
           </section>
 
           {/* (d) Queue train */}

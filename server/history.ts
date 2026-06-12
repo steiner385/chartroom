@@ -23,6 +23,36 @@ export interface EtaAccuracyRow {
 }
 
 /**
+ * Conclusions that count as "failing-class" for flake detection (#37) and
+ * group-failure attribution (#38). CANCELLED is deliberately excluded — a
+ * cancelled check is a spot kill / queue ejection side effect, not a verdict.
+ */
+export const FAILING_CONCLUSIONS = new Set(['FAILURE', 'TIMED_OUT', 'STARTUP_FAILURE']);
+
+/** Minimum distinct (sha, attempt) samples before a flake rate is meaningful —
+ *  shared by the metrics flakiness leaderboard and the live likelyFlake flag. */
+export const FLAKE_MIN_RUNS = 5;
+
+/** Per-(check, event) flake statistics over a window (issue #37). */
+export interface FlakeStat {
+  name: string; event: string;
+  /** Failing-class samples later resolved by a SUCCESS on the SAME head sha. */
+  flakeEvents: number;
+  /** Distinct (head_sha, run_attempt) samples observed (the rate denominator). */
+  totalRuns: number;
+  flakeRatePct: number;
+  /** completed_at of each flake event's failing sample (trend bucketing). */
+  flakeAts: string[];
+  /** completed_at of one sample per distinct run (trend bucketing). */
+  runAts: string[];
+}
+
+/** One recorded merge-group culprit: (repo, group sha, check) — issue #38. */
+export interface GroupFailureRow {
+  repo: string; checkName: string; groupSha: string; at: string;
+}
+
+/**
  * `ALTER TABLE … ADD COLUMN` that tolerates exactly one failure mode: the
  * column already existing (idempotent re-open of a migrated DB). Any other
  * SQLite error (missing table, I/O, locked DB) is rethrown — swallowing it
@@ -95,6 +125,10 @@ export class HistoryStore {
   private readonly stmtSelectQueueWaitsSince: Database.Statement;
   private readonly stmtSelectGroupRunsSince: Database.Statement;
   private readonly stmtSelectMergedSince: Database.Statement;
+  // Flake radar (#37) + train-killer leaderboard (#38)
+  private readonly stmtSelectFlakeRows: Database.Statement;
+  private readonly stmtInsertGroupFailure: Database.Statement;
+  private readonly stmtSelectGroupFailuresSince: Database.Statement;
 
   constructor(path: string) {
     this.db = new Database(path);
@@ -145,6 +179,14 @@ export class HistoryStore {
       CREATE INDEX IF NOT EXISTS idx_durations_completed ON check_durations(completed_at);
       CREATE INDEX IF NOT EXISTS idx_runner_waits_started ON runner_waits(started_at);
       CREATE INDEX IF NOT EXISTS idx_eta_accuracy_observed ON eta_accuracy(observed_at);
+      -- Train-killer leaderboard (issue #38): which check ejected a merge-group
+      -- build. One row per (repo, group sha, check) — re-ingestion dedupes.
+      CREATE TABLE IF NOT EXISTS group_failures (
+        repo TEXT NOT NULL, check_name TEXT NOT NULL, group_sha TEXT NOT NULL,
+        observed_at TEXT NOT NULL,
+        UNIQUE(repo, group_sha, check_name)
+      );
+      CREATE INDEX IF NOT EXISTS idx_group_failures_observed ON group_failures(observed_at);
     `);
 
     // Migration: merged_prs gains created_at (PR lifespan metric). Fresh DBs get
@@ -275,6 +317,21 @@ export class HistoryStore {
       `SELECT repo, merged_at, created_at, qa_live_at
        FROM merged_prs WHERE merged_at >= ? ORDER BY repo, merged_at`
     );
+    // Flake detection (#37) needs every conclusion (not just SUCCESS) plus the
+    // sha/attempt identity; rows without head_sha (pre-#34) can't participate.
+    this.stmtSelectFlakeRows = this.db.prepare(
+      `SELECT repo, check_name, event, head_sha, run_attempt, completed_at, conclusion
+       FROM check_durations
+       WHERE completed_at >= ? AND head_sha IS NOT NULL
+       ORDER BY repo, check_name, event, completed_at`
+    );
+    this.stmtInsertGroupFailure = this.db.prepare(
+      'INSERT OR IGNORE INTO group_failures (repo, check_name, group_sha, observed_at) VALUES (?,?,?,?)'
+    );
+    this.stmtSelectGroupFailuresSince = this.db.prepare(
+      `SELECT repo, check_name, group_sha, observed_at AS at
+       FROM group_failures WHERE observed_at >= ? ORDER BY repo, check_name, observed_at`
+    );
   }
 
   /** `headSha`/`runAttempt` (issue #34): the PR/group head commit the check ran
@@ -366,6 +423,88 @@ export class HistoryStore {
   medianGroupRun(repo: string): number | null {
     const rows = this.stmtSelectGroupRuns.all(repo) as { duration_secs: number }[];
     return rows.length ? median(rows.map((r) => r.duration_secs)) : null;
+  }
+
+  /** Record a merge-group culprit check (issue #38) — once per
+   *  (repo, group sha, check); returns false on the dedupe path or bad input. */
+  recordGroupFailure(repo: string, checkName: string, groupSha: string, observedAt: string): boolean {
+    if (!checkName || !groupSha || !observedAt) return false;
+    const info = this.stmtInsertGroupFailure.run(repo, checkName, groupSha, observedAt);
+    return info.changes > 0;
+  }
+
+  /** All group-failure rows at/after `since`, ordered repo → check → observed_at. */
+  groupFailuresSince(since: string): GroupFailureRow[] {
+    const rows = this.stmtSelectGroupFailuresSince.all(since) as Record<string, unknown>[];
+    return rows.map((r) => ({
+      repo: r.repo as string, checkName: r.check_name as string,
+      groupSha: r.group_sha as string, at: r.at as string,
+    }));
+  }
+
+  /**
+   * Flake statistics (issue #37) for one repo over a window: a flake event is a
+   * failing-class sample (FAILURE/TIMED_OUT/STARTUP_FAILURE) on (check, event,
+   * head_sha) later resolved by a SUCCESS on the SAME sha — at a higher
+   * run_attempt when both attempts are known, otherwise at a later completed_at.
+   * A failure followed only by a success on a NEW sha is a real failure that got
+   * fixed, not a flake. `totalRuns` counts distinct (sha, attempt) samples
+   * (rows missing run_attempt count individually by timestamp). Rows without
+   * head_sha (pre-#34 history) are excluded entirely.
+   */
+  flakeStats(repo: string, since: string): FlakeStat[] {
+    return this.flakeStatsByRepo(since).get(repo) ?? [];
+  }
+
+  /** flakeStats for every repo with eligible rows in the window (metrics path). */
+  flakeStatsByRepo(since: string): Map<string, FlakeStat[]> {
+    interface Row { repo: string; check_name: string; event: string; head_sha: string;
+      run_attempt: number | null; completed_at: string; conclusion: string }
+    const rows = this.stmtSelectFlakeRows.all(since) as unknown as Row[];
+    // Group rows by (repo, check, event) — names contain spaces and ' / ', so
+    // a NUL separator keys the map; identity fields are re-read from the
+    // group's first row, never split back out of the key.
+    const SEP = '\u0000';
+    const byCheck = new Map<string, Row[]>();
+    for (const r of rows) {
+      const k = `${r.repo}${SEP}${r.check_name}${SEP}${r.event}`;
+      byCheck.set(k, [...(byCheck.get(k) ?? []), r]);
+    }
+    const out = new Map<string, FlakeStat[]>();
+    for (const checkRows of byCheck.values()) {
+      const { repo, check_name: name, event } = checkRows[0]!;
+      const runKeys = new Set<string>();
+      const runAts: string[] = [];
+      const bySha = new Map<string, Row[]>();
+      for (const r of checkRows) {
+        // run identity: (sha, attempt); attempt-less rows fall back to their
+        // timestamp so two attempt-less samples on one sha still read as two runs
+        const runKey = `${r.head_sha}${SEP}${r.run_attempt ?? `t:${r.completed_at}`}`;
+        if (!runKeys.has(runKey)) { runKeys.add(runKey); runAts.push(r.completed_at); }
+        bySha.set(r.head_sha, [...(bySha.get(r.head_sha) ?? []), r]);
+      }
+      const flakeAts: string[] = [];
+      for (const shaRows of bySha.values()) {
+        const successes = shaRows.filter((r) => r.conclusion === 'SUCCESS');
+        if (!successes.length) continue;
+        for (const f of shaRows) {
+          if (!FAILING_CONCLUSIONS.has(f.conclusion)) continue;
+          const resolved = successes.some((s) =>
+            s.run_attempt != null && f.run_attempt != null
+              ? s.run_attempt > f.run_attempt
+              : s.completed_at > f.completed_at);
+          if (resolved) flakeAts.push(f.completed_at);
+        }
+      }
+      const totalRuns = runKeys.size;
+      const stat: FlakeStat = {
+        name, event, flakeEvents: flakeAts.length, totalRuns,
+        flakeRatePct: totalRuns ? (flakeAts.length / totalRuns) * 100 : 0,
+        flakeAts: flakeAts.sort(), runAts,
+      };
+      out.set(repo, [...(out.get(repo) ?? []), stat]);
+    }
+    return out;
   }
 
   /** Observed enqueue→merge wall-clock wait for a merge-queue PR. Rejects ≤0/NaN. */

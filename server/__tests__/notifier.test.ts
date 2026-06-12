@@ -59,6 +59,16 @@ describe('Notifier transition matrix', () => {
     const h = harness();
     h.observe(stage('queue'), stage('queue', 'group-failed'));
     expect(h.events.map((e) => e.type)).toEqual(['group-failed']);
+    expect(h.events[0]!.detail).toBe('the merge-queue group build failed');
+  });
+
+  it('group-failed detail names the culprit check(s) when known (issue #38)', () => {
+    const h = harness();
+    h.notifier.observe({ repo: 'acme/widgets', prNumber: 7, title: 'fix: the thing',
+      prev: stage('queue'), next: stage('queue', 'group-failed'),
+      groupCulpritChecks: ['e2e', 'unit'] });
+    expect(h.events[0]!.detail)
+      .toBe('the merge-queue group build failed — culprit: e2e, unit');
   });
 
   it('queue-blocked fires for the cascade-victim substate, naming the culprit', () => {
