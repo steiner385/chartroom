@@ -139,15 +139,36 @@ export interface ConfigPutError {
 }
 
 // ---- Metrics API mirror (GET /api/metrics) ----
-// BINDING CONTRACT with `server/metrics.ts` (round 12 plan) — change both
-// together. All p50/p90 values are seconds; meanHours is hours. `date` is a
-// UTC day (YYYY-MM-DD); `at` is a full ISO timestamp.
+// BINDING CONTRACT with `server/metrics.ts` (metrics-readability revision) —
+// change both together. All p50/p90 values are seconds; meanHours is hours.
+// `bucket` keys are ISO UTC hours (YYYY-MM-DDTHH) or days (YYYY-MM-DD)
+// depending on the payload-level `bucket`. Headline stats carry { value, prev }
+// where prev is the same aggregate over the previous equal window (null when
+// not computable).
+
+export type MetricsWindow = '24h' | '3d' | '7d' | '14d' | '30d';
+export type MetricsBucket = 'hour' | 'day';
+
+export interface HeadlineStat { value: number | null; prev: number | null }
 
 export interface MetricsPayload {
-  windowDays: number;
-  runnerWaits: { repo: string; event: string; days: { date: string; p50: number; p90: number; n: number }[] }[];
-  queue: { repo: string; mergesPerDay: { date: string; count: number }[]; queueWaitDays: { date: string; p50: number; n: number }[]; groupRunDays: { date: string; p50: number; n: number }[] }[];
-  slowestJobs: { repo: string; jobs: { name: string; event: string; p50: number; p90: number; variability: number; n: number; trend: { date: string; p50: number }[] }[] }[]; // top 10 by p50, variability = p90/p50
-  velocity: { repo: string; mergedPerDay: { date: string; count: number }[]; mergeToQaDays: { date: string; p50: number; n: number }[]; avgLifespanDays: { date: string; meanHours: number; n: number }[] }[];
-  trends: { repo: string; samples: { at: string; open: number; ci: number; queue: number; failed: number }[] }[]; // raw state_samples within window (≤15min cadence)
+  window: MetricsWindow;
+  bucket: MetricsBucket;
+  runnerWaits: { repo: string; event: string; p50: HeadlineStat;
+    buckets: { bucket: string; p50: number; p90: number; n: number }[] }[];
+  queue: { repo: string;
+    merges: HeadlineStat; queueWaitP50: HeadlineStat; groupRunP50: HeadlineStat;
+    mergesPerBucket: { bucket: string; count: number }[];
+    queueWaitBuckets: { bucket: string; p50: number; n: number }[];
+    groupRunBuckets: { bucket: string; p50: number; n: number }[] }[];
+  slowestJobs: { repo: string; jobs: { name: string; event: string; p50: number; p90: number;
+    variability: number; n: number;
+    trend: { bucket: string; p50: number; p90: number; n: number }[] }[] }[]; // top 10 by p50, variability = p90/p50
+  velocity: { repo: string;
+    merged: HeadlineStat; mergeToQaP50: HeadlineStat; lifespanMeanHours: HeadlineStat;
+    mergedPerBucket: { bucket: string; count: number }[];
+    mergeToQaBuckets: { bucket: string; p50: number; n: number }[];
+    avgLifespanBuckets: { bucket: string; meanHours: number; n: number }[] }[];
+  trends: { repo: string;
+    points: { bucket: string; open: number; ci: number; queue: number; failed: number }[] }[]; // last state sample per bucket (closing value)
 }
