@@ -81,11 +81,11 @@ describe('PrRow', () => {
     expect(screen.getByText('Draft')).toBeInTheDocument(); // sub line reason
   });
 
-  it('expands on row click to show check detail with advisory divider, collapses on second click', () => {
+  it('expands on row click to show check detail, collapses on second click', () => {
     render(<PrRow pr={pr({})} hasDeploy />);
     fireEvent.click(screen.getByText('#8962'));
     expect(screen.getByText('fast-checks / ESLint')).toBeInTheDocument();
-    expect(screen.getByText('advisory')).toBeInTheDocument();
+    expect(screen.queryByText('advisory')).not.toBeInTheDocument();
     fireEvent.click(screen.getByText('#8962'));
     expect(screen.queryByText('fast-checks / ESLint')).not.toBeInTheDocument();
   });

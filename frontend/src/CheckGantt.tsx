@@ -117,21 +117,21 @@ export function groupByWorkflow(checks: CheckView[]): WorkflowGroup[] {
     .sort((a, b) => rank(a) - rank(b)); // stable: first-seen order within a rank
 }
 
-/** Expanded-panel check list as horizontal Gantt bars (required, advisory below
- *  the divider).
+/** Expanded-panel check list as horizontal Gantt bars. Advisory checks render
+ *  italic and muted (via the `.g-advisory` class on their row) to distinguish
+ *  them from required checks without a section divider.
  *
  *  When checks span multiple workflows, rows group under a muted header per
  *  workflow (null last as 'other checks'); the required→advisory ordering is
- *  kept within the leading (rollup) workflow and foreign workflows render in
- *  the advisory zone under their own headers. One shared time scale spans the
- *  whole panel. A single-workflow panel renders exactly as before (no headers). */
+ *  kept within the leading (rollup) workflow and foreign workflows render after
+ *  the rollup workflow's rows. One shared time scale spans the whole panel.
+ *  A single-workflow panel renders exactly as before (no headers). */
 export function CheckGantt({ checks, stage }: {
   checks: CheckView[]; stage: string;
 }) {
   const scale = ganttScale(checks);
   const groups = groupByWorkflow(checks);
   const grouped = groups.length > 1;
-  const anyAdvisory = checks.some((c) => !c.isRequired);
   return (
     <ul className="checks gantt">
       {groups.map((g, gi) => {
@@ -141,7 +141,6 @@ export function CheckGantt({ checks, stage }: {
           <Fragment key={`wf-${gi}`}>
             {grouped && <li className="divider g-workflow">{g.name ?? 'other checks'}</li>}
             {required.map((c, i) => <GanttRow key={`${c.name}-${i}`} c={c} scale={scale} />)}
-            {gi === 0 && anyAdvisory && <li className="divider">advisory</li>}
             {advisory.map((c, i) => <GanttRow key={`${c.name}-${i}`} c={c} scale={scale} />)}
           </Fragment>
         );
