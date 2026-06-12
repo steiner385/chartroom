@@ -110,8 +110,10 @@ pnpm dev      # Vite on :5173 proxying /api to :4400
 ```
 
 First launch backfills ~50 commits of check-run history per repo so ETAs work
-immediately. History lives in `data/history.db`; bare clones for deploy ancestry
-checks live in `data/clones/`.
+immediately. History lives in `data/history.db`. Deploy ancestry ("is this
+merge commit live on QA/prod yet?") is answered through the GitHub compare API
+by default — no git binary, no local clones. Only with `ancestrySource:
+"clone"` do bare clones get created in `data/clones/`.
 
 ### 5. Install as a systemd user service
 
@@ -152,14 +154,15 @@ All fields are optional; the table shows default values.
 | `webhooks.enabled` | `false` | Opt-in signed webhook receiver (see [Webhooks](#webhooks-optional)). File-only. |
 | `webhooks.secretPath` | — | **Required when webhooks are enabled.** Path to the shared webhook secret file (written by `pnpm app:setup`). File-only. |
 | `webhooks.path` | `"/api/webhooks/github"` | Route the receiver listens on. File-only. |
-| `deployUrlAllowlist` | unset | Optional hostname allowlist for **in-repo** (`.pr-dashboard.yml`-sourced) deploy `healthUrl`/`cloneUrl`. Unset → in-repo URLs honored as-is. File-only. |
+| `deployUrlAllowlist` | unset | Optional hostname allowlist for **in-repo** (`.pr-dashboard.yml`-sourced) deploy `healthUrl`/`cloneUrl` (`cloneUrl` is only checked with `ancestrySource: "clone"` — it is never touched otherwise). Unset → in-repo URLs honored as-is. File-only. |
+| `ancestrySource` | `"api"` | How deploy ancestry is answered. `"api"` = GitHub compare API (no git binary, no local clones; a pre-existing clone serves as a transport-error fallback only). `"clone"` = local bare clones in `data/clones/` (the previous mechanism — useful if you prefer local checks or are rate-limit constrained). File-only. |
 | `apiUrl` | `"https://api.github.com/graphql"` | GraphQL endpoint. Override for GitHub Enterprise (e.g. `"https://github.example.com/api/graphql"`). |
 | `rateLimitFloor` | `1000` | Remaining rate-limit budget below which polling degrades to slow intervals. |
 | `intervals.sweepMs` | `60000` | Full-sweep poll interval (ms). |
 | `intervals.hotMs` | `15000` | Fast-poll interval when active PRs are in flight (ms). |
 | `intervals.deployMs` | `30000` | Deploy-health-check interval (ms). |
 | `deploy.<repo>` | `{}` | Deploy-tracking config keyed by `"owner/repo"`. Omit the key to disable deploy stages for that repo. |
-| `deploy.<repo>.cloneUrl` | `"https://github.com/<repo>.git"` | Git URL for the bare clone used for ancestry checks. |
+| `deploy.<repo>.cloneUrl` | `"https://github.com/<repo>.git"` | Git URL for the bare clone used for ancestry checks. **Only used (and only needed) when `ancestrySource` is `"clone"`.** |
 | `deploy.<repo>.defaultBranch` | `"main"` | Branch that merges land on (used to anchor ancestry walks). |
 | `deploy.<repo>.environments[]` | — | Array of deployment environments (at most one `qa` and one `prod`). |
 | `deploy.<repo>.environments[].name` | — | **Required.** `"qa"` or `"prod"`. |
@@ -232,7 +235,7 @@ workflowPath: .github/workflows/ci.yml
 requiredCheckPrefixes: []            # replaces ci.yml derivation when set ([] disables prefix matching)
 batchSize: 6                         # merge-queue batch size
 deploy:                              # enables deploy stages for this repo
-  cloneUrl: https://github.com/owner/repo.git   # default: GitHub URL of the repo
+  cloneUrl: https://github.com/owner/repo.git   # default: GitHub URL of the repo (clone mode only)
   defaultBranch: main
   environments:                      # at most one qa and one prod
     - name: qa                       # qa | prod
@@ -263,12 +266,14 @@ came from (`override` / `in-repo` / `derived` / `default`).
 
 By default, **in-repo deploy URLs are honored as-is**: a `.pr-dashboard.yml`
 lets that repo's maintainers point `healthUrl` (which the dashboard polls) and
-`cloneUrl` (which it clones) anywhere. That is acceptable for the single-user
-self-hosted deployment — you control the repos you watch. If you watch repos
-you don't fully control, set `deployUrlAllowlist` in `config.json`: when set,
-in-repo deploy entries whose `healthUrl`/`cloneUrl` host is not on the list are
-dropped with a logged warning. Instance-override deploy config (`deploy.<repo>`
-in your own `config.json`) is exempt — the operator wrote it.
+— in clone mode — `cloneUrl` (which it clones) anywhere. That is acceptable for
+the single-user self-hosted deployment — you control the repos you watch. If
+you watch repos you don't fully control, set `deployUrlAllowlist` in
+`config.json`: when set, in-repo deploy entries whose `healthUrl` host (plus
+the `cloneUrl` host when `ancestrySource` is `"clone"` — the only mode that
+touches it) is not on the list are dropped with a logged warning.
+Instance-override deploy config (`deploy.<repo>` in your own `config.json`) is
+exempt — the operator wrote it.
 
 ---
 
@@ -294,10 +299,15 @@ the poller uses name prefixes, resolved in this order:
 1. **Config**: `repos["<owner>/<repo>"].requiredCheckPrefixes` in `config.json`
    — always wins. An explicit empty array (`[]`) disables prefix matching
    entirely for that repo.
-2. **Derived**: for repos with a deploy clone, the poller reads
-   `.github/workflows/ci.yml` at startup (and re-derives every 24h) and walks
+2. **Derived**: the poller reads the repo's workflow file (default
+   `.github/workflows/ci.yml`) at startup (and re-derives every 24h) and walks
    the rollup job's `needs:` graph; each job in the closure contributes
    its display name as a prefix (reusable-workflow jobs get a ` /` suffix).
+   With `ancestrySource: "api"` (the default) the file is read over the
+   GraphQL blob API — no clone needed — for every deploy repo **and** every
+   repo that opts in via a `repos.<repo>` entry or an in-repo
+   `.pr-dashboard.yml`. With `ancestrySource: "clone"` derivation reads the
+   bare clone and is limited to deploy repos (as before).
    A successful derivation is logged:
    `[poller] derived required-check prefixes for <repo>: …`.
    Unparseable YAML leaves the previous prefixes in place; valid YAML with no
@@ -426,20 +436,25 @@ webhook receiver**:
   browser-mediated CSRF from random websites against the loopback service. The
   webhook path is exempt — it is authenticated by its HMAC signature instead.
 - **Credential/network config is file-only.** `tokenSource`, `apiUrl`, `port`,
-  `app`, `webhooks`, and `deployUrlAllowlist` can never be written through
+  `app`, `webhooks`, `ancestrySource`, and `deployUrlAllowlist` can never be
+  written through
   `PUT /api/config` (the server rejects them with `400 { offendingKeys }`).
   Anything that could redirect your token or re-bind the service requires
   editing the config file on disk.
 - **In-repo deploy URLs and `deployUrlAllowlist`.** Watched repos can carry a
-  `.pr-dashboard.yml` that points `healthUrl`/`cloneUrl` anywhere. If you don't
+  `.pr-dashboard.yml` that points `healthUrl` (and, in clone mode, `cloneUrl`)
+  anywhere. If you don't
   fully control every watched repo, set `deployUrlAllowlist` to the hostnames
   you trust; non-matching in-repo deploy entries are dropped with a warning
   (instance-override config is exempt).
-- **Bare clones in `data/clones/` contain full repository history.** Any repo
-  configured under `deploy.<repo>` will have its full git history cloned locally.
-  On private repos this means all commits, messages, and tree objects are stored on
-  disk in `data/clones/`. Protect this directory accordingly; it is excluded from
-  source control via `.gitignore`.
+- **Bare clones in `data/clones/` contain full repository history — clone mode
+  only.** With the default `ancestrySource: "api"` no clones are ever created
+  (ancestry runs over the compare API) and this concern does not apply. With
+  `ancestrySource: "clone"`, any repo configured under `deploy.<repo>` will
+  have its full git history cloned locally — on private repos this means all
+  commits, messages, and tree objects are stored on disk in `data/clones/`.
+  Protect this directory accordingly; it is excluded from source control via
+  `.gitignore`.
 - **Token source.** The default `tokenSource: "gh"` reads the token from the `gh`
   CLI keyring and deliberately strips the `GITHUB_TOKEN` environment variable so
   a stale env var cannot shadow the fresh keyring credential. `tokenSource: "env"`

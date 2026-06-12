@@ -430,6 +430,8 @@ export function SettingsPanel({ open, onClose, returnFocusRef, connected }: Sett
                 <dd><code>{config.resolved.apiUrl}</code></dd>
                 <dt>port</dt>
                 <dd><code>{config.resolved.port}</code></dd>
+                <dt>ancestrySource</dt>
+                <dd><code>{config.resolved.ancestrySource}</code></dd>
                 <dt>config file</dt>
                 <dd><code>{config.sources.configPath}</code></dd>
               </dl>

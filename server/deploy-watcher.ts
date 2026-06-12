@@ -26,8 +26,14 @@ export class DeployWatcher {
     return join(this.cloneRoot, `${repo.replace('/', '__')}.git`);
   }
 
+  /** Whether a bare clone for the repo already exists locally (api-mode
+   *  ancestry falls back to the clone check only when one does). */
+  hasClone(repo: string): boolean {
+    return existsSync(this.cloneDir(repo));
+  }
+
   async ensureClone(repo: string, cloneUrl: string): Promise<void> {
-    if (existsSync(this.cloneDir(repo))) return;
+    if (this.hasClone(repo)) return;
     mkdirSync(this.cloneRoot, { recursive: true });
     await run('git', ['clone', '--bare', '--filter=blob:none', cloneUrl, this.cloneDir(repo)]);
   }
