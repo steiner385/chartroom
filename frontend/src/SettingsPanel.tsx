@@ -437,6 +437,27 @@ export function SettingsPanel({ open, onClose, returnFocusRef, connected }: Sett
               </dl>
             </section>
 
+            {/* 5. Notifications (read-only) */}
+            <section className="settings-section">
+              <h3>Notifications</h3>
+              <p className="settings-hint">
+                file-only — edit notifications.* in config.json (the command runs on the
+                server host); browser notifications use the bell in the header
+              </p>
+              <dl className="repo-settings-grid">
+                <dt>enabled</dt>
+                <dd><code>{String(config.resolved.notifications.enabled)}</code></dd>
+                <dt>command</dt>
+                <dd><code>{config.resolved.notifications.command.join(' ') || '(none)'}</code></dd>
+                <dt>events</dt>
+                <dd>
+                  {Object.entries(config.resolved.notifications.events)
+                    .map(([type, on]) => `${type}: ${on ? 'on' : 'off'}`)
+                    .join(' · ')}
+                </dd>
+              </dl>
+            </section>
+
             {/* Actions */}
             <footer className="settings-actions">
               <button

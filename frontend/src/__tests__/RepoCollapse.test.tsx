@@ -37,7 +37,8 @@ const STATE: DashboardState = {
 };
 
 const hook = (overrides?: Partial<DashboardHook>): DashboardHook =>
-  ({ state: STATE, connected: true, ...overrides });
+  ({ state: STATE, connected: true,
+    notifySupported: true, notifyEnabled: false, toggleNotify: () => {}, ...overrides });
 
 // ---------- localStorage helpers ----------
 

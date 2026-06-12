@@ -24,7 +24,8 @@ const STATE: DashboardState = {
 };
 
 const hook = (overrides?: Partial<DashboardHook>): DashboardHook =>
-  ({ state: STATE, connected: true, ...overrides });
+  ({ state: STATE, connected: true,
+    notifySupported: true, notifyEnabled: false, toggleNotify: vi.fn(), ...overrides });
 
 beforeEach(() => {
   mockUseDashboard.mockReturnValue(hook());
@@ -214,5 +215,41 @@ describe('App tab bar', () => {
       expect(screen.queryByRole('heading', { name: 'Legend' })).not.toBeInTheDocument();
       expect(document.activeElement).toBe(btn);
     });
+  });
+});
+
+describe('App notification bell (issue #19)', () => {
+  it('renders the bell with aria-pressed=false when disabled', () => {
+    render(<App />);
+    const bell = screen.getByRole('button', { name: 'Browser notifications' });
+    expect(bell).toHaveAttribute('aria-pressed', 'false');
+  });
+
+  it('renders aria-pressed=true when enabled', () => {
+    mockUseDashboard.mockReturnValue(hook({ notifyEnabled: true }));
+    render(<App />);
+    expect(screen.getByRole('button', { name: 'Browser notifications' }))
+      .toHaveAttribute('aria-pressed', 'true');
+  });
+
+  it('clicking the bell calls toggleNotify', () => {
+    const toggleNotify = vi.fn();
+    mockUseDashboard.mockReturnValue(hook({ toggleNotify }));
+    render(<App />);
+    fireEvent.click(screen.getByRole('button', { name: 'Browser notifications' }));
+    expect(toggleNotify).toHaveBeenCalledTimes(1);
+  });
+
+  it('hides the bell entirely when the browser lacks Notification support', () => {
+    mockUseDashboard.mockReturnValue(hook({ notifySupported: false }));
+    render(<App />);
+    expect(screen.queryByRole('button', { name: 'Browser notifications' }))
+      .not.toBeInTheDocument();
+  });
+
+  it('documents the tab-must-stay-open caveat in the bell tooltip', () => {
+    render(<App />);
+    expect(screen.getByRole('button', { name: 'Browser notifications' }))
+      .toHaveAttribute('title', expect.stringContaining('tab must stay open'));
   });
 });

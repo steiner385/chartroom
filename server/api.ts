@@ -170,10 +170,22 @@ export function createApp(opts: {
       connection: 'keep-alive',
     });
     const send = () => { if (res.destroyed) return; res.write(`data: ${JSON.stringify(opts.getState())}\n\n`); };
+    // Named SSE event (issue #19): notification events ride the same stream as
+    // the state pushes — EventSource clients opt in via addEventListener
+    // ('notification'); the default onmessage handler never sees named events.
+    const sendNotification = (ev: unknown) => {
+      if (res.destroyed) return;
+      res.write(`event: notification\ndata: ${JSON.stringify(ev)}\n\n`);
+    };
     send();
     opts.bus.on('update', send);
+    opts.bus.on('notification', sendNotification);
     const ping = setInterval(() => { if (res.destroyed) { clearInterval(ping); return; } res.write(': ping\n\n'); }, 25_000);
-    req.on('close', () => { opts.bus.off('update', send); clearInterval(ping); });
+    req.on('close', () => {
+      opts.bus.off('update', send);
+      opts.bus.off('notification', sendNotification);
+      clearInterval(ping);
+    });
   });
 
   if (staticDir && existsSync(staticDir)) {

@@ -24,5 +24,17 @@
       "batchSize": 6
     }
   },
-  "intervals": { "sweepMs": 60000, "hotMs": 15000, "deployMs": 30000 }
+  "intervals": { "sweepMs": 60000, "hotMs": 15000, "deployMs": 30000 },
+  "notifications": {
+    "enabled": false,
+    "command": ["notify-send", "{title}", "{body}"],
+    "events": {
+      "ci-failed": true,
+      "group-failed": true,
+      "queue-blocked": true,
+      "ready": false,
+      "overdue": false,
+      "prod-live": true
+    }
+  }
 }

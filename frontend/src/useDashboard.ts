@@ -1,14 +1,55 @@
-import { useEffect, useState } from 'react';
-import type { DashboardState } from './types';
+import { useCallback, useEffect, useRef, useState } from 'react';
+import type { DashboardState, NotificationEvent, NotificationEventType } from './types';
+
+// ---- browser notifications (issue #19) ----
+// Opt-in Web Notifications for the named `notification` SSE frames. No service
+// worker is involved: the tab must be open (even backgrounded) to receive them.
+
+const LS_NOTIFY_KEY = 'prdash.notifications';
+
+const NOTIFY_LABELS: Record<NotificationEventType, string> = {
+  'ci-failed': 'CI failed',
+  'group-failed': 'merge-queue group failed',
+  'queue-blocked': 'queue blocked',
+  ready: 'ready to merge',
+  overdue: 'overdue',
+  'prod-live': 'live on prod',
+};
+
+function notifySupported(): boolean {
+  return typeof Notification !== 'undefined';
+}
+
+function readNotifyPref(): boolean {
+  try { return localStorage.getItem(LS_NOTIFY_KEY) === 'true'; } catch { return false; }
+}
+
+function writeNotifyPref(v: boolean): void {
+  try { localStorage.setItem(LS_NOTIFY_KEY, String(v)); } catch { /* private mode — ignore */ }
+}
 
 export interface DashboardHook {
   state: DashboardState | null;
   connected: boolean;
+  /** Whether this browser supports Web Notifications (bell hidden otherwise). */
+  notifySupported: boolean;
+  /** Bell state: notifications are shown only when true AND permission granted. */
+  notifyEnabled: boolean;
+  /** Toggle the bell; turning it on requests Notification permission if needed. */
+  toggleNotify: () => void;
 }
 
 export function useDashboard(): DashboardHook {
   const [state, setState] = useState<DashboardState | null>(null);
   const [connected, setConnected] = useState(false);
+  const supported = notifySupported();
+  // restore the persisted bell only while permission is still granted — a
+  // revoked permission would otherwise show an on-bell that does nothing
+  const [notifyEnabled, setNotifyEnabled] = useState(() =>
+    supported && readNotifyPref() && Notification.permission === 'granted');
+  const notifyEnabledRef = useRef(notifyEnabled);
+  notifyEnabledRef.current = notifyEnabled;
+
   useEffect(() => {
     // No initial fetch: the SSE endpoint sends a full state frame on connect,
     // and a parallel fetch can race it and overwrite fresher data.
@@ -16,7 +57,34 @@ export function useDashboard(): DashboardHook {
     es.onopen = () => setConnected(true);
     es.onmessage = (e) => { setConnected(true); setState(JSON.parse(e.data) as DashboardState); };
     es.onerror = () => setConnected(false);
+    // Named `notification` frames (issue #19) — never delivered to onmessage.
+    es.addEventListener('notification', (e: MessageEvent) => {
+      if (!notifyEnabledRef.current) return;
+      if (!notifySupported() || Notification.permission !== 'granted') return;
+      try {
+        const ev = JSON.parse(e.data as string) as NotificationEvent;
+        new Notification(`${ev.repo}#${ev.prNumber} ${NOTIFY_LABELS[ev.type] ?? ev.type}`, {
+          body: ev.detail ? `${ev.title} — ${ev.detail}` : ev.title,
+          // tag collapses repeats of the same (PR, event) if the server restarts
+          tag: `${ev.repo}#${ev.prNumber}|${ev.type}`,
+        });
+      } catch { /* malformed frame — ignore */ }
+    });
     return () => es.close();
   }, []);
-  return { state, connected };
+
+  const toggleNotify = useCallback(() => {
+    if (!notifySupported()) return;
+    if (notifyEnabledRef.current) {
+      setNotifyEnabled(false);
+      writeNotifyPref(false);
+      return;
+    }
+    const enable = () => { setNotifyEnabled(true); writeNotifyPref(true); };
+    if (Notification.permission === 'granted') { enable(); return; }
+    if (Notification.permission === 'denied') return; // browser-level block — bell stays off
+    void Notification.requestPermission().then((p) => { if (p === 'granted') enable(); });
+  }, []);
+
+  return { state, connected, notifySupported: supported, notifyEnabled, toggleNotify };
 }
