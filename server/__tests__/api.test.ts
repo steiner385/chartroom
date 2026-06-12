@@ -36,6 +36,53 @@ describe('api', () => {
     expect(res.headers['content-type']).toContain('text/event-stream');
     expect(String(res.body)).toContain('"acme/widgets"');
   });
+
+  it('GET /api/events relays bus notification events as named SSE frames (issue #19)', async () => {
+    const bus = new EventEmitter();
+    const app = createApp({ getState: () => STATE, bus });
+    const EV = { repo: 'acme/widgets', prNumber: 7, title: 'fix: the thing',
+      type: 'ci-failed', detail: 'a required check failed' };
+    // emit on an interval until the stream observes the frame — the SSE handler
+    // subscribes asynchronously, so a single fire-and-forget emit could race it
+    const timer = setInterval(() => bus.emit('notification', EV), 10);
+    try {
+      const res = await request(app).get('/api/events')
+        .parse((res, cb) => {
+          let data = '';
+          res.on('data', (chunk: Buffer) => {
+            data += chunk.toString();
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            if (data.includes('event: notification')) { (res as any).destroy(); cb(null, data); }
+          });
+        });
+      const body = String(res.body);
+      const frame = body.split('\n\n').find((f) => f.includes('event: notification'))!;
+      expect(frame).toBeDefined();
+      expect(frame).toContain('event: notification');
+      const json = JSON.parse(frame.split('\n').find((l) => l.startsWith('data: '))!.slice(6));
+      expect(json).toEqual(EV);
+    } finally {
+      clearInterval(timer);
+    }
+  });
+
+  it('SSE notification listeners are removed on close (no leak)', async () => {
+    const bus = new EventEmitter();
+    const app = createApp({ getState: () => STATE, bus });
+    await request(app).get('/api/events')
+      .parse((res, cb) => {
+        let data = '';
+        res.on('data', (chunk: Buffer) => {
+          data += chunk.toString();
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          if (data.includes('\n\n')) { (res as any).destroy(); cb(null, data); }
+        });
+      });
+    // destroy() fired 'close' — both update and notification listeners must be gone
+    await new Promise((r) => setTimeout(r, 20));
+    expect(bus.listenerCount('update')).toBe(0);
+    expect(bus.listenerCount('notification')).toBe(0);
+  });
 });
 
 describe('api SPA fallback', () => {

@@ -4,6 +4,7 @@ import { HistoryStore } from '../history';
 import { RateLimitError, type GithubClient } from '../github';
 import { ClientRouter } from '../client-router';
 import { DEFAULTS, type AppConfig } from '../config';
+import { Notifier, type NotificationEvent, type NotificationsConfig } from '../notifier';
 import type { DeployWatcher } from '../deploy-watcher';
 
 const NOW = new Date('2026-06-10T12:00:00Z');
@@ -3673,5 +3674,121 @@ describe("Poller ancestrySource 'api' (issue #18)", () => {
     t += 61_000;                 // past the first 60s backoff step
     await p.deployOnce();
     expect(derivationReads()).toBe(2);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Notifier wiring (issue #19): the poller feeds every classify result through
+// the Notifier and re-emits its 'notification' events on its own bus (the SSE
+// layer subscribes there); prod-live fires from the deploy-ancestry cycle.
+// ---------------------------------------------------------------------------
+
+describe('Poller notifier wiring (issue #19)', () => {
+  const ALL_EVENTS_ON: NotificationsConfig = {
+    enabled: false, // command sink off — bus emission is what's under test
+    command: [],
+    events: { 'ci-failed': true, 'group-failed': true, 'queue-blocked': true,
+      ready: true, overdue: true, 'prod-live': true },
+  };
+
+  function notifierHarness() {
+    const events: NotificationEvent[] = [];
+    const notifier = new Notifier({ config: () => ALL_EVENTS_ON });
+    return { notifier, events };
+  }
+
+  const FAIL_DETAIL = { r0: { nameWithOwner: 'acme/widgets', pr8962: {
+    number: 8962, title: 'fix: overlap', url: 'u8962', isDraft: false, mergeStateStatus: 'BLOCKED',
+    mergedAt: null, headRefOid: 'head8962', autoMergeRequest: null, mergeCommit: null, mergeQueueEntry: null,
+    commits: { nodes: [{ commit: { statusCheckRollup: { state: 'FAILURE',
+      contexts: { pageInfo: { hasNextPage: false },
+        nodes: [{ ...CHECK_DONE, conclusion: 'FAILURE' }] } } } }] },
+  } } };
+
+  it('a PR entering parked/ci-failed emits a notification re-emitted on the poller bus, once', async () => {
+    const { notifier, events } = notifierHarness();
+    const p = new Poller({ router: asRouter(fakeClient(SWEEP_RESPONSE, FAIL_DETAIL)),
+      history, deploy: noDeploy(), config: CONFIG, now: () => NOW, notifier });
+    p.on('notification', (ev: NotificationEvent) => events.push(ev));
+    await p.sweepOnce();
+    await p.detailOnce();
+    const fails = events.filter((e) => e.type === 'ci-failed');
+    expect(fails).toHaveLength(1);
+    expect(fails[0]).toMatchObject({ repo: 'acme/widgets', prNumber: 8962,
+      title: 'fix: overlap', type: 'ci-failed' });
+    // further state rebuilds with the same condition do not re-fire (debounce)
+    p.buildState();
+    p.buildState();
+    expect(events.filter((e) => e.type === 'ci-failed')).toHaveLength(1);
+  });
+
+  it('prod ancestry going live emits prod-live for the merged PR', async () => {
+    const { notifier, events } = notifierHarness();
+    const deploy = fakeDeploy(
+      { 'https://qa.widgets.example.com/health': 'deployedSha-qa',
+        'https://widgets.example.com/health': 'deployedSha-prod' },
+      { 'deployedSha-qa': 'yes', 'deployedSha-prod': 'yes' },
+    );
+    const p = new Poller({ router: asRouter(fakeClient()), history, deploy,
+      config: CONFIG, now: () => NOW, notifier });
+    p.on('notification', (ev: NotificationEvent) => events.push(ev));
+    await p.sweepOnce();   // ingests merged #8951 (mergeCommitSha squash8951)
+    await p.deployOnce();
+    const prodEvents = events.filter((e) => e.type === 'prod-live');
+    expect(prodEvents).toHaveLength(1);
+    expect(prodEvents[0]).toMatchObject({ repo: 'acme/widgets', prNumber: 8951,
+      title: 'feat: allowance', type: 'prod-live' });
+  });
+
+  it('queue-blocked events carry the conflicting culprit PR in their detail', async () => {
+    const { notifier, events } = notifierHarness();
+    const queueResponse = { repository: { mergeQueue: { entries: { nodes: [
+      { position: 1, state: 'UNMERGEABLE', enqueuedAt: null,
+        headCommit: { oid: 'stale8878' }, pullRequest: { number: 8878 } },
+      { position: 2, state: 'UNMERGEABLE', enqueuedAt: null,
+        headCommit: { oid: 'stale9335' }, pullRequest: { number: 9335 } },
+    ] } } } };
+    const node = (number: number, mss: string) => ({
+      number, title: `pr ${number}`, url: `u${number}`, isDraft: false, mergeStateStatus: mss,
+      mergedAt: null, headRefOid: `head${number}`, autoMergeRequest: { mergeMethod: 'SQUASH' },
+      mergeCommit: null,
+      mergeQueueEntry: { position: number === 8878 ? 1 : 2, state: 'UNMERGEABLE',
+        enqueuedAt: null, headCommit: { oid: `stale${number}` } },
+      commits: { nodes: [{ commit: { statusCheckRollup: { state: 'SUCCESS',
+        contexts: { pageInfo: { hasNextPage: false }, nodes: [{ ...CHECK_DONE }] } } } }] },
+    });
+    const sweep = {
+      open0: { issueCount: 2, nodes: [
+        { number: 8878, title: 'pr 8878', url: 'u8878', isDraft: false, mergedAt: null,
+          repository: { nameWithOwner: 'acme/widgets' }, mergeCommit: null },
+        { number: 9335, title: 'pr 9335', url: 'u9335', isDraft: false, mergedAt: null,
+          repository: { nameWithOwner: 'acme/widgets' }, mergeCommit: null },
+      ] },
+      open1: { issueCount: 0, nodes: [] },
+      merged0: { issueCount: 0, nodes: [] }, merged1: { issueCount: 0, nodes: [] },
+    };
+    const detail = { r0: { nameWithOwner: 'acme/widgets',
+      pr8878: node(8878, 'DIRTY'), pr9335: node(9335, 'BLOCKED') } };
+    const client = {
+      remaining: 4000, resetAt: null,
+      graphql: vi.fn(async (q: string) => {
+        if (q.includes('open0: search')) return sweep;
+        if (q.includes('pr8878: pullRequest')) return detail;
+        if (q.includes('object(oid:')) return { repository: {} };
+        if (q.includes('mergeQueue')) return queueResponse;
+        throw new Error(`unexpected query: ${q.slice(0, 80)}`);
+      }),
+    };
+    const p = new Poller({ router: asRouter(client), history, deploy: noDeploy(),
+      config: CONFIG, now: () => NOW, notifier });
+    p.on('notification', (ev: NotificationEvent) => events.push(ev));
+    await p.sweepOnce();
+    await p.detailOnce();
+    await p.queueOnce();
+    const blocked = events.filter((e) => e.type === 'queue-blocked');
+    expect(blocked.map((e) => e.prNumber).sort()).toEqual([8878, 9335]);
+    // the DIRTY culprit gets the rebase framing; the cascade victim names the culprit
+    expect(blocked.find((e) => e.prNumber === 8878)!.detail).toContain('conflicts with the base');
+    expect(blocked.find((e) => e.prNumber === 9335)!.detail).toContain('#8878');
   });
 });

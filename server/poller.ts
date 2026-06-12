@@ -8,6 +8,7 @@ import { ApiAncestry, type AncestryAnswer } from './ancestry';
 import { effectiveRepoSettings, effectiveDeployMap, type AppConfig, type DeployConfig, type RepoSettings } from './config';
 import { parseRepoConfig, REPO_CONFIG_PATH, type RepoFileConfig } from './repo-config';
 import type { WebhookRoute } from './webhooks';
+import type { Notifier } from './notifier';
 import { deriveCiGraph, activeForEvent, ciGraphToJson, ciGraphFromJson, type CiGraph, type CiGraphNode } from './required-checks';
 import type { PrSnapshot, StageResult, QueueEntry, CheckRun } from './types';
 import { buildSweepQuery, buildMergedPageQuery, buildOpenPageQuery, buildDetailQuery, buildQueueQuery, buildOidRollupQuery, buildBlobQuery } from './queries';
@@ -108,6 +109,9 @@ interface PollerDeps {
   history: HistoryStore;
   deploy: DeployWatcher;
   config: AppConfig;
+  /** Notification layer (issue #19): fed every classify result + the prod
+   *  ancestry signal; its 'notification' events are re-emitted on this bus. */
+  notifier?: Notifier;
   now?: () => Date;
 }
 
@@ -246,6 +250,9 @@ export class Poller extends EventEmitter {
     super();
     this.now = deps.now ?? (() => new Date());
     this.apiAncestry = new ApiAncestry(deps.router);
+    // The poller IS the API's event bus — relay notifier events so the SSE
+    // layer needs only one EventEmitter subscription target.
+    deps.notifier?.on('notification', (ev) => this.emit('notification', ev));
     this.restorePersisted();
   }
 
@@ -454,6 +461,8 @@ export class Poller extends EventEmitter {
     for (const key of this.queueEnqueuedAt.keys()) {
       if (!openKeys.has(key)) this.queueEnqueuedAt.delete(key);
     }
+    // notifier debounce state lives per PR key — same lifecycle as `stages`
+    this.deps.notifier?.prune(new Set([...openKeys, ...tracked]));
   }
 
   /** Record repository-inaccessible evidence (blob/detail layer) for the repo's owner. */
@@ -672,6 +681,9 @@ export class Poller extends EventEmitter {
           if (anc === 'no') this.seenNotLive.add(envKey);
           if (anc === 'yes') {
             history.markEnvLive(repo, rec.number, env.name, now.toISOString());
+            // "shipped" signal (issue #19): the merge commit just became prod
+            // ancestry — markEnvLive's liveAt guard makes this a true edge.
+            if (env.name === 'prod') this.deps.notifier?.prodLive(repo, rec.number, rec.title);
             // Record a deploy-gap sample only when THIS instance previously observed the
             // PR not-live on this env. A PR found already live at first observation has
             // an unknowable merged→live wall-clock gap (e.g. process started hours after
@@ -1124,9 +1136,7 @@ export class Poller extends EventEmitter {
       .filter((e) => isDirty(e.prNumber)).map((e) => e.prNumber);
     const queueBlocked = unmergeableEntries
       .filter((e) => !isDirty(e.prNumber)).map((e) => e.prNumber);
-    // Culprit = lowest-position genuine conflict; when no snapshot proves DIRTY,
-    // presume the front-most UNMERGEABLE entry (a cascade needs a head).
-    const unmergeableCulprit = unmergeable[0] ?? unmergeableEntries[0]?.prNumber ?? null;
+    const unmergeableCulprit = this.unmergeableCulpritFor(repo);
 
     // Sort the remaining entries by position for batch-range calculation.
     const sorted = entries
@@ -1178,6 +1188,30 @@ export class Poller extends EventEmitter {
 
     return { groups: queueGroups, waiting, unmergeable, queueBlocked, unmergeableCulprit,
       batchSize: this.settingsFor(repo).batchSize };
+  }
+
+  /**
+   * The queue's conflicting culprit: lowest-position UNMERGEABLE entry whose
+   * own snapshot is DIRTY against the base (the entry poisoning the cascade);
+   * falls back to the front-most UNMERGEABLE entry when no snapshot proves
+   * DIRTY. Null without UNMERGEABLE entries. Shared by buildQueueView and the
+   * notifier's queue-blocked detail.
+   */
+  private unmergeableCulpritFor(repo: string): number | null {
+    let candidates = (this.queueEntries.get(repo) ?? [])
+      .filter((e) => e.state === 'UNMERGEABLE')
+      .map((e) => ({ prNumber: e.prNumber, position: e.position }));
+    if (!candidates.length) {
+      // queue-entries fetch hasn't run yet this cycle — the PR snapshots carry
+      // their own queue position/state (detail fetch), use those as fallback
+      candidates = [...this.prs.values()]
+        .filter((p) => p.repo === repo && p.queue?.state === 'UNMERGEABLE')
+        .map((p) => ({ prNumber: p.number, position: p.queue!.position }));
+    }
+    candidates.sort((a, b) => a.position - b.position);
+    const dirty = candidates.find((c) =>
+      this.prs.get(`${repo}#${c.prNumber}`)?.mergeStateStatus === 'DIRTY');
+    return dirty?.prNumber ?? candidates[0]?.prNumber ?? null;
   }
 
   /**
@@ -1304,14 +1338,18 @@ export class Poller extends EventEmitter {
         batchSize: this.settingsFor(pr.repo).batchSize,
         coveringGroupOid: coveringOid });
     }
+    const prevStage = this.stages.get(key) ?? null;
     const stage = classify({
-      pr, prev: this.stages.get(key) ?? null, ciProgress, queueProgress,
+      pr, prev: prevStage, ciProgress, queueProgress,
       deploy: { hasDeploy: pr.repo in this.effectiveDeploy(), qaLive: null, prodLive: null, propagating: false, deployProgress: null },
       retentionDays: config.retentionDays, now, requiredCheckPrefixes: prefixes,
       rollupWorkflowName: rollupWf,
     });
     if (!stage) return null;
     this.stages.set(key, stage);
+    this.deps.notifier?.observe({ repo: pr.repo, prNumber: pr.number, title: pr.title,
+      prev: prevStage, next: stage,
+      queueCulprit: stage.stage === 'queue' ? this.unmergeableCulpritFor(pr.repo) : null });
     this.trackStageEta(key, pr.repo, stage, now);
     const queueAheadCount = stage.stage === 'queue' && queueProgress != null
       ? queueProgress.aheadCount
@@ -1363,7 +1401,14 @@ export class Poller extends EventEmitter {
     });
     if (!stage) return null;
     // merged PRs share the key space — captures qa-deploy ETA accuracy too
-    this.trackStageEta(`${rec.repo}#${rec.number}`, rec.repo, stage, now);
+    const key = `${rec.repo}#${rec.number}`;
+    this.trackStageEta(key, rec.repo, stage, now);
+    // Same transition tracking as open PRs (e.g. qa-deploy overdue flipping
+    // true). classify's own prev stays null — only the notifier consumes this.
+    const prevStage = this.stages.get(key) ?? null;
+    this.stages.set(key, stage);
+    this.deps.notifier?.observe({ repo: rec.repo, prNumber: rec.number, title: rec.title,
+      prev: prevStage, next: stage });
     return { repo: rec.repo, number: rec.number, title: rec.title, url: rec.url, stage,
       queueAheadCount: null, checks: [], groupChecks: null };
   }
