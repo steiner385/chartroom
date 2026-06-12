@@ -183,24 +183,17 @@ describe('CheckGantt', () => {
     expect(screen.queryByRole('link', { name: 'plain' })).not.toBeInTheDocument();
   });
 
-  it('keeps the advisory divider between required and advisory checks', () => {
+  it('required check renders before advisory check and no "advisory" divider is present', () => {
     const { container } = render(<CheckGantt stage="ci" checks={[
       check({ name: 'req-check', isRequired: true }),
       check({ name: 'lighthouse', isRequired: false }),
     ]} />);
-    expect(screen.getByText('advisory')).toBeInTheDocument();
-    // divider sits between the two rows
+    expect(screen.queryByText('advisory')).not.toBeInTheDocument();
+    // required row still precedes advisory row in DOM order
     const items = Array.from(container.querySelectorAll('li'));
     const names = items.map((li) => li.textContent);
     expect(names.findIndex((t) => t?.includes('req-check')))
-      .toBeLessThan(names.findIndex((t) => t === 'advisory'));
-    expect(names.findIndex((t) => t === 'advisory'))
       .toBeLessThan(names.findIndex((t) => t?.includes('lighthouse')));
-  });
-
-  it('omits the divider when there are no advisory checks', () => {
-    render(<CheckGantt stage="ci" checks={[check({ isRequired: true })]} />);
-    expect(screen.queryByText('advisory')).not.toBeInTheDocument();
   });
 
   it('advisory row gets class g-advisory and required row does not', () => {
@@ -258,7 +251,7 @@ describe('CheckGantt — workflow grouping (Y2)', () => {
     expect(screen.getByText('Auto-merge PRs')).toBeInTheDocument();
   });
 
-  it('ci-gate renders under the Auto-merge PRs header, in the advisory zone', () => {
+  it('ci-gate renders under the Auto-merge PRs header, after the rollup workflow rows', () => {
     const { container } = render(<CheckGantt stage="ci" checks={[
       check({ name: 'ci-gate', workflowName: 'Auto-merge PRs', isRequired: false }),
       rollup({ name: 'ci', isRequired: true }),
@@ -268,16 +261,16 @@ describe('CheckGantt — workflow grouping (Y2)', () => {
     const idx = (m: (t: string) => boolean) => texts.findIndex(m);
     const ciHeader = idx((t) => t === 'CI');
     const ciRow = idx((t) => t.includes('ci') && !t.includes('ci-gate') && t !== 'CI');
-    const divider = idx((t) => t === 'advisory');
     const lighthouseRow = idx((t) => t.includes('lighthouse'));
     const amHeader = idx((t) => t === 'Auto-merge PRs');
     const ciGateRow = idx((t) => t.includes('ci-gate'));
-    // rollup workflow first: header, required, advisory divider, its advisory rows
+    // no "advisory" section divider
+    expect(texts.includes('advisory')).toBe(false);
+    // rollup workflow first: header, required row, then its advisory rows (no divider)
     expect(ciHeader).toBeLessThan(ciRow);
-    expect(ciRow).toBeLessThan(divider);
-    expect(divider).toBeLessThan(lighthouseRow);
-    // foreign workflow after the divider, its checks under its own header
-    expect(divider).toBeLessThan(amHeader);
+    expect(ciRow).toBeLessThan(lighthouseRow);
+    // foreign workflow after rollup workflow rows, its checks under its own header
+    expect(lighthouseRow).toBeLessThan(amHeader);
     expect(amHeader).toBeLessThan(ciGateRow);
   });
 
