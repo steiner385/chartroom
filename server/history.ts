@@ -463,6 +463,18 @@ export class HistoryStore {
       createdAt: (r.created_at as string) ?? null, qaLiveAt: (r.qa_live_at as string) ?? null }));
   }
 
+  /** Every repo that has left any trace in history (durations, merged PRs,
+   *  state samples) — feeds the settings panel's repo toggle list. */
+  distinctRepos(): string[] {
+    const rows = this.db.prepare(
+      `SELECT repo FROM check_durations
+       UNION SELECT repo FROM merged_prs
+       UNION SELECT repo FROM state_samples
+       ORDER BY repo`
+    ).all() as { repo: string }[];
+    return rows.map((r) => r.repo);
+  }
+
   close(): void {
     this.db.close();
   }

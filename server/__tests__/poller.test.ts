@@ -3792,3 +3792,38 @@ describe('Poller notifier wiring (issue #19)', () => {
     expect(blocked.find((e) => e.prNumber === 9335)!.detail).toContain('#8878');
   });
 });
+
+describe('repo discovery + toggle list', () => {
+  it('sweep records discovered repos BEFORE the exclude skip, persisted to meta', async () => {
+    const cfg = { ...CONFIG, exclude: ['acme/widgets'] };
+    const p = new Poller({ router: asRouter(fakeClient()), history, deploy: noDeploy(),
+      config: cfg, now: () => NOW });
+    await p.sweepOnce();
+    const persisted = JSON.parse(history.getMeta('discoveredRepos') ?? '[]') as string[];
+    expect(persisted).toContain('acme/widgets'); // excluded yet discovered
+    // a fresh poller instance restores discovery from meta
+    const p2 = new Poller({ router: asRouter(fakeClient()), history, deploy: noDeploy(),
+      config: cfg, now: () => NOW });
+    expect(p2.repoToggleList().map((r) => r.repo)).toContain('acme/widgets');
+  });
+
+  it('repoToggleList unions discovery, history traces, and the exclude list with flags', () => {
+    history.recordStateSample('octo/history-only', '2026-06-10T10:00:00Z',
+      { open: 1, ci: 0, queue: 0, failed: 0 });
+    const cfg = { ...CONFIG, exclude: ['acme/config-only'] };
+    const p = new Poller({ router: asRouter(fakeClient()), history, deploy: noDeploy(),
+      config: cfg, now: () => NOW });
+    const list = p.repoToggleList();
+    expect(list).toContainEqual({ repo: 'octo/history-only', excluded: false });
+    expect(list).toContainEqual({ repo: 'acme/config-only', excluded: true });
+    expect(list.map((r) => r.repo)).toEqual([...list.map((r) => r.repo)].sort());
+  });
+
+  it('currentExclude reflects reconfigure (live metrics filtering)', () => {
+    const p = new Poller({ router: asRouter(fakeClient()), history, deploy: noDeploy(),
+      config: CONFIG, now: () => NOW });
+    expect(p.currentExclude()).toEqual(CONFIG.exclude);
+    p.reconfigure({ ...CONFIG, exclude: ['acme/late'] });
+    expect(p.currentExclude()).toEqual(['acme/late']);
+  });
+});

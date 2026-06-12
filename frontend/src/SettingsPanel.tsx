@@ -150,6 +150,19 @@ export function SettingsPanel({ open, onClose, returnFocusRef, connected }: Sett
   const headingId = useId();
 
   // Fetch config when the panel opens (not before).
+  const [repoNames, setRepoNames] = useState<string[]>([]);
+  useEffect(() => {
+    if (!open) return;
+    let cancelled = false;
+    fetch('/api/repos')
+      .then((r) => (r.ok ? r.json() : Promise.reject(new Error(`GET /api/repos → ${r.status}`))))
+      .then((body: { repos: { repo: string; excluded: boolean }[] }) => {
+        if (!cancelled) setRepoNames(body.repos.map((r) => r.repo));
+      })
+      .catch(() => { /* list stays empty; the hint explains */ });
+    return () => { cancelled = true; };
+  }, [open]);
+
   useEffect(() => {
     if (!open) return;
     let cancelled = false;
@@ -219,6 +232,7 @@ export function SettingsPanel({ open, onClose, returnFocusRef, connected }: Sett
 
   if (!open) return null;
 
+  const repoList = [...new Set([...repoNames, ...(form?.exclude ?? [])])].sort();
   const ownersEmpty = (form?.owners.length ?? 0) === 0;
   const canSave = !!form && !ownersEmpty && !saving;
 
@@ -305,16 +319,38 @@ export function SettingsPanel({ open, onClose, returnFocusRef, connected }: Sett
               {ownersEmpty && (
                 <p className="settings-hint settings-warn">owners list cannot be empty</p>
               )}
-              <p className="settings-label">Exclude</p>
-              <ChipEditor
-                label="add exclude (owner/repo)"
-                values={form.exclude}
-                removeNoun="exclude"
-                onAdd={(v) => setForm((p) => (p ? { ...p, exclude: [...p.exclude, v] } : p))}
-                onRemove={(i) =>
-                  setForm((p) => (p ? { ...p, exclude: p.exclude.filter((_, j) => j !== i) } : p))
-                }
-              />
+              <p className="settings-label">Repos</p>
+              {repoList.length === 0 && (
+                <p className="settings-hint">repos appear after the first sweep</p>
+              )}
+              {repoList.length > 0 && (
+                <ul className="repo-toggle-list">
+                  {repoList.map((repo) => {
+                    const excluded = form.exclude.includes(repo);
+                    return (
+                      <li key={repo} className={excluded ? 'repo-toggle excluded' : 'repo-toggle'}>
+                        <span className="repo-toggle-name">{repo}</span>
+                        <button
+                          type="button"
+                          aria-pressed={!excluded}
+                          title={excluded ? 'excluded — click to include' : 'included — click to exclude'}
+                          onClick={() =>
+                            setForm((p) => {
+                              if (!p) return p;
+                              const exclude = excluded
+                                ? p.exclude.filter((r) => r !== repo)
+                                : [...p.exclude, repo];
+                              return { ...p, exclude };
+                            })
+                          }
+                        >
+                          {excluded ? 'Excluded' : 'Included'}
+                        </button>
+                      </li>
+                    );
+                  })}
+                </ul>
+              )}
             </section>
 
             {/* 2. Tuning */}

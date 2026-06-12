@@ -298,3 +298,26 @@ describe('computeMetrics: empty history', () => {
     });
   });
 });
+
+describe('computeMetrics: exclude filter (repo toggles)', () => {
+  it('drops excluded repos from every panel', () => {
+    h.recordRunnerWait('acme/kept', 'build', 'pull_request', 10, '2026-06-11T10:05:00Z');
+    h.recordRunnerWait('acme/dropped', 'build', 'pull_request', 10, '2026-06-11T10:05:00Z');
+    h.recordCheckDuration('acme/dropped', 'Build', 'pull_request',
+      '2026-06-11T10:00:00Z', '2026-06-11T10:05:00Z', 'SUCCESS');
+    h.upsertMergedPr({ repo: 'acme/dropped', number: 1, title: 't', url: 'u',
+      mergedAt: '2026-06-11T10:00:00Z', mergeCommitSha: null, createdAt: null });
+    h.recordStateSample('acme/dropped', '2026-06-11T10:00:00Z', { open: 1, ci: 0, queue: 0, failed: 0 });
+
+    const m = computeMetrics(h, '24h', 'hour', NOW, ['acme/dropped']);
+    const repos = [
+      ...m.runnerWaits.map((r) => r.repo),
+      ...m.queue.map((r) => r.repo),
+      ...m.slowestJobs.map((r) => r.repo),
+      ...m.velocity.map((r) => r.repo),
+      ...m.trends.map((r) => r.repo),
+    ];
+    expect(repos).toContain('acme/kept');
+    expect(repos).not.toContain('acme/dropped');
+  });
+});

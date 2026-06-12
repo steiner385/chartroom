@@ -153,14 +153,17 @@ const SLOWEST_JOBS_CAP = 10;
  * boundary; repos/groups with rows only in the previous window are omitted.
  */
 export function computeMetrics(history: HistoryStore, window: MetricsWindow,
-  bucket: MetricsBucket, now: Date = new Date()): MetricsPayload {
+  bucket: MetricsBucket, now: Date = new Date(), exclude: string[] = []): MetricsPayload {
+  const dropped = new Set(exclude);
+  const keep = <T extends { repo: string }>(rows: T[]): T[] =>
+    dropped.size ? rows.filter((r) => !dropped.has(r.repo)) : rows;
   const windowMs = WINDOW_DAYS[window] * 86400_000;
   const since = new Date(now.getTime() - windowMs).toISOString();
   const prevSince = new Date(now.getTime() - 2 * windowMs).toISOString();
   const key = (ts: string): string => ts.slice(0, bucket === 'hour' ? 13 : 10);
 
   // 1. Runner-wait health: per (repo, event) buckets with p50/p90 + headline p50.
-  const rw = splitWindow(history.runnerWaitsSince(prevSince), (r) => r.at, since);
+  const rw = splitWindow(keep(history.runnerWaitsSince(prevSince)), (r) => r.at, since);
   const rwPrevByKey = groupBy(rw.prev, (r) => `${r.repo}${SEP}${r.event}`);
   const runnerWaits = [...groupBy(rw.cur, (r) => `${r.repo}${SEP}${r.event}`)]
     .sort(([a], [b]) => a.localeCompare(b))
@@ -175,13 +178,13 @@ export function computeMetrics(history: HistoryStore, window: MetricsWindow,
     });
 
   // Shared merged-PR rows: queue merges + the whole velocity section.
-  const merged = splitWindow(history.mergedSince(prevSince), (r) => r.mergedAt, since);
+  const merged = splitWindow(keep(history.mergedSince(prevSince)), (r) => r.mergedAt, since);
   const mergedByRepo = groupBy(merged.cur, (r) => r.repo);
   const mergedPrevByRepo = groupBy(merged.prev, (r) => r.repo);
-  const qw = splitWindow(history.queueWaitsSince(prevSince), (r) => r.at, since);
+  const qw = splitWindow(keep(history.queueWaitsSince(prevSince)), (r) => r.at, since);
   const queueWaitsByRepo = groupBy(qw.cur, (r) => r.repo);
   const queueWaitsPrevByRepo = groupBy(qw.prev, (r) => r.repo);
-  const gr = splitWindow(history.groupRunsSince(prevSince), (r) => r.at, since);
+  const gr = splitWindow(keep(history.groupRunsSince(prevSince)), (r) => r.at, since);
   const groupRunsByRepo = groupBy(gr.cur, (r) => r.repo);
   const groupRunsPrevByRepo = groupBy(gr.prev, (r) => r.repo);
 
@@ -215,7 +218,7 @@ export function computeMetrics(history: HistoryStore, window: MetricsWindow,
   // 3. Slowest / most-variable jobs: top 10 per repo by window p50 (no headline
   // deltas → current window read only). Trend buckets carry p50 AND p90 so the
   // leaderboard sparkline can render the p50→p90 band.
-  const slowestJobs = [...groupBy(history.checkDurationsSince(since), (r) => r.repo)]
+  const slowestJobs = [...groupBy(keep(history.checkDurationsSince(since)), (r) => r.repo)]
     .sort(([a], [b]) => a.localeCompare(b))
     .map(([repo, rows]) => {
       const jobs = [...groupBy(rows, (r) => `${r.name}${SEP}${r.event}`)]
@@ -271,7 +274,7 @@ export function computeMetrics(history: HistoryStore, window: MetricsWindow,
 
   // 5. Trends: state samples aggregated per bucket — the LAST sample in each
   // bucket is the bucket's closing value (rows arrive time-ordered per repo).
-  const trends = [...groupBy(history.stateSamplesSince(since), (r) => r.repo)]
+  const trends = [...groupBy(keep(history.stateSamplesSince(since)), (r) => r.repo)]
     .sort(([a], [b]) => a.localeCompare(b))
     .map(([repo, rows]) => ({
       repo,
