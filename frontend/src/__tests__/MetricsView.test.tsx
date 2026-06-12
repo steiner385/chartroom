@@ -5,7 +5,7 @@ import type { MetricsBucket, MetricsPayload, MetricsWindow } from '../types';
 
 const EMPTY: MetricsPayload = {
   window: '3d', bucket: 'hour',
-  runnerWaits: [], queue: [], slowestJobs: [], velocity: [], trends: [],
+  runnerWaits: [], queue: [], slowestJobs: [], velocity: [], trends: [], calibration: [],
 };
 
 const H = (h: number): string => `2026-06-11T${String(h).padStart(2, '0')}`;
@@ -65,6 +65,26 @@ const PAYLOAD: MetricsPayload = {
       { bucket: H(9), open: 12, ci: 2, queue: 1, failed: 1 },
       { bucket: H(10), open: 11, ci: 2, queue: 1, failed: 0 },
     ] },
+  ],
+  calibration: [
+    { repo: 'acme/widgets', stage: 'ci', n: 42,
+      medianErrorPct: 18.4, p90AbsErrorPct: 55,
+      buckets: [
+        { bucket: H(8), medianErrorPct: 12, n: 14 },
+        { bucket: H(9), medianErrorPct: -5, n: 13 },
+        { bucket: H(10), medianErrorPct: 22, n: 15 },
+      ],
+      points: [
+        { predicted: 300, actual: 360 }, { predicted: 240, actual: 230 },
+        { predicted: 500, actual: 640 }, { predicted: 120, actual: 130 },
+      ] },
+    { repo: 'acme/widgets', stage: 'queue', n: 11,
+      medianErrorPct: -7.2, p90AbsErrorPct: 20,
+      buckets: [
+        { bucket: H(9), medianErrorPct: -8, n: 6 },
+        { bucket: H(10), medianErrorPct: -6, n: 5 },
+      ],
+      points: [{ predicted: 900, actual: 840 }, { predicted: 800, actual: 760 }] },
   ],
 };
 

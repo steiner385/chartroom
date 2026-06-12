@@ -194,4 +194,11 @@ export interface MetricsPayload {
     avgLifespanBuckets: { bucket: string; meanHours: number; n: number }[] }[];
   trends: { repo: string;
     points: { bucket: string; open: number; ci: number; queue: number; failed: number }[] }[]; // last state sample per bucket (closing value)
+  /** ETA calibration (issue #35): signed error % per (repo, stage) —
+   *  POSITIVE medianErrorPct = ETAs run optimistic (stages take longer than
+   *  promised). `points` = (predicted, actual) scatter, newest ≤200. */
+  calibration: { repo: string; stage: string; n: number;
+    medianErrorPct: number; p90AbsErrorPct: number;
+    buckets: { bucket: string; medianErrorPct: number; n: number }[];
+    points: { predicted: number; actual: number }[] }[];
 }

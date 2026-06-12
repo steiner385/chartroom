@@ -52,6 +52,14 @@ export interface MetricsPayload {
     avgLifespanBuckets: { bucket: string; meanHours: number; n: number }[] }[];
   trends: { repo: string;
     points: { bucket: string; open: number; ci: number; queue: number; failed: number }[] }[]; // last state sample per bucket (closing value)
+  /** ETA calibration (issue #35): signed error % per (repo, stage), where
+   *  errorPct = (actual − predicted) / predicted × 100 — POSITIVE means ETAs
+   *  run optimistic (the stage took longer than first predicted). `points`
+   *  carries the (predicted, actual) scatter, capped at the 200 most recent. */
+  calibration: { repo: string; stage: string; n: number;
+    medianErrorPct: number; p90AbsErrorPct: number;
+    buckets: { bucket: string; medianErrorPct: number; n: number }[];
+    points: { predicted: number; actual: number }[] }[];
 }
 
 /**
@@ -145,6 +153,9 @@ const mean = (xs: number[]): number => xs.reduce((s, x) => s + x, 0) / xs.length
 
 /** Top-N cap for the slowest-jobs leaderboard (per repo). */
 const SLOWEST_JOBS_CAP = 10;
+
+/** Scatter-point cap for the calibration panel (most recent rows win). */
+const CALIBRATION_POINTS_CAP = 200;
 
 /**
  * Compute the full metrics payload for one (window, bucket) pair — a single
@@ -286,5 +297,29 @@ export function computeMetrics(history: HistoryStore, window: MetricsWindow,
         }),
     }));
 
-  return { window, bucket, runnerWaits, queue, slowestJobs, velocity, trends };
+  // 6. ETA calibration (issue #35): signed error % per (repo, stage). Rows with
+  // predicted=0 are recordable upstream but carry no error % — skipped here.
+  // Current-window read only (no headline deltas, like slowestJobs).
+  const errPct = (r: { predictedSecs: number; actualSecs: number }): number =>
+    ((r.actualSecs - r.predictedSecs) / r.predictedSecs) * 100;
+  const calRows = keep(history.etaAccuracySince(since)).filter((r) => r.predictedSecs > 0);
+  const calibration = [...groupBy(calRows, (r) => `${r.repo}${SEP}${r.stage}`)]
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([k, rows]) => {
+      const [repo, stage] = k.split(SEP) as [string, string];
+      const errors = rows.map(errPct);
+      return {
+        repo, stage, n: rows.length,
+        medianErrorPct: p(errors, 0.5),
+        p90AbsErrorPct: p(errors.map(Math.abs), 0.9),
+        buckets: [...groupBy(rows, (r) => key(r.at))]
+          .sort(([a], [b]) => a.localeCompare(b))
+          .map(([bucket, rs]) => ({ bucket, medianErrorPct: p(rs.map(errPct), 0.5), n: rs.length })),
+        // rows arrive ordered oldest-first per (repo, stage) — keep the newest
+        points: rows.slice(-CALIBRATION_POINTS_CAP)
+          .map((r) => ({ predicted: r.predictedSecs, actual: r.actualSecs })),
+      };
+    });
+
+  return { window, bucket, runnerWaits, queue, slowestJobs, velocity, trends, calibration };
 }
