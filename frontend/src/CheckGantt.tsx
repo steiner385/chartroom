@@ -61,6 +61,7 @@ function GanttRow({ c, scale }: { c: CheckView; scale: number }) {
     && c.expectedRunnerWaitSeconds != null
     && c.waitingSeconds > 2 * c.expectedRunnerWaitSeconds;
   const extraClass = isRunnerWait ? (isAmber ? ' g-runner-wait g-runner-wait-amber' : ' g-runner-wait') : '';
+  const advisoryClass = c.isRequired ? '' : ' g-advisory';
 
   // p10–p90 expected-duration band: only when both bounds are known
   const hasBand = c.expectedLowSeconds != null && c.expectedHighSeconds != null;
@@ -68,9 +69,11 @@ function GanttRow({ c, scale }: { c: CheckView; scale: number }) {
     ? `expected ~${formatDur(c.expectedSeconds)} (p10 ${formatDur(c.expectedLowSeconds!)} – p90 ${formatDur(c.expectedHighSeconds!)})`
     : undefined;
 
+  const advisoryNameTitle = c.isRequired ? undefined : 'advisory — does not gate merging';
+
   return (
-    <li className={`g-row g-${kind}${extraClass}`}>
-      <span className="g-name">
+    <li className={`g-row g-${kind}${extraClass}${advisoryClass}`}>
+      <span className="g-name" title={advisoryNameTitle}>
         {c.url
           ? <a href={c.url} target="_blank" rel="noreferrer" onClick={(e) => e.stopPropagation()}>{c.name}</a>
           : <span>{c.name}</span>}
