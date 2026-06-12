@@ -12,7 +12,8 @@ export async function backfillRepo(client: GithubClient, history: HistoryStore,
   needsFor: (canonicalName: string) => string[] | null = () => null,
   activeFor: NeedActivePredicate = () => true,
   graphKeys: readonly string[] | null = null,
-  rollupWorkflowName: string | null = null): Promise<void> {
+  rollupWorkflowName: string | null = null,
+  timeoutMinutesFor: (canonicalName: string) => number | null = () => null): Promise<void> {
   const [owner, name] = repo.split('/');
   let cursor: string | null = null;
   for (let page = 0; page < maxPages; page++) {
@@ -25,7 +26,7 @@ export async function backfillRepo(client: GithubClient, history: HistoryStore,
       ingestCheckSet(history, repo,
         mapRollupContexts(commit?.statusCheckRollup?.contexts?.nodes ?? []),
         needsFor, activeFor, graphKeys, rollupWorkflowName,
-        (commit?.oid as string | undefined) ?? null);
+        (commit?.oid as string | undefined) ?? null, timeoutMinutesFor);
     }
     if (!hist.pageInfo?.hasNextPage) return;
     cursor = hist.pageInfo.endCursor;

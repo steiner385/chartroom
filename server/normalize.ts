@@ -18,7 +18,27 @@ export function dedupeChecks(checks: CheckRun[]): CheckRun[] {
     if (arr) arr.push(c);
     else groups.set(key, [c]);
   }
-  return [...groups.values()].map(aggregateFamily);
+  return [...groups.values()].map((members) => aggregateFamily(latestRunMembers(members)));
+}
+
+/**
+ * One canonical key can collect check runs from DIFFERENT workflow runs on the
+ * same commit — re-triggers and queue-recover delete-and-recreate (2026-06-12
+ * dispatch stall). Those are re-runs, not matrix shards: aggregating
+ * min-start→max-finish across them fabricates a duration spanning the re-run
+ * gap (a 20s job read as 51,027s — issue #61) and lets a stale conclusion
+ * outrank the latest run's verdict. Keep only the latest run generation
+ * (max runNumber). Members without run identity survive only when NO numbered
+ * member exists (legacy/StatusContext-era data keeps the old behavior);
+ * alongside numbered members they are unattributable and drop.
+ */
+function latestRunMembers(members: CheckRun[]): CheckRun[] {
+  let max: number | null = null;
+  for (const c of members) {
+    if (c.runNumber != null && (max == null || c.runNumber > max)) max = c.runNumber;
+  }
+  if (max == null) return members;
+  return members.filter((c) => c.runNumber === max);
 }
 
 // Conclusion severity for family aggregation: any failing member fails the
