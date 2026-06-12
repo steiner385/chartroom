@@ -147,10 +147,10 @@ export function App() {
             type="button"
             className="notify-bell"
             aria-pressed={notifyEnabled}
-            aria-label="Browser notifications"
+            aria-label="Browser notifications (this tab)"
             title={notifyEnabled
-              ? 'Browser notifications on — tab must stay open to receive them'
-              : 'Enable browser notifications (tab must stay open to receive them)'}
+              ? 'Browser notifications on (this tab only — tab must stay open). Desktop command notifications are toggled in Settings.'
+              : 'Enable browser notifications (this tab only — tab must stay open). Desktop command notifications are toggled in Settings.'}
             onClick={toggleNotify}
           >
             <span aria-hidden="true">{notifyEnabled ? '🔔' : '🔕'}</span>

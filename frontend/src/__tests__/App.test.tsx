@@ -245,7 +245,7 @@ describe('App kiosk mode (issue #20)', () => {
     render(<App />);
     expect(screen.queryByRole('button', { name: 'Settings' })).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Legend' })).not.toBeInTheDocument();
-    expect(screen.queryByRole('button', { name: 'Browser notifications' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Browser notifications (this tab)' })).not.toBeInTheDocument();
     expect(screen.queryByRole('tablist')).not.toBeInTheDocument();
     // the glanceable summary strip stays
     expect(screen.getByRole('group', { name: 'Status overview' })).toBeInTheDocument();
@@ -348,14 +348,14 @@ describe('App kiosk mode (issue #20)', () => {
 describe('App notification bell (issue #19)', () => {
   it('renders the bell with aria-pressed=false when disabled', () => {
     render(<App />);
-    const bell = screen.getByRole('button', { name: 'Browser notifications' });
+    const bell = screen.getByRole('button', { name: 'Browser notifications (this tab)' });
     expect(bell).toHaveAttribute('aria-pressed', 'false');
   });
 
   it('renders aria-pressed=true when enabled', () => {
     mockUseDashboard.mockReturnValue(hook({ notifyEnabled: true }));
     render(<App />);
-    expect(screen.getByRole('button', { name: 'Browser notifications' }))
+    expect(screen.getByRole('button', { name: 'Browser notifications (this tab)' }))
       .toHaveAttribute('aria-pressed', 'true');
   });
 
@@ -363,20 +363,20 @@ describe('App notification bell (issue #19)', () => {
     const toggleNotify = vi.fn();
     mockUseDashboard.mockReturnValue(hook({ toggleNotify }));
     render(<App />);
-    fireEvent.click(screen.getByRole('button', { name: 'Browser notifications' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Browser notifications (this tab)' }));
     expect(toggleNotify).toHaveBeenCalledTimes(1);
   });
 
   it('hides the bell entirely when the browser lacks Notification support', () => {
     mockUseDashboard.mockReturnValue(hook({ notifySupported: false }));
     render(<App />);
-    expect(screen.queryByRole('button', { name: 'Browser notifications' }))
+    expect(screen.queryByRole('button', { name: 'Browser notifications (this tab)' }))
       .not.toBeInTheDocument();
   });
 
   it('documents the tab-must-stay-open caveat in the bell tooltip', () => {
     render(<App />);
-    expect(screen.getByRole('button', { name: 'Browser notifications' }))
+    expect(screen.getByRole('button', { name: 'Browser notifications (this tab)' }))
       .toHaveAttribute('title', expect.stringContaining('tab must stay open'));
   });
 });

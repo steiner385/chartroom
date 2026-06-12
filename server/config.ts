@@ -288,12 +288,19 @@ function normalizeDeployConfig(repo: string, dc: Partial<DeployConfig>): DeployC
  * validateConfigPatch rejects every key outside this list, so new config
  * fields are forbidden-by-default. The server-side validation below is the
  * security boundary, not the UI.
+ *
+ * `notifications` is a NARROW carve-out: only `{ enabled }` is writable — it
+ * merely flips the pre-configured command sink on/off (no injection surface).
+ * `command`/`events`/anything else inside the block stay file-only and are
+ * rejected as `notifications.<key>` offendingKeys.
  */
-export const SAFE_CONFIG_KEYS = ['owners', 'exclude', 'retentionDays', 'batchSize', 'intervals'] as const;
+export const SAFE_CONFIG_KEYS = ['owners', 'exclude', 'retentionDays', 'batchSize', 'intervals', 'notifications'] as const;
 export type SafeConfigKey = (typeof SAFE_CONFIG_KEYS)[number];
 
-/** Instance-config keys surfaced read-only in the UI (file-only for security). */
-export const READ_ONLY_CONFIG_KEYS = ['tokenSource', 'apiUrl', 'port', 'app', 'ancestrySource', 'notifications'] as const;
+/** Instance-config keys surfaced read-only in the UI (file-only for security).
+ *  `notifications` is not listed: its `enabled` flag is PUT-writable (see the
+ *  SAFE_CONFIG_KEYS carve-out); the rest of the block remains file-only. */
+export const READ_ONLY_CONFIG_KEYS = ['tokenSource', 'apiUrl', 'port', 'app', 'ancestrySource'] as const;
 
 const INTERVAL_KEYS = ['sweepMs', 'hotMs', 'deployMs'] as const;
 
@@ -304,6 +311,8 @@ export interface ConfigPatch {
   retentionDays?: number;
   batchSize?: number;
   intervals?: Partial<AppConfig['intervals']>;
+  /** Carve-out: enabled is the ONLY writable notifications sub-key. */
+  notifications?: { enabled: boolean };
 }
 
 export type ConfigPatchValidation =
@@ -373,6 +382,28 @@ export function validateConfigPatch(body: unknown): ConfigPatchValidation {
       if (Object.keys(intervals).length) patch.intervals = intervals;
     }
   }
+  if (raw.notifications !== undefined) {
+    const v = raw.notifications;
+    if (!v || typeof v !== 'object' || Array.isArray(v)) {
+      fieldErrors.notifications = 'must be an object';
+    } else {
+      const nv = v as Record<string, unknown>;
+      // carve-out boundary: enabled only flips the pre-configured command on/off;
+      // command (the injection surface), events, and any future sub-key are
+      // file-only and rejected exactly like top-level forbidden keys
+      const forbidden = Object.keys(nv).filter((k) => k !== 'enabled');
+      offendingKeys.push(...forbidden.map((k) => `notifications.${k}`));
+      if (nv.enabled === undefined) {
+        if (forbidden.length === 0) {
+          fieldErrors['notifications.enabled'] = 'is required (the only writable notifications key)';
+        }
+      } else if (typeof nv.enabled !== 'boolean') {
+        fieldErrors['notifications.enabled'] = 'must be a boolean';
+      } else {
+        patch.notifications = { enabled: nv.enabled };
+      }
+    }
+  }
 
   if (offendingKeys.length || Object.keys(fieldErrors).length) {
     return { ok: false, offendingKeys, fieldErrors };
@@ -393,11 +424,15 @@ export function writeConfigPatch(path: string, patch: ConfigPatch): AppConfig {
     ? (JSON.parse(readFileSync(path, 'utf8')) as Record<string, unknown>)
     : {};
   const next: Record<string, unknown> = { ...existing };
+  // nested partials merge key-wise into the existing block — a PUT carrying
+  // intervals.{sweepMs} or notifications.{enabled} must not clobber siblings
+  // (hotMs / the file-only command+events)
+  const NESTED: ReadonlySet<SafeConfigKey> = new Set(['intervals', 'notifications'] as const);
   for (const key of SAFE_CONFIG_KEYS) {
     if (patch[key] === undefined) continue;
-    next[key] = key === 'intervals'
-      ? { ...(typeof existing.intervals === 'object' && existing.intervals ? existing.intervals : {}),
-          ...patch.intervals }
+    next[key] = NESTED.has(key)
+      ? { ...(typeof existing[key] === 'object' && existing[key] ? existing[key] as object : {}),
+          ...patch[key] as object }
       : patch[key];
   }
   mkdirSync(dirname(path), { recursive: true });

@@ -146,6 +146,9 @@ export interface ConfigPatch {
   retentionDays?: number;
   batchSize?: number;
   intervals?: Partial<AppIntervals>;
+  /** Carve-out: `enabled` is the ONLY writable notifications sub-key —
+   *  command/events stay file-only (server-enforced). */
+  notifications?: { enabled: boolean };
 }
 
 /** Success body of `PUT /api/config`. */

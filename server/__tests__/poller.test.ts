@@ -3840,6 +3840,40 @@ describe('Poller notifier wiring (issue #19)', () => {
     expect(blocked.find((e) => e.prNumber === 8878)!.detail).toContain('conflicts with the base');
     expect(blocked.find((e) => e.prNumber === 9335)!.detail).toContain('#8878');
   });
+
+  it('reconfigure() hot-applies notifications.enabled — the command sink disarms and re-arms without a restart', () => {
+    const cfgWith = (enabled: boolean): AppConfig => ({ ...CONFIG,
+      notifications: { enabled, command: ['notify-send', '{title}', '{body}'],
+        events: { 'ci-failed': true, 'group-failed': true, 'queue-blocked': true,
+          ready: true, overdue: true, 'prod-live': true } } });
+    const execCalls: string[] = [];
+    // index.ts wiring shape: the notifier reads the POLLER's live config, so a
+    // PUT /api/config → reconfigure() flips the command sink with no restart
+    let p!: Poller;
+    const notifier = new Notifier({
+      config: () => p.currentNotifications(),
+      exec: (cmd, _args, cb) => { execCalls.push(cmd); cb(null); },
+    });
+    p = new Poller({ router: asRouter(fakeClient()), history, deploy: noDeploy(),
+      config: cfgWith(true), now: () => NOW, notifier });
+    const events: NotificationEvent[] = [];
+    notifier.on('notification', (ev: NotificationEvent) => events.push(ev));
+    const failed = (n: number) => notifier.observe({ repo: 'acme/widgets', prNumber: n,
+      title: `pr ${n}`, prev: null, next: { stage: 'parked', substate: 'ci-failed',
+        percent: null, etaSeconds: null, etaRangeSeconds: null, overdue: false } });
+
+    failed(1);
+    expect(execCalls).toHaveLength(1); // armed at startup → command fires
+
+    p.reconfigure(cfgWith(false));     // PUT {notifications:{enabled:false}}
+    failed(2);
+    expect(execCalls).toHaveLength(1); // disarmed — NO command
+    expect(events).toHaveLength(2);    // …but the SSE/browser sink still flows
+
+    p.reconfigure(cfgWith(true));      // PUT {notifications:{enabled:true}}
+    failed(3);
+    expect(execCalls).toHaveLength(2); // re-armed — fires again
+  });
 });
 
 describe('repo discovery + toggle list', () => {

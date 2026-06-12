@@ -102,10 +102,13 @@ async function main() {
   }
 
   const deploy = new DeployWatcher(clonesDir);
-  // Notifier (issue #19): a getter keeps hot-applied config swaps effective.
-  // SSE notification events always flow (the browser sink gates itself via the
-  // bell + Notification permission); `enabled` gates only the host command.
-  const notifier = new Notifier({ config: () => config.notifications });
+  // Notifier (issue #19): reads the POLLER's live config, so a PUT /api/config
+  // carrying notifications.enabled arms/disarms the command sink via
+  // reconfigure() — no restart needed. SSE notification events always flow
+  // (the browser sink gates itself via the bell + Notification permission);
+  // `enabled` gates only the host command.
+  let poller: Poller;
+  const notifier = new Notifier({ config: () => poller.currentNotifications() });
   if (config.notifications.enabled) {
     const on = NOTIFICATION_EVENT_TYPES.filter((t) => config.notifications.events[t]);
     console.log(`[notifier] armed — command sink: ${config.notifications.command[0] ?? '(none)'}`
@@ -114,7 +117,7 @@ async function main() {
     console.log('[notifier] command sink disabled (notifications.enabled=false) — '
       + 'browser notifications via SSE remain available');
   }
-  const poller = new Poller({ router, history, deploy, config, notifier });
+  poller = new Poller({ router, history, deploy, config, notifier });
   console.log(config.ancestrySource === 'api'
     ? '[deploy] ancestrySource: api — compare-API ancestry, no clones created (pre-existing clones serve as fallback only)'
     : `[deploy] ancestrySource: clone — bare clones in ${clonesDir}`);
