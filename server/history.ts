@@ -17,6 +17,21 @@ export interface MergedPrRecord extends MergedPrInput {
 export interface StateSampleCounts { open: number; ci: number; queue: number; failed: number; }
 export interface StateSampleRow extends StateSampleCounts { repo: string; at: string; }
 
+/**
+ * `ALTER TABLE … ADD COLUMN` that tolerates exactly one failure mode: the
+ * column already existing (idempotent re-open of a migrated DB). Any other
+ * SQLite error (missing table, I/O, locked DB) is rethrown — swallowing it
+ * would resurface later as a confusing prepare-time error far from the cause.
+ */
+export function addColumnIfMissing(db: Database.Database, table: string, columnDef: string): void {
+  try {
+    db.exec(`ALTER TABLE ${table} ADD COLUMN ${columnDef}`);
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    if (!/duplicate column name/i.test(msg)) throw e;
+  }
+}
+
 /** Minimum spacing between state samples for one repo (recordStateSample throttle). */
 const STATE_SAMPLE_MIN_MS = 15 * 60_000;
 /** State samples older than this are pruned whenever a new sample lands. */
@@ -102,14 +117,16 @@ export class HistoryStore {
         queue_count INT NOT NULL, failed_count INT NOT NULL
       );
       CREATE INDEX IF NOT EXISTS idx_state_samples ON state_samples(repo, sampled_at);
+      -- Metrics windowed reads filter on the time column alone; idx_durations /
+      -- idx_runner_waits are prefixed by repo+name+event and can't serve them.
+      CREATE INDEX IF NOT EXISTS idx_durations_completed ON check_durations(completed_at);
+      CREATE INDEX IF NOT EXISTS idx_runner_waits_started ON runner_waits(started_at);
     `);
 
     // Migration: merged_prs gains created_at (PR lifespan metric). Fresh DBs get
-    // the column from CREATE TABLE above; pre-existing DBs get it from this ALTER.
-    // The ALTER throws whenever the column already exists — swallow exactly that.
-    try {
-      this.db.exec('ALTER TABLE merged_prs ADD COLUMN created_at TEXT');
-    } catch { /* column already exists */ }
+    // the column from CREATE TABLE above; pre-existing DBs get it from this ALTER
+    // (duplicate-column tolerated, everything else rethrown).
+    addColumnIfMissing(this.db, 'merged_prs', 'created_at TEXT');
 
     // Prepare all statements after schema is guaranteed to exist.
     this.stmtInsertDuration = this.db.prepare(

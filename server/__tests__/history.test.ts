@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach } from 'vitest';
-import { HistoryStore } from '../history';
+import { HistoryStore, addColumnIfMissing } from '../history';
 
 let h: HistoryStore;
 beforeEach(() => {
@@ -373,6 +373,46 @@ describe('merged_prs created_at migration', () => {
     const again = new HistoryStore(path);
     expect(again.listTrackedMerged(7, new Date('2026-06-11T00:00:00Z'))).toHaveLength(1);
     again.close();
+  });
+});
+
+describe('addColumnIfMissing (migration helper)', () => {
+  it('adds the column once and is a no-op when it already exists (duplicate swallowed)', () => {
+    const db = new Database(':memory:');
+    db.exec('CREATE TABLE t (a TEXT)');
+    addColumnIfMissing(db, 't', 'b TEXT');
+    expect(() => addColumnIfMissing(db, 't', 'b TEXT')).not.toThrow();
+    const cols = (db.prepare('PRAGMA table_info(t)').all() as { name: string }[]).map((c) => c.name);
+    expect(cols).toEqual(['a', 'b']);
+    db.close();
+  });
+
+  it('rethrows non-duplicate-column SQLite errors instead of swallowing them', () => {
+    const db = new Database(':memory:');
+    // no such table → must surface, NOT be mistaken for "column already exists"
+    expect(() => addColumnIfMissing(db, 'missing_table', 'b TEXT')).toThrow(/no such table/i);
+    db.close();
+  });
+});
+
+describe('metrics windowed queries use index support (no full-table scans)', () => {
+  it('the since-queries on the two large tables hit completed_at/started_at indexes', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'prdash-idx-'));
+    const path = join(dir, 'history.db');
+    new HistoryStore(path).close();
+    const raw = new Database(path, { readonly: true });
+    try {
+      const plan = (sql: string): string =>
+        (raw.prepare(`EXPLAIN QUERY PLAN ${sql}`).all() as { detail: string }[])
+          .map((r) => r.detail).join('; ');
+      expect(plan("SELECT repo FROM check_durations WHERE conclusion='SUCCESS' AND completed_at >= '2026'"))
+        .toMatch(/USING INDEX idx_durations_completed/);
+      expect(plan("SELECT repo FROM runner_waits WHERE started_at >= '2026'"))
+        .toMatch(/USING INDEX idx_runner_waits_started/);
+    } finally {
+      raw.close();
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });
 
