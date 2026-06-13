@@ -4,7 +4,10 @@ import { percentile } from './math';
 import { activeForEvent, type CiGraphNode } from './required-checks';
 import { matchingPrefix } from './estimator/classify';
 import { computeCriticalPath, type CriticalPathNodeInput } from './estimator/critical-path';
-import { lintTimeouts, type LintFinding, type TimeoutLintInput } from './estimator/workflow-lint';
+import {
+  lintTimeouts, lintFastGatingJobs, lintWaitDominated, sortFindings,
+  type LintFinding, type TimeoutLintInput, type FastGatingInput, type WaitDominatedInput,
+} from './estimator/workflow-lint';
 
 /**
  * Metrics tab payload (metrics-readability revision). This interface is the
@@ -116,12 +119,17 @@ export interface MetricsPayload {
    *  samples, their ratio, and the approximate onset (first sample of the
    *  recent window). Repos with no active regressions are omitted. */
   regressions: { repo: string; checks: DurationRegressionView[] }[];
-  /** Workflow lint (issue #48, rule 1 — timeout calibration): per repo,
-   *  findings from joining each derived job's `timeout-minutes` with its
+  /** Workflow lint (issue #48): per repo, static×runtime findings.
+   *  Rule 'timeout' joins each derived job's `timeout-minutes` with its
    *  observed p99 duration (last 50 runs, ≥ LINT_MIN_RUNS samples; max across
-   *  events). `observed`/`configured` are seconds; configured null = unset
-   *  (GitHub's 360m default). Window-independent, like criticalPath. Repos
-   *  with zero findings are omitted (the UI's empty state reads 'no findings'). */
+   *  events). Rule 'fast-gating-job' flags sub-30s jobs that other jobs need
+   *  AND that sit on the expected critical path (merge candidates). Rule
+   *  'wait-dominated' flags jobs whose median runner-pickup wait exceeds
+   *  their median duration (≥10 samples on both series). `observed`/
+   *  `configured` are seconds; configured is timeout-rule-only (null = unset
+   *  → GitHub's 360m default; always null on the other rules). Findings sort
+   *  warn-first, then job, then rule. Window-independent, like criticalPath.
+   *  Repos with zero findings are omitted (the UI reads 'no findings'). */
   lint: { repo: string; findings: LintFinding[] }[];
   /** Per-pool runner telemetry (issue #45): like runnerWaits but keyed by the
    *  job's runs-on POOL instead of the trigger event (the event-keyed section
@@ -605,6 +613,13 @@ export function computeMetrics(history: HistoryStore, window: MetricsWindow,
     const foreign = foreignNames.get(repo);
     // node → lint input; the worst (max) p99 across events wins per node
     const lintInputs = new Map<string, TimeoutLintInput>();
+    // Rule 2 (issue #48): on-path fast gating jobs — dependents union across
+    // events, the worst (max) p50 wins (a job slow in EITHER event isn't a
+    // trivial merge candidate).
+    const fastInputs = new Map<string, FastGatingInput>();
+    // Rule 3 (issue #48): wait-dominated jobs — the widest wait-over-run gap
+    // across matched names/events represents the node.
+    const waitInputs = new Map<string, WaitDominatedInput>();
     for (const event of CRITICAL_PATH_EVENTS) {
       const names = history.expectedSet(repo, event, now);
       // nodes provably inactive for this event leave the DAG entirely (their
@@ -659,8 +674,43 @@ export function computeMetrics(history: HistoryStore, window: MetricsWindow,
       if (result == null) continue; // empty/cyclic (corrupt persisted graph)
       criticalPath.push({ repo, event, endToEndP50Secs: result.endToEndP50Secs,
         path: result.path, offPath: result.offPath.slice(0, OFF_PATH_CAP) });
+
+      // Rule 2 candidates: observed on-path nodes with ≥1 event-active dependent.
+      const onPath = new Set(result.path.map((s) => s.name));
+      for (const inp of inputs) {
+        if (inp.durationP50 == null || !onPath.has(inp.name)) continue;
+        const dependents = active
+          .filter(([, node]) => node.needs.includes(inp.name))
+          .map(([k]) => k);
+        if (dependents.length === 0) continue;
+        const prior = fastInputs.get(inp.name);
+        fastInputs.set(inp.name, {
+          job: inp.name,
+          p50Secs: prior ? Math.max(prior.p50Secs, inp.durationP50) : inp.durationP50,
+          dependents: prior ? [...new Set([...prior.dependents, ...dependents])] : dependents,
+          onCriticalPath: true,
+        });
+      }
+      // Rule 3 candidates: per matched check name, last-20 wait p50 (+n) vs
+      // duration p50 (+n) — the lint itself enforces the 10-sample floors.
+      for (const [nodeKey, matched] of namesByNode) {
+        for (const name of matched) {
+          const d = history.expected(repo, name, event);
+          const w = history.runnerWaitStats(repo, name, event);
+          if (d == null || w == null) continue;
+          const prior = waitInputs.get(nodeKey);
+          if (!prior || w.p50Secs - d.p50 > prior.waitP50Secs - prior.durationP50Secs) {
+            waitInputs.set(nodeKey, { job: nodeKey, waitP50Secs: w.p50Secs, waitN: w.n,
+              durationP50Secs: d.p50, durationN: d.n });
+          }
+        }
+      }
     }
-    const findings = lintTimeouts([...lintInputs.values()]);
+    const findings = sortFindings([
+      ...lintTimeouts([...lintInputs.values()]),
+      ...lintFastGatingJobs([...fastInputs.values()]),
+      ...lintWaitDominated([...waitInputs.values()]),
+    ]);
     if (findings.length > 0) lint.push({ repo, findings });
   }
 

@@ -560,3 +560,5 @@ section h2 { font-size: 14px; margin: 18px 0 8px; color: var(--muted); }
 .repo-toggle button[aria-pressed="true"] { background: color-mix(in srgb, var(--done) 18%, transparent);
   border-color: var(--done); }
 .repo-toggle.excluded button { color: var(--muted); }
+
+.lint-rule { font-size: 10px; color: var(--muted); font-variant-numeric: tabular-nums; }

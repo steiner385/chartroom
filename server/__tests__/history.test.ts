@@ -1200,3 +1200,29 @@ describe('costRowsSince (issue #43 cost attribution)', () => {
     expect(h.costRowsSince('2026-06-09T00:00:00Z')).toEqual([]);
   });
 });
+
+describe('runnerWaitStats (issue #48 wait-dominated lint)', () => {
+  it('returns the last-20 p50 WITH the sample count behind it', () => {
+    // 11 samples 100..110 → lower median 105
+    for (let i = 0; i < 11; i++) {
+      h.recordRunnerWait(REPO, 'job', 'pull_request', 100 + i,
+        `2026-06-10T10:${String(i).padStart(2, '0')}:00Z`);
+    }
+    expect(h.runnerWaitStats(REPO, 'job', 'pull_request')).toEqual({ p50Secs: 105, n: 11 });
+  });
+
+  it('null with no samples; scoped per (repo, name, event)', () => {
+    h.recordRunnerWait(REPO, 'job', 'pull_request', 50, '2026-06-10T10:00:00Z');
+    expect(h.runnerWaitStats(REPO, 'job', 'merge_group')).toBeNull();
+    expect(h.runnerWaitStats(REPO, 'other', 'pull_request')).toBeNull();
+    expect(h.runnerWaitStats(REPO, 'job', 'pull_request')).toEqual({ p50Secs: 50, n: 1 });
+  });
+
+  it('caps at the newest 20 samples (same window as expectedRunnerWait)', () => {
+    for (let i = 0; i < 25; i++) {
+      h.recordRunnerWait(REPO, 'job', 'pull_request', i,
+        `2026-06-10T10:${String(i).padStart(2, '0')}:00Z`);
+    }
+    expect(h.runnerWaitStats(REPO, 'job', 'pull_request')!.n).toBe(20);
+  });
+});
