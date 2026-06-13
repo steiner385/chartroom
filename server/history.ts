@@ -704,6 +704,16 @@ export class HistoryStore {
     return rows.length ? median(rows.map((r) => r.wait_secs)) : null;
   }
 
+  /** Last-20 runner-pickup-wait p50 WITH its sample count for
+   *  (repo, name, event) — the wait-dominated lint gates on n (issue #48).
+   *  Null with no samples. Same sample window as expectedRunnerWait. */
+  runnerWaitStats(repo: string, name: string, event: string):
+    { p50Secs: number; n: number } | null {
+    const rows = this.stmtSelectRunnerWaits.all(repo, name, event) as { wait_secs: number }[];
+    if (!rows.length) return null;
+    return { p50Secs: median(rows.map((r) => r.wait_secs)), n: rows.length };
+  }
+
   /** Event-level fallback: median pickup wait over the last 50 samples across names.
    *  Null below 3 samples — one or two waits are too thin to generalize to other jobs. */
   expectedRunnerWaitForEvent(repo: string, event: string): number | null {

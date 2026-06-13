@@ -758,11 +758,13 @@ export function MetricsView({ now }: {
               <tbody>
                 {l.findings.map((f) => (
                   <tr key={`${f.rule}/${f.job}`}>
-                    <td><span className={`lint-badge lint-${f.severity}`}>{f.severity}</span></td>
+                    <td><span className={`lint-badge lint-${f.severity}`}>{f.severity}</span>{' '}
+                      <span className="lint-rule" title="lint rule id">{f.rule}</span></td>
                     <td className="metric-job-name">{f.job}</td>
                     <td>{f.message}</td>
                     <td>{formatDur(f.observed)}</td>
-                    <td>{f.configured != null ? formatDur(f.configured) : '– (default 6h)'}</td>
+                    <td>{f.configured != null ? formatDur(f.configured)
+                      : f.rule === 'timeout' ? '– (default 6h)' : '–'}</td>
                   </tr>
                 ))}
               </tbody>
