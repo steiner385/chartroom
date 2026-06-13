@@ -147,8 +147,9 @@ export interface MetricsPayload {
   /** Spot-reclaim ledger (issue #46): infra-kill events per repo — a CANCELLED
    *  check at attempt N whose sha later carries a SUCCESS of the same check at
    *  a higher attempt (deliberately disjoint from flakes, which are
-   *  FAILING-class). `byPool` joins each event's check onto its runs-on pool
-   *  via the derived graph ('unknown' when unmappable). Repos with zero
+   *  FAILING-class). `byPool` joins each event's check onto its pool —
+   *  ground-truth observed_pools (a real runner label from the Jobs API) first,
+   *  ci.yml-derived runsOn next, 'unknown' when neither knows. Repos with zero
    *  events in the window are omitted. */
   reclaims: { repo: string; total: number;
     perBucket: { bucket: string; count: number }[];
@@ -162,8 +163,9 @@ export interface MetricsPayload {
   concurrency: { repo: string; pool: string; peak: number;
     buckets: { bucket: string; peak: number }[] }[];
   /** CI cost attribution (issue #43): runner-minutes per repo, split by the
-   *  job's runs-on pool (composite 'a|b' = a runs-on ternary attributed to the
-   *  composite label; 'unknown' = unmappable). Every conclusion counts — a
+   *  job's resolved pool — ground-truth observed_pools (a real runner label
+   *  from the Jobs API) first, ci.yml-derived runsOn next (composite 'a|b' = a
+   *  runs-on ternary), 'unknown' last. Every conclusion counts — a
    *  failed/cancelled job burned its runner just the same; a row is in-window
    *  when it STARTED in-window (buckets key on start time). Dollars come from
    *  the file-only `costPerMinute` config (pool label → $/min, 'default'
@@ -205,8 +207,12 @@ export interface MetricsPayload {
    *  imported per-day ACTUAL spend (POST /api/cost/actuals; scope 'fleet' or a
    *  single pool label) joined against the per-day ATTRIBUTED dollars over the
    *  same rows as `cost` (priced jobs only, summed across non-excluded repos;
-   *  a pool scope matches the job's runs-on pool key, 'fleet' takes every
-   *  priced job). ALWAYS day-keyed — actual bills are daily, so the hour/day
+   *  a pool scope matches the job's resolved pool key, 'fleet' takes every
+   *  priced job EXCEPT github-hosted ones — ubuntu-latest/etc. minutes are on
+   *  GitHub's bill, not the EC2 fleet actuals, so counting them against the
+   *  fleet bill is the >100% coverage leak this excludes; they still attribute
+   *  to their own pool scope and to every per-job/per-run/byPool dollar figure).
+   *  ALWAYS day-keyed — actual bills are daily, so the hour/day
    *  bucket selector never applies here. `attributedDollars` is null in
    *  minutes-only mode (no rates configured); `coveragePct` = attributed ÷
    *  actual × 100, null when either side is missing (no rates, or actual = 0).
@@ -406,7 +412,8 @@ export function computeMetrics(history: HistoryStore, window: MetricsWindow,
   ciGraphs: Map<string, Map<string, CiGraphNode>> = new Map(),
   foreignNames: Map<string, Set<string>> = new Map(),
   activeRegressions: { repo: string; checks: DurationRegressionView[] }[] = [],
-  poolsFor: (repo: string, name: string) => string[] | null = () => null,
+  resolvePool: (repo: string, name: string, event: string) =>
+    { pool: string; githubHosted: boolean } | null = () => null,
   poolHealth: { repo: string; pools: PoolHealthView[] }[] = [],
   costPerMinute: Record<string, number> | null = null,
   poolMeta: Record<string, PoolMetaEntry> | null = null,
@@ -803,10 +810,17 @@ export function computeMetrics(history: HistoryStore, window: MetricsWindow,
 
   // 13. Spot-reclaim ledger (issue #46): events from the sha+attempt data,
   // bucketed for the trend chart and joined onto pools via the derived graph.
-  const poolKeyOf = (repo: string, name: string): string => {
-    const pools = poolsFor(repo, name);
-    return pools?.length ? pools.join('|') : 'unknown';
-  };
+  // Ground-truth-first pool key (jobs-API feature): observed_pools (a real
+  // runner label) beats the ci.yml-derived runsOn beats 'unknown'. Event-scoped
+  // because a job's pool can differ per event (ARC on pull_request vs on-demand
+  // on merge_group).
+  const poolKeyOf = (repo: string, name: string, event: string): string =>
+    resolvePool(repo, name, event)?.pool ?? 'unknown';
+  // Github-hosted minutes are billed by GitHub, not on the EC2 fleet — used to
+  // exclude them from the fleet-actuals coverage join (otherwise the fleet
+  // bill's attributed-dollars overshoot 100%, the >100% leak this fixes).
+  const isGithubHosted = (repo: string, name: string, event: string): boolean =>
+    resolvePool(repo, name, event)?.githubHosted === true;
   const reclaims = [...history.reclaimEventsByRepo(since)]
     .filter(([repo]) => !dropped.has(repo))
     .sort(([a], [b]) => a.localeCompare(b))
@@ -814,7 +828,7 @@ export function computeMetrics(history: HistoryStore, window: MetricsWindow,
       repo,
       total: events.length,
       perBucket: bucketCounts(events.map((e) => e.at), key),
-      byPool: [...groupBy(events, (e) => poolKeyOf(repo, e.name))]
+      byPool: [...groupBy(events, (e) => poolKeyOf(repo, e.name, e.event))]
         .map(([pool, evs]) => ({ pool, count: evs.length }))
         .sort((a, b) => b.count - a.count || a.pool.localeCompare(b.pool)),
     }))
@@ -826,7 +840,7 @@ export function computeMetrics(history: HistoryStore, window: MetricsWindow,
   const nowMs = now.getTime();
   const sinceMs = nowMs - windowMs;
   const concurrency = [...groupBy(keep(history.checkIntervalsSince(since)),
-    (r) => `${r.repo}${SEP}${poolKeyOf(r.repo, r.name)}`)]
+    (r) => `${r.repo}${SEP}${poolKeyOf(r.repo, r.name, r.event)}`)]
     .sort(([a], [b]) => a.localeCompare(b))
     .flatMap(([k, rows]) => {
       const [repo, pool] = k.split(SEP) as [string, string];
@@ -856,7 +870,7 @@ export function computeMetrics(history: HistoryStore, window: MetricsWindow,
   const costRuns: MetricsPayload['costRuns'] = [];
   for (const [repo, rows] of [...groupBy(costRows, (r) => r.repo)]
     .sort(([a], [b]) => a.localeCompare(b))) {
-    const byPool = groupBy(rows, (r) => poolKeyOf(repo, r.name));
+    const byPool = groupBy(rows, (r) => poolKeyOf(repo, r.name, r.event));
     const pools = [...byPool]
       .map(([pool, rs]) => {
         const minutes = minutesOf(rs);
@@ -878,7 +892,7 @@ export function computeMetrics(history: HistoryStore, window: MetricsWindow,
     const retryRows = rows.filter((r) => r.runAttempt != null && r.runAttempt > 1);
     const retryMinutes = minutesOf(retryRows);
     const retryDollars = !hasRates ? null
-      : [...groupBy(retryRows, (r) => poolKeyOf(repo, r.name))].reduce((s, [pool, rs]) => {
+      : [...groupBy(retryRows, (r) => poolKeyOf(repo, r.name, r.event))].reduce((s, [pool, rs]) => {
         const rate = rateFor(pool);
         return rate != null ? s + minutesOf(rs) * rate : s;
       }, 0);
@@ -894,7 +908,7 @@ export function computeMetrics(history: HistoryStore, window: MetricsWindow,
     const jobs = [...groupBy(rows, (r) => `${r.name}${SEP}${r.event}`)]
       .map(([k, rs]) => {
         const [name, event] = k.split(SEP) as [string, string];
-        const pool = poolKeyOf(repo, name);
+        const pool = poolKeyOf(repo, name, event);
         const minutes = minutesOf(rs);
         const rate = rateFor(pool);
         return { name, event, minutes,
@@ -916,7 +930,7 @@ export function computeMetrics(history: HistoryStore, window: MetricsWindow,
         // priced member jobs only — same undercount rule as the pool totals
         const dollars = !hasRates ? null
           : rs.reduce((s, r) => {
-            const rate = rateFor(poolKeyOf(repo, r.name));
+            const rate = rateFor(poolKeyOf(repo, r.name, r.event));
             return rate != null ? s + (r.durationSecs / 60) * rate : s;
           }, 0);
         return {
@@ -940,12 +954,19 @@ export function computeMetrics(history: HistoryStore, window: MetricsWindow,
   const attributedByScopeDay = new Map<string, number>(); // `${scope}\0${date}` → $
   if (hasRates) {
     for (const r of costRows) {
-      const pool = poolKeyOf(r.repo, r.name);
+      const pool = poolKeyOf(r.repo, r.name, r.event);
       const rate = rateFor(pool);
       if (rate == null) continue;
       const d = (r.durationSecs / 60) * rate;
-      // a priced job attributes to its own pool's scope AND the fleet rollup
-      for (const scope of ['fleet', pool]) {
+      // A priced job attributes to its own pool's scope ALWAYS; it attributes to
+      // the 'fleet' rollup ONLY when it ran on the self-hosted EC2 fleet.
+      // GitHub-hosted minutes (ubuntu-latest etc.) are on GitHub's bill, not the
+      // EC2 fleet actuals — counting them against the fleet bill is exactly the
+      // >100% coverage leak this fixes. They still get a per-pool scope (their
+      // cost is real, just a different bill) and still count toward per-job /
+      // per-run / byPool dollars above (those join on the job, not the bill).
+      const scopes = isGithubHosted(r.repo, r.name, r.event) ? [pool] : ['fleet', pool];
+      for (const scope of scopes) {
         const k = `${scope}${SEP}${dayOf(r.startedAt)}`;
         attributedByScopeDay.set(k, (attributedByScopeDay.get(k) ?? 0) + d);
       }

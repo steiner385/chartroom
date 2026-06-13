@@ -14,7 +14,10 @@ import { deriveCiGraph, activeForEvent, ciGraphToJson, ciGraphFromJson, type CiG
 import type { PrSnapshot, StageResult, QueueEntry, CheckRun } from './types';
 import { buildSweepQuery, buildMergedPageQuery, buildOpenPageQuery, buildDetailQuery, buildQueueQuery, buildOidRollupQuery, buildBlobQuery } from './queries';
 import { mapPrNode, mapQueueEntries, mapRollupContexts } from './map';
-import { familyDisplayName } from './normalize';
+import { familyDisplayName, canonicalizeCheckName } from './normalize';
+import { selectRunIdsToFetch, observedKey, jobsApiPath, resolveJobsResponse,
+  type JobsApiResponse } from './pool-learning';
+import type { ObservedPool } from './history';
 import { computeProgress } from './estimator/progress';
 import { applyEtaCalibration, CALIBRATED_STAGES } from './estimator/calibrate';
 import { classify, requiredChecks, matchesRequiredPrefix, matchingPrefix, workflowScopeAllows, type DeployInfo } from './estimator/classify';
@@ -252,6 +255,12 @@ const FLAKE_LOOKBACK_MS = 7 * 86400_000;
 /** Re-query a repo's flake rates from history at most this often (the lookup is
  *  effectively cached per build — buildState runs well under this cadence). */
 const FLAKE_CACHE_TTL_MS = 60_000;
+
+/** Pool-learning dedup window (jobs-API feature): a run id fetched within this
+ *  window isn't re-fetched, so re-polling the same PR across nearby cycles
+ *  doesn't repeat the jobs call. Long enough to cover a hot PR's poll cadence,
+ *  short enough that the in-memory cache stays small. */
+const RECENTLY_FETCHED_RUN_TTL_MS = 30 * 60_000;
 
 /** Duration-regression scan cadence (issue #41): the scan rides the deploy
  *  cycle but runs at most hourly — a step over 30 samples moves on the scale
@@ -505,6 +514,11 @@ export class Poller extends EventEmitter {
   private derivedPrefixes = new Map<string, string[]>();  // repo → ci.yml-derived prefixes
   private derivedGraph = new Map<string, Map<string, CiGraphNode>>(); // repo → node prefix → { needs, activity }
   private derivedWorkflowName = new Map<string, string | null>();     // repo → rollup workflow display name
+  // Ground-truth job→pool learning (jobs-API feature): keys already mapped in
+  // observed_pools (seeded at startup), so the loop only fetches NEW job names;
+  // recentlyFetchedRunIds dedups jobs-API calls across nearby cycles.
+  private observedPoolKeys = new Set<string>();                        // observedKey(repo, canonicalName, event)
+  private recentlyFetchedRunIds = new Map<number, number>();           // runDatabaseId → last-fetched ms
   private deriveThrottle = new RetryThrottle(PREFIX_DERIVE_INTERVAL_MS); // 24h on success, backoff on failure
   private envShas = new Map<string, string | null>();     // repo/env → deployed sha
   private propagating = new Set<string>();                // merged PR keys whose sha is 'missing'
@@ -518,6 +532,7 @@ export class Poller extends EventEmitter {
   private workflowImpactCache = new Map<string, WorkflowImpact | null>(); // repo\0headSha → derived-graph diff (#49)
   private lastHourlyScanAt = 0;                           // epoch ms of the last hourly scan pass (#41/#45)
   private warnedAncestryFallback = new Set<string>();    // repos whose api→clone ancestry fallback was logged (log once)
+  private warnedJobsApi = new Set<string>();             // repos whose jobs-API pool-learn fetch failed (log once)
   private ancestryViaApiLogged = new Set<string>();      // repos whose first compare-API ancestry answer was logged (log once)
   private readonly apiAncestry: ApiAncestry;              // ancestrySource 'api' (the default)
   private warnedInaccessibleOwners = new Set<string>();   // owner-invisible diagnosability log fired (log once)
@@ -577,6 +592,14 @@ export class Poller extends EventEmitter {
         console.log(`[poller] restored persisted ci-graph for ${repo} (prefixes: ${graph.prefixes.join(', ')})`);
       } catch { /* corrupt row — ignore, live derivation will rewrite it */ }
     }
+    // Seed the in-memory observed-pool set so the learning loop stays quiet for
+    // job names already mapped on a previous run (only NEW names trigger a
+    // jobs-API call).
+    try {
+      for (const r of history.observedPoolsByRepo()) {
+        this.observedPoolKeys.add(observedKey(r.repo, r.checkName, r.event));
+      }
+    } catch { /* table absent on a legacy DB until first write — fine */ }
   }
 
   // ---- fetch cycles -------------------------------------------------------
@@ -891,6 +914,9 @@ export class Poller extends EventEmitter {
           (p, e) => this.needActiveFor(repo, p, e), this.graphKeysFor(repo),
           this.rollupWorkflowFor(repo), snap.headSha || null,
           (n) => this.timeoutMinutesFor(repo, n), (n) => this.poolsFor(repo, n));
+        // Ground-truth pool learning (jobs-API feature): map any new (check,
+        // event) keys to their real runner pool via the Jobs REST API.
+        await this.learnPoolsFromChecks(client, repo, snap.checks);
         // workflow-change impact (issue #49): flagged open PRs only, and only
         // when the repo has a main-derived graph to diff against; cached per
         // head sha so re-polls cost nothing.
@@ -939,6 +965,68 @@ export class Poller extends EventEmitter {
     this.workflowImpactCache.set(cacheKey, headGraph ? diffCiGraphs(base, headGraph) : null);
   }
 
+  /**
+   * Ground-truth pool learning (jobs-API feature): for any check whose
+   * (repo, canonical name, event) key is not yet mapped, fetch the jobs of its
+   * workflow run ONCE (Jobs REST API) and persist every job's resolved pool to
+   * observed_pools. The static ci.yml parser leaves most reusable-workflow jobs
+   * pool='unknown'; the Jobs API reports each job's real labels regardless of
+   * how it was invoked. Bounded + best-effort:
+   *  - at most MAX_JOBS_FETCHES_PER_CYCLE distinct run ids per call (the rest
+   *    next cycle), deduped against a short-lived recently-fetched cache;
+   *  - a failed fetch logs once and is retried later (never crashes a cycle);
+   *  - RateLimitError pauses the poller and stops the rest of this batch.
+   * Goes quiet once everything is mapped (only NEW job names trigger a call).
+   */
+  private async learnPoolsFromChecks(client: GithubClient, repo: string,
+    checks: CheckRun[]): Promise<void> {
+    this.pruneRecentlyFetchedRunIds();
+    const recent = new Set(this.recentlyFetchedRunIds.keys());
+    const runIds = selectRunIdsToFetch(checks, this.observedPoolKeys, recent, repo);
+    if (!runIds.length) return;
+    const [owner, name] = repo.split('/');
+    // The jobs API has no event; key observations by THIS run's event. A run is
+    // one event, so the event of any check carrying this run id is the run's
+    // event (checks of a given run share it).
+    const eventByRunId = new Map<number, string>();
+    for (const c of checks) {
+      if (c.runDatabaseId != null && !eventByRunId.has(c.runDatabaseId)) {
+        eventByRunId.set(c.runDatabaseId, c.event);
+      }
+    }
+    const nowMs = this.now().getTime();
+    for (const runId of runIds) {
+      let resp: JobsApiResponse;
+      try {
+        resp = await client.restGet<JobsApiResponse>(jobsApiPath(owner ?? '', name ?? '', runId));
+      } catch (e) {
+        if (e instanceof RateLimitError) { this.notePause(e.retryAfterSeconds); return; }
+        if (!this.warnedJobsApi.has(repo)) {
+          this.warnedJobsApi.add(repo);
+          console.warn(`[pool-learn] ${repo} run ${runId}: jobs fetch failed — will retry: ${describeError(e)}`);
+        }
+        continue; // best-effort: leave the key unobserved, retry next cycle
+      }
+      this.recentlyFetchedRunIds.set(runId, nowMs);
+      const event = eventByRunId.get(runId) ?? 'unknown';
+      for (const { name: rawJobName, pool } of resolveJobsResponse(resp)) {
+        const canonical = canonicalizeCheckName(rawJobName);
+        this.deps.history.recordObservedPool(repo, canonical, event, pool);
+        this.observedPoolKeys.add(observedKey(repo, canonical, event));
+      }
+    }
+  }
+
+  /** Drop recently-fetched run ids older than the dedup window so a long-lived
+   *  process doesn't grow the cache unbounded (and a genuinely new run reusing
+   *  a recycled id — impossible in practice — would re-fetch). */
+  private pruneRecentlyFetchedRunIds(): void {
+    const cutoff = this.now().getTime() - RECENTLY_FETCHED_RUN_TTL_MS;
+    for (const [id, at] of this.recentlyFetchedRunIds) {
+      if (at < cutoff) this.recentlyFetchedRunIds.delete(id);
+    }
+  }
+
   async queueOnce(): Promise<void> {
     return this.withLatch('queue', () => this.queueImpl());
   }
@@ -985,6 +1073,9 @@ export class Poller extends EventEmitter {
               (p, e) => this.needActiveFor(repo, p, e), this.graphKeysFor(repo),
               this.rollupWorkflowFor(repo), commit.oid as string,
               (n) => this.timeoutMinutesFor(repo, n), (n) => this.poolsFor(repo, n));
+            // Ground-truth pool learning (jobs-API feature): merge_group jobs
+            // carry their own (often distinct, e.g. on-demand) pool — learn it.
+            await this.learnPoolsFromChecks(client, repo, checks);
             // failed-group attribution (#38): maybeRecordGroupRun skips failed
             // groups (their wall-clock would skew medians) — culprits record here
             ingestGroupFailures(this.deps.history, repo, commit.oid as string, checks);
@@ -1375,6 +1466,24 @@ export class Poller extends EventEmitter {
     if (!graph) return null;
     const node = matchingPrefix(canonicalCheckName, graph.keys());
     return node !== null ? graph.get(node)!.runsOn : null;
+  }
+
+  /**
+   * Ground-truth-first pool resolution for cost attribution (jobs-API feature):
+   * observed_pools (a real runner label learned from the Jobs API) beats the
+   * ci.yml-derived runsOn, which beats null. The github-hosted flag rides along
+   * so the cost layer can exclude hosted minutes from the EC2 fleet-actuals
+   * coverage join. Observed lookups are event-scoped (ARC vs on-demand can
+   * differ per event); the derived fallback is event-agnostic (runsOn carries
+   * no event), joined '|' like poolsFor for a stable composite key. Returns null
+   * only when NEITHER source knows the pool.
+   */
+  resolvePool(repo: string, canonicalCheckName: string, event: string): ObservedPool | null {
+    const observed = this.deps.history.observedPool(repo, canonicalCheckName, event);
+    if (observed) return observed;
+    const derived = this.poolsFor(repo, canonicalCheckName);
+    if (derived?.length) return { pool: derived.join('|'), githubHosted: false };
+    return null;
   }
 
   /**

@@ -491,6 +491,55 @@ describe('runner waits (W2)', () => {
   });
 });
 
+describe('observed_pools (ground-truth job→pool mapping)', () => {
+  it('records and reads back a pool observation', () => {
+    h.recordObservedPool(REPO, 'DB Migrations', 'pull_request',
+      { pool: 'kindash-arc', githubHosted: false });
+    expect(h.observedPool(REPO, 'DB Migrations', 'pull_request'))
+      .toEqual({ pool: 'kindash-arc', githubHosted: false });
+  });
+
+  it('returns null for an unobserved (repo, name, event)', () => {
+    expect(h.observedPool(REPO, 'unseen', 'pull_request')).toBeNull();
+  });
+
+  it('keys on (repo, check_name, event) — same name, different event are distinct', () => {
+    h.recordObservedPool(REPO, 'build', 'pull_request',
+      { pool: 'kindash-arc', githubHosted: false });
+    h.recordObservedPool(REPO, 'build', 'merge_group',
+      { pool: 'kindash-ondemand', githubHosted: false });
+    expect(h.observedPool(REPO, 'build', 'pull_request')?.pool).toBe('kindash-arc');
+    expect(h.observedPool(REPO, 'build', 'merge_group')?.pool).toBe('kindash-ondemand');
+  });
+
+  it('upserts: a re-observation replaces pool/githubHosted and refreshes last_seen', () => {
+    h.recordObservedPool(REPO, 'build', 'pull_request',
+      { pool: 'kindash-arc', githubHosted: false }, '2026-01-01T00:00:00.000Z');
+    h.recordObservedPool(REPO, 'build', 'pull_request',
+      { pool: 'ubuntu-latest', githubHosted: true }, '2026-02-01T00:00:00.000Z');
+    expect(h.observedPool(REPO, 'build', 'pull_request'))
+      .toEqual({ pool: 'ubuntu-latest', githubHosted: true });
+    const all = h.observedPoolsByRepo();
+    const row = all.find((r) => r.repo === REPO && r.checkName === 'build' && r.event === 'pull_request');
+    expect(row?.lastSeen).toBe('2026-02-01T00:00:00.000Z');
+  });
+
+  it('stores github_hosted as a boolean round-trip', () => {
+    h.recordObservedPool(REPO, 'lint', 'pull_request',
+      { pool: 'ubuntu-latest', githubHosted: true });
+    expect(h.observedPool(REPO, 'lint', 'pull_request')?.githubHosted).toBe(true);
+  });
+
+  it('observedPoolsByRepo lists every observation', () => {
+    h.recordObservedPool(REPO, 'a', 'pull_request', { pool: 'p1', githubHosted: false });
+    h.recordObservedPool(REPO, 'b', 'merge_group', { pool: 'p2', githubHosted: true });
+    h.recordObservedPool('other/repo', 'c', 'push', { pool: 'p3', githubHosted: false });
+    const rows = h.observedPoolsByRepo();
+    expect(rows).toHaveLength(3);
+    expect(rows.map((r) => r.pool).sort()).toEqual(['p1', 'p2', 'p3']);
+  });
+});
+
 // ---------------------------------------------------------------------------
 // Round 12 (metrics tab): merged_prs.created_at migration + state samples
 // ---------------------------------------------------------------------------

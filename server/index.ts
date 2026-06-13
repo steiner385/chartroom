@@ -203,7 +203,7 @@ async function main() {
     metrics: (window, bucket) => computeMetrics(history, window, bucket, new Date(),
       poller.currentExclude(), (repo) => poller.settingsFor(repo).batchSize,
       poller.allDerivedGraphs(), poller.liveForeignNames(), poller.activeRegressions(),
-      (repo, name) => poller.poolsFor(repo, name), poller.poolHealth(),
+      (repo, name, event) => poller.resolvePool(repo, name, event), poller.poolHealth(),
       config.costPerMinute ?? null, config.poolMeta ?? null,
       (repo, sha) => poller.prNumberForSha(repo, sha)),
     repos: () => poller.repoToggleList(),

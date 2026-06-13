@@ -15,6 +15,12 @@ export interface CheckRun {
    *  `Auto-merge PRs`); null when the API omits it (old data, no workflow). */
   workflowName: string | null;
   runNumber: number | null;
+  /** Workflow-run database id from the check's workflowRun (jobs-API feature):
+   *  the numeric run id the Jobs REST API is keyed on
+   *  (`/actions/runs/{runDatabaseId}/jobs`). Null when the API omits the
+   *  workflowRun (old data, no workflow) or on a query path that didn't select
+   *  it. The poller's pool-learning loop fetches jobs for distinct ids. */
+  runDatabaseId: number | null;
   /** Workflow-run attempt from the check's workflowRun (re-runs/spot-retries
    *  increment it; issue #34 — flake radar / attempt waterfalls). Null when
    *  the API omits the workflowRun (old data, no workflow). */

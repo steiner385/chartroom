@@ -17,6 +17,7 @@ export function mapRollupContexts(nodes: any[], isRequiredDefault = false): Chec
       event: n.checkSuite?.workflowRun?.event ?? 'unknown',
       workflowName: n.checkSuite?.workflowRun?.workflow?.name ?? null,
       runNumber: n.checkSuite?.workflowRun?.runNumber ?? null,
+      runDatabaseId: n.checkSuite?.workflowRun?.databaseId ?? null,
       runAttempt: n.checkSuite?.workflowRun?.runAttempt ?? null,
       runCreatedAt: n.checkSuite?.workflowRun?.createdAt ?? null,
       isRequired: n.isRequired ?? isRequiredDefault,

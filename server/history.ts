@@ -75,6 +75,13 @@ export interface CostActualRow {
   scope: string; date: string; dollars: number; source: string | null;
 }
 
+/** A ground-truth pool observation (jobs-API feature): the resolved pool key +
+ *  github-hosted flag for one (repo, canonical check_name, event). */
+export interface ObservedPool { pool: string; githubHosted: boolean; }
+export interface ObservedPoolRow extends ObservedPool {
+  repo: string; checkName: string; event: string; lastSeen: string;
+}
+
 /**
  * `ALTER TABLE … ADD COLUMN` that tolerates exactly one failure mode: the
  * column already existing (idempotent re-open of a migrated DB). Any other
@@ -169,6 +176,10 @@ export class HistoryStore {
   // Cost actuals import (cost explorer phase 2)
   private readonly stmtUpsertCostActual: Database.Statement;
   private readonly stmtSelectCostActuals: Database.Statement;
+  // Ground-truth job→pool mapping (jobs-API feature)
+  private readonly stmtUpsertObservedPool: Database.Statement;
+  private readonly stmtSelectObservedPool: Database.Statement;
+  private readonly stmtSelectObservedPools: Database.Statement;
 
   constructor(path: string) {
     this.db = new Database(path);
@@ -236,6 +247,17 @@ export class HistoryStore {
       CREATE TABLE IF NOT EXISTS cost_actuals (
         scope TEXT NOT NULL, date TEXT NOT NULL, dollars REAL NOT NULL, source TEXT,
         UNIQUE(scope, date)
+      );
+      -- Ground-truth job→pool mapping (jobs-API feature): the resolved pool key
+      -- + github-hosted flag for one (repo, canonical check_name, event),
+      -- learned from the Jobs REST API. check_name is stored CANONICAL
+      -- (matrix-collapsed) so it joins against the canonical names everything
+      -- else uses. github_hosted is 0/1. last_seen refreshes on every
+      -- re-observation. UNIQUE(repo, check_name, event) makes it an upsert.
+      CREATE TABLE IF NOT EXISTS observed_pools (
+        repo TEXT NOT NULL, check_name TEXT NOT NULL, event TEXT NOT NULL,
+        pool TEXT NOT NULL, github_hosted INTEGER NOT NULL, last_seen TEXT NOT NULL,
+        UNIQUE(repo, check_name, event)
       );
     `);
 
@@ -477,6 +499,18 @@ export class HistoryStore {
     );
     this.stmtSelectCostActuals = this.db.prepare(
       'SELECT scope, date, dollars, source FROM cost_actuals WHERE date >= ? ORDER BY scope, date'
+    );
+    this.stmtUpsertObservedPool = this.db.prepare(
+      `INSERT INTO observed_pools (repo, check_name, event, pool, github_hosted, last_seen)
+       VALUES (?,?,?,?,?,?)
+       ON CONFLICT(repo, check_name, event) DO UPDATE SET
+         pool=excluded.pool, github_hosted=excluded.github_hosted, last_seen=excluded.last_seen`
+    );
+    this.stmtSelectObservedPool = this.db.prepare(
+      'SELECT pool, github_hosted FROM observed_pools WHERE repo=? AND check_name=? AND event=?'
+    );
+    this.stmtSelectObservedPools = this.db.prepare(
+      'SELECT repo, check_name, event, pool, github_hosted, last_seen FROM observed_pools'
     );
   }
 
@@ -955,6 +989,32 @@ export class HistoryStore {
    *  (scope, date) row — re-imports are idempotent; the latest POST wins. */
   upsertCostActual(scope: string, date: string, dollars: number, source: string | null): void {
     this.stmtUpsertCostActual.run(scope, date, dollars, source);
+  }
+
+  /** Ground-truth job→pool observation (jobs-API feature): upsert the resolved
+   *  pool + github-hosted flag for one (repo, canonical check_name, event),
+   *  refreshing last_seen. `checkName` MUST be canonical (matrix-collapsed) so
+   *  it joins against the canonical names poolsFor/cost use. */
+  recordObservedPool(repo: string, checkName: string, event: string,
+    observed: ObservedPool, lastSeen: string = new Date().toISOString()): void {
+    this.stmtUpsertObservedPool.run(repo, checkName, event,
+      observed.pool, observed.githubHosted ? 1 : 0, lastSeen);
+  }
+
+  /** The ground-truth pool for one (repo, canonical check_name, event), or null
+   *  when no job has been observed for that key yet. */
+  observedPool(repo: string, checkName: string, event: string): ObservedPool | null {
+    const row = this.stmtSelectObservedPool.get(repo, checkName, event) as
+      { pool: string; github_hosted: number } | undefined;
+    return row ? { pool: row.pool, githubHosted: row.github_hosted !== 0 } : null;
+  }
+
+  /** Every ground-truth pool observation (metrics: pool breakdown / coverage). */
+  observedPoolsByRepo(): ObservedPoolRow[] {
+    const rows = this.stmtSelectObservedPools.all() as Record<string, unknown>[];
+    return rows.map((r) => ({ repo: r.repo as string, checkName: r.check_name as string,
+      event: r.event as string, pool: r.pool as string,
+      githubHosted: (r.github_hosted as number) !== 0, lastSeen: r.last_seen as string }));
   }
 
   /** Imported actual-spend rows with date ≥ `sinceDate` (a YYYY-MM-DD key —

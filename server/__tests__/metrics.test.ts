@@ -887,8 +887,8 @@ describe('computeMetrics: spot reclaims (issue #46)', () => {
     seedReclaim('e2e', '2026-06-11T09:10:00Z');
     seedReclaim('e2e', '2026-06-11T10:10:00Z', 'shaR2');
     seedReclaim('mystery-job', '2026-06-11T10:20:00Z', 'shaR3');
-    const poolsFor = (_repo: string, name: string): string[] | null =>
-      name === 'e2e' ? ['kindash-runner', 'kindash-ondemand'] : null;
+    const poolsFor = (_repo: string, name: string, _event: string) =>
+      name === 'e2e' ? { pool: 'kindash-runner|kindash-ondemand', githubHosted: false } : null;
     const m = computeMetrics(h, '24h', 'hour', NOW, [], () => 1, new Map(), new Map(), [],
       poolsFor);
     expect(m.reclaims).toHaveLength(1);
@@ -991,8 +991,8 @@ describe('computeMetrics: concurrency demand (issue #47)', () => {
       '2026-06-11T09:10:00Z', '2026-06-11T09:40:00Z', 'CANCELLED', 'sha1', 1); // counts too
     h.recordCheckDuration(REPO, 'mystery', 'pull_request',
       '2026-06-11T09:00:00Z', '2026-06-11T09:05:00Z', 'SUCCESS', 'sha1', 1);
-    const poolsFor = (_repo: string, name: string): string[] | null =>
-      name === 'mystery' ? null : ['p1'];
+    const poolsFor = (_repo: string, name: string, _event: string) =>
+      name === 'mystery' ? null : { pool: 'p1', githubHosted: false };
     const m = computeMetrics(h, '24h', 'hour', NOW, [], () => 1, new Map(), new Map(), [],
       poolsFor);
     expect(m.concurrency.map((c) => [c.pool, c.peak])).toEqual([
@@ -1013,10 +1013,10 @@ describe('computeMetrics: concurrency demand (issue #47)', () => {
 describe('computeMetrics: CI cost attribution (issue #43)', () => {
   /** unit-tests/build → spot; e2e → a runs-on ternary (composite pool);
    *  mystery → unmappable (null). */
-  const poolsFor = (_repo: string, name: string): string[] | null =>
-    name.startsWith('e2e') ? ['spot', 'ondemand']
+  const poolsFor = (_repo: string, name: string, _event: string) =>
+    name.startsWith('e2e') ? { pool: 'spot|ondemand', githubHosted: false }
       : name === 'mystery' ? null
-        : ['spot'];
+        : { pool: 'spot', githubHosted: false };
 
   const costMetrics = (cpm: Record<string, number> | null = null,
     exclude: string[] = [], window: '24h' | '3d' = '24h') =>
@@ -1130,10 +1130,10 @@ describe('computeMetrics: CI cost attribution (issue #43)', () => {
 
 describe('computeMetrics: cost explorer (per-job, per-run, poolMeta)', () => {
   /** unit-tests/build → spot; e2e → composite ternary; mystery → unmappable. */
-  const poolsFor = (_repo: string, name: string): string[] | null =>
-    name.startsWith('e2e') ? ['spot', 'ondemand']
+  const poolsFor = (_repo: string, name: string, _event: string) =>
+    name.startsWith('e2e') ? { pool: 'spot|ondemand', githubHosted: false }
       : name === 'mystery' ? null
-        : ['spot'];
+        : { pool: 'spot', githubHosted: false };
 
   const explorer = (opts: {
     cpm?: Record<string, number> | null;
@@ -1273,11 +1273,14 @@ describe('computeMetrics: cost explorer (per-job, per-run, poolMeta)', () => {
 // ---------------------------------------------------------------------------
 
 describe('computeMetrics: cost actuals + attribution coverage (phase 2)', () => {
-  /** unit-tests/build → spot; e2e → composite ternary; mystery → unmappable. */
-  const poolsFor = (_repo: string, name: string): string[] | null =>
-    name.startsWith('e2e') ? ['spot', 'ondemand']
+  /** unit-tests/build → spot; e2e → composite ternary; mystery → unmappable;
+   *  hosted → a GITHUB-HOSTED pool (ubuntu-latest) — billed by GitHub, so it
+   *  must NOT count toward the EC2 fleet coverage. */
+  const poolsFor = (_repo: string, name: string, _event: string) =>
+    name.startsWith('e2e') ? { pool: 'spot|ondemand', githubHosted: false }
       : name === 'mystery' ? null
-        : ['spot'];
+        : name === 'hosted' ? { pool: 'ubuntu-latest', githubHosted: true }
+          : { pool: 'spot', githubHosted: false };
 
   const actuals = (opts: {
     cpm?: Record<string, number> | null;
@@ -1359,6 +1362,23 @@ describe('computeMetrics: cost actuals + attribution coverage (phase 2)', () => 
     expect(out[0]!.days[0]!.attributedDollars).toBeCloseTo(0.30, 6);
     // pool scope 'spot' = only the spot job's $0.10
     expect(out[1]!.days[0]!.attributedDollars).toBeCloseTo(0.10, 6);
+  });
+
+  it('github-hosted jobs are EXCLUDED from the fleet coverage but still get their own pool scope', () => {
+    // The >100% leak this fixes: ubuntu-latest minutes are on GitHub's bill, not
+    // the EC2 fleet actuals. They must not inflate the 'fleet' attributed total.
+    job('unit-tests', '2026-06-11T10:00:00Z', 600);   // spot (fleet), 10 min
+    job('hosted', '2026-06-11T10:10:00Z', 6000);      // ubuntu-latest, github-hosted, 100 min
+    h.upsertCostActual('fleet', '2026-06-11', 1, null);
+    h.upsertCostActual('ubuntu-latest', '2026-06-11', 1, null); // a separate GitHub bill scope
+    const out = actuals({ cpm: { 'spot': 0.01, 'ubuntu-latest': 0.008 } });
+    const fleet = out.find((a) => a.scope === 'fleet')!;
+    // fleet = ONLY the spot job's $0.10 — the hosted job's $0.80 is excluded
+    expect(fleet.days[0]!.attributedDollars).toBeCloseTo(0.10, 6);
+    expect(fleet.days[0]!.coveragePct).toBeCloseTo(10, 6); // 0.10 / 1.00, NOT 90%
+    // the hosted job still gets a 'ubuntu-latest' pool scope (cost is real)
+    const hosted = out.find((a) => a.scope === 'ubuntu-latest');
+    expect(hosted?.days[0]?.attributedDollars).toBeCloseTo(0.80, 6);
   });
 
   it('window floor applies to actual rows; headline sums in-window days only', () => {
