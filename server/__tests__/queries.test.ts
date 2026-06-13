@@ -98,7 +98,7 @@ describe('buildDetailQuery', () => {
     expect(q).toContain('pr8979: pullRequest(number: 8979)');
     expect(q).toContain('r1: repository(owner: "octo", name: "bridge")');
     expect(q).toContain('mergeQueueEntry { position state enqueuedAt headCommit { oid } }');
-    expect(q).toContain('checkSuite { workflowRun { event runNumber runAttempt workflow { name } } }');
+    expect(q).toContain('checkSuite { workflowRun { databaseId event runNumber runAttempt workflow { name } } }');
   });
 });
 
@@ -114,13 +114,13 @@ describe('queue + rollup + backfill builders', () => {
     expect(q).toContain('o1: object(oid: "def")');
     expect(q).toContain('... on Commit');
     // createdAt feeds the dispatch-stall classifier (issue #39)
-    expect(q).toContain('checkSuite { workflowRun { event runNumber runAttempt createdAt workflow { name } } }');
+    expect(q).toContain('checkSuite { workflowRun { databaseId event runNumber runAttempt createdAt workflow { name } } }');
   });
   it('buildBackfillQuery pages default-branch history rollups', () => {
     const q = buildBackfillQuery('acme', 'widgets', null);
     expect(q).toContain('defaultBranchRef');
     expect(q).toContain('history(first: 10');
-    expect(q).toContain('checkSuite { workflowRun { event runNumber runAttempt workflow { name } } }');
+    expect(q).toContain('checkSuite { workflowRun { databaseId event runNumber runAttempt workflow { name } } }');
     expect(buildBackfillQuery('acme', 'widgets', 'CUR')).toContain('after: "CUR"');
   });
 });

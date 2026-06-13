@@ -4048,6 +4048,7 @@ describe('telemetry plumbing (issue #34)', () => {
     name: 'Build', rawName: 'Build', status: 'COMPLETED', conclusion: 'SUCCESS',
     startedAt: '2026-06-10T11:50:00Z', completedAt: '2026-06-10T11:53:00Z',
     event: 'pull_request', workflowName: 'CI', runNumber: 12, runAttempt: 2,
+    runDatabaseId: null,
     isRequired: true, url: null,
   };
 
@@ -4125,6 +4126,7 @@ describe('ingestGroupFailures (issue #38)', () => {
     name: 'e2e', rawName: 'e2e', status: 'COMPLETED', conclusion: 'FAILURE',
     startedAt: '2026-06-10T11:30:00Z', completedAt: '2026-06-10T11:40:00Z',
     event: 'merge_group', workflowName: 'CI', runNumber: 1, runAttempt: 1,
+    runDatabaseId: null,
     isRequired: true, url: null, ...over,
   });
 
@@ -4516,6 +4518,7 @@ describe('duration ingestion guard (issue #61)', () => {
     name: 'Changed scope', rawName: 'Changed scope', status: 'COMPLETED', conclusion: 'SUCCESS',
     startedAt: '2026-06-12T02:28:27Z', completedAt: '2026-06-12T02:28:45Z',
     event: 'pull_request', workflowName: 'CI', runNumber: 1, runAttempt: 1,
+    runDatabaseId: null,
     isRequired: true, url: null, ...over,
   });
   const span = (secs: number): Pick<CheckRun, 'startedAt' | 'completedAt'> => ({
@@ -4617,6 +4620,7 @@ describe('guard workflow scoping + liveForeignNames (issue #61 follow-up)', () =
     name: 'ci-gate', rawName: 'ci-gate', status: 'COMPLETED', conclusion: 'SUCCESS',
     startedAt: '2026-06-12T02:00:00Z', completedAt: '2026-06-12T04:00:00Z', // 2h by design
     event: 'pull_request', workflowName: 'Auto-merge PRs', runNumber: 7, runAttempt: 1,
+    runDatabaseId: null,
     isRequired: false, url: null, ...over,
   });
 
@@ -4833,7 +4837,7 @@ describe('ingestCheckSet pool labels (issue #45)', () => {
   const mkCheck = (over: Partial<CheckRun>): CheckRun => ({
     name: 'job', rawName: 'job', status: 'COMPLETED', conclusion: 'SUCCESS',
     startedAt: null, completedAt: null, event: 'pull_request', workflowName: 'CI',
-    runNumber: 1, runAttempt: 1, isRequired: true, url: null, ...over });
+    runNumber: 1, runAttempt: 1, runDatabaseId: null, isRequired: true, url: null, ...over });
   const PREP = mkCheck({ name: 'prep',
     startedAt: '2026-06-10T11:00:00Z', completedAt: '2026-06-10T11:05:00Z' });
   const JOB = mkCheck({ name: 'job',
@@ -4905,6 +4909,7 @@ describe('rerunInProgressFor (issue #46 — the "do nothing" marker)', () => {
     name: 'e2e', rawName: 'e2e', status: 'COMPLETED', conclusion: 'CANCELLED',
     startedAt: '2026-06-10T11:00:00Z', completedAt: '2026-06-10T11:05:00Z',
     event: 'merge_group', workflowName: 'CI', runNumber: 9, runAttempt: 1,
+    runDatabaseId: null,
     isRequired: true, url: null, ...over });
 
   it('true: CANCELLED at attempt 1 with a sibling running at attempt 2', () => {
@@ -5246,6 +5251,7 @@ describe('computePrCost (cost explorer)', () => {
     name: 'unit-tests', rawName: 'unit-tests', status: 'COMPLETED', conclusion: 'SUCCESS',
     startedAt: '2026-06-10T11:00:00Z', completedAt: '2026-06-10T11:10:00Z',
     event: 'pull_request', workflowName: 'CI', runNumber: 1, runAttempt: 1,
+    runDatabaseId: null,
     isRequired: true, url: null,
   };
   const spotPools = (name: string): string[] | null =>
@@ -5358,5 +5364,148 @@ describe('PR-level cost + prNumberForSha on the live poller (cost explorer)', ()
     expect(p.prNumberForSha('acme/widgets', 'someother')).toBeNull();
     expect(p.prNumberForSha('acme/other', 'head8962')).toBeNull();
     expect(p.prNumberForSha('acme/widgets', '')).toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Ground-truth job→pool learning via the Jobs REST API (jobs-API feature)
+// ---------------------------------------------------------------------------
+
+describe('Poller learns job→pool from the Jobs REST API', () => {
+  // A detail response whose checks carry workflowRun.databaseId so the learning
+  // loop has a run id to fetch jobs for.
+  const checkWithRun = (name: string, runId: number, over: Record<string, unknown> = {}) => ({
+    __typename: 'CheckRun', name, status: 'COMPLETED', conclusion: 'SUCCESS',
+    startedAt: '2026-06-10T11:50:00Z', completedAt: '2026-06-10T11:53:00Z', detailsUrl: 'u',
+    isRequired: true,
+    checkSuite: { workflowRun: { databaseId: runId, event: 'pull_request' } }, ...over });
+
+  const detailWith = (nodes: unknown[]) => ({ r0: { nameWithOwner: 'acme/widgets', pr8962: {
+    number: 8962, title: 'fix', url: 'u', isDraft: false, mergeStateStatus: 'BLOCKED',
+    mergedAt: null, headRefOid: 'head8962', autoMergeRequest: null, mergeCommit: null, mergeQueueEntry: null,
+    commits: { nodes: [{ commit: { statusCheckRollup: { state: 'PENDING',
+      contexts: { pageInfo: { hasNextPage: false }, nodes } } } }] },
+  } } });
+
+  /** fakeClient + a restGet that serves the Jobs API for run 999. */
+  const learningClient = (jobs: unknown[], onRestGet?: (path: string) => void) => {
+    const detail = detailWith([
+      checkWithRun('db-migrations / DB Migrations', 999),
+      checkWithRun('lint', 999)]);
+    return {
+      remaining: 4000, resetAt: null,
+      graphql: vi.fn(async (q: string) => {
+        if (q.includes('open0: search')) return SWEEP_RESPONSE;
+        if (q.includes('pr8962: pullRequest')) return detail;
+        throw new Error(`unexpected query: ${q.slice(0, 80)}`);
+      }),
+      restGet: vi.fn(async (path: string) => {
+        onRestGet?.(path);
+        if (path.includes('/actions/runs/999/jobs')) return { jobs };
+        throw new Error(`unexpected restGet ${path}`);
+      }),
+    };
+  };
+
+  it('one jobs-API call maps every job; pools persist to observed_pools', async () => {
+    const client = learningClient([
+      { name: 'db-migrations / DB Migrations', labels: ['kindash-arc'], runner_group_name: 'arc' },
+      { name: 'lint', labels: ['ubuntu-latest'], runner_group_name: 'GitHub Actions' },
+    ]);
+    const p = new Poller({ router: asRouter(client), history, deploy: noDeploy(),
+      config: CONFIG, now: () => NOW });
+    await p.sweepOnce();
+    await p.detailOnce();
+    // exactly ONE jobs-API call for the single distinct run id
+    expect(client.restGet).toHaveBeenCalledTimes(1);
+    expect(client.restGet).toHaveBeenCalledWith('/repos/acme/widgets/actions/runs/999/jobs?per_page=100');
+    expect(history.observedPool('acme/widgets', 'db-migrations / DB Migrations', 'pull_request'))
+      .toEqual({ pool: 'kindash-arc', githubHosted: false });
+    expect(history.observedPool('acme/widgets', 'lint', 'pull_request'))
+      .toEqual({ pool: 'ubuntu-latest', githubHosted: true });
+    // resolvePool now returns ground truth, beating any derived value
+    expect(p.resolvePool('acme/widgets', 'lint', 'pull_request'))
+      .toEqual({ pool: 'ubuntu-latest', githubHosted: true });
+  });
+
+  it('goes quiet on subsequent cycles once everything is mapped', async () => {
+    const client = learningClient([
+      { name: 'db-migrations / DB Migrations', labels: ['kindash-arc'] },
+      { name: 'lint', labels: ['kindash-arc'] }]);
+    const p = new Poller({ router: asRouter(client), history, deploy: noDeploy(),
+      config: CONFIG, now: () => NOW });
+    await p.sweepOnce();
+    await p.detailOnce();
+    expect(client.restGet).toHaveBeenCalledTimes(1);
+    await p.detailOnce(); // everything mapped + run id recently-fetched → no call
+    expect(client.restGet).toHaveBeenCalledTimes(1);
+  });
+
+  it('a failed jobs fetch never crashes the cycle; retried next time', async () => {
+    let calls = 0;
+    const detail = detailWith([checkWithRun('job', 999)]);
+    const client = {
+      remaining: 4000, resetAt: null,
+      graphql: vi.fn(async (q: string) => {
+        if (q.includes('open0: search')) return SWEEP_RESPONSE;
+        if (q.includes('pr8962: pullRequest')) return detail;
+        throw new Error('unexpected');
+      }),
+      restGet: vi.fn(async () => {
+        calls += 1;
+        if (calls === 1) throw new Error('boom');
+        return { jobs: [{ name: 'job', labels: ['kindash-arc'] }] };
+      }),
+    };
+    const p = new Poller({ router: asRouter(client), history, deploy: noDeploy(),
+      config: CONFIG, now: () => NOW });
+    await p.sweepOnce();
+    await expect(p.detailOnce()).resolves.not.toThrow(); // first fetch boom — swallowed
+    expect(history.observedPool('acme/widgets', 'job', 'pull_request')).toBeNull();
+    // recently-fetched only caches SUCCESSFUL fetches, so the next cycle retries
+    await p.detailOnce();
+    expect(history.observedPool('acme/widgets', 'job', 'pull_request'))
+      .toEqual({ pool: 'kindash-arc', githubHosted: false });
+  });
+
+  it('a RateLimitError stops the rest of the batch (poller pauses)', async () => {
+    const detail = detailWith([checkWithRun('job', 999)]);
+    const client = {
+      remaining: 4000, resetAt: null,
+      graphql: vi.fn(async (q: string) => {
+        if (q.includes('open0: search')) return SWEEP_RESPONSE;
+        if (q.includes('pr8962: pullRequest')) return detail;
+        throw new Error('unexpected');
+      }),
+      restGet: vi.fn(async () => { throw new RateLimitError(30); }),
+    };
+    const p = new Poller({ router: asRouter(client), history, deploy: noDeploy(),
+      config: CONFIG, now: () => NOW });
+    await p.sweepOnce();
+    await expect(p.detailOnce()).resolves.not.toThrow();
+    expect(history.observedPool('acme/widgets', 'job', 'pull_request')).toBeNull();
+  });
+
+  it('the per-cycle cap bounds jobs-API calls', async () => {
+    // 12 distinct run ids → at most MAX_JOBS_FETCHES_PER_CYCLE (8) calls
+    const nodes = Array.from({ length: 12 }, (_, i) => checkWithRun(`j${i}`, 1000 + i));
+    const detail = detailWith(nodes);
+    const client = {
+      remaining: 4000, resetAt: null,
+      graphql: vi.fn(async (q: string) => {
+        if (q.includes('open0: search')) return SWEEP_RESPONSE;
+        if (q.includes('pr8962: pullRequest')) return detail;
+        throw new Error('unexpected');
+      }),
+      restGet: vi.fn(async (path: string) => {
+        const m = path.match(/runs\/(\d+)\/jobs/)!;
+        return { jobs: [{ name: `j${Number(m[1]) - 1000}`, labels: ['kindash-arc'] }] };
+      }),
+    };
+    const p = new Poller({ router: asRouter(client), history, deploy: noDeploy(),
+      config: CONFIG, now: () => NOW });
+    await p.sweepOnce();
+    await p.detailOnce();
+    expect(client.restGet).toHaveBeenCalledTimes(8);
   });
 });
