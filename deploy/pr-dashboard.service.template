@@ -15,7 +15,7 @@ ExecStartPre=/bin/sleep 1
 # control-group kill (default) tears down the whole tree on stop/restart
 KillMode=control-group
 ExecStart=/usr/bin/env pnpm start
-Restart=on-failure
+Restart=always
 RestartSec=10
 Environment=NODE_ENV=production
 
