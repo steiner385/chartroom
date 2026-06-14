@@ -30,6 +30,7 @@ import { measureDurationStep, flagsRegression, holdsRegression, regressionDetail
 import { evaluateStarvation, nextStarving, starvationDetail } from './estimator/starvation';
 import { countMergeTrains } from './trains';
 import { diffCiGraphs, type WorkflowImpact } from './workflow-impact';
+import { splitOidChecks } from './oid-checks';
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
@@ -1137,7 +1138,8 @@ export class Poller extends EventEmitter {
             const commit = node as any;
             if (!commit?.oid) continue;
             const checks = mapRollupContexts(commit.statusCheckRollup?.contexts?.nodes ?? [], true);
-            this.groupChecks.set(commit.oid, checks);
+            const split = splitOidChecks(checks);
+            this.groupChecks.set(commit.oid, split.mergeGroup);
             ingestCheckSet(this.deps.history, repo, checks, (n) => this.needsFor(repo, n),
               (p, e) => this.needActiveFor(repo, p, e), this.graphKeysFor(repo),
               this.rollupWorkflowFor(repo), commit.oid as string,
@@ -1147,8 +1149,8 @@ export class Poller extends EventEmitter {
             await this.learnPoolsFromChecks(client, repo, checks);
             // failed-group attribution (#38): maybeRecordGroupRun skips failed
             // groups (their wall-clock would skew medians) — culprits record here
-            ingestGroupFailures(this.deps.history, repo, commit.oid as string, checks);
-            this.maybeRecordGroupRun(repo, commit.oid, checks);
+            ingestGroupFailures(this.deps.history, repo, commit.oid as string, split.mergeGroup);
+            this.maybeRecordGroupRun(repo, commit.oid, split.mergeGroup);
           }
         }
       }

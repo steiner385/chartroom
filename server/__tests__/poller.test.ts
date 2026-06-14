@@ -5809,3 +5809,46 @@ describe('Poller learns push-only job pools from push workflow runs', () => {
     expect(history.observedPool('acme/widgets', 'x', 'push')).toBeNull();
   });
 });
+
+describe('queue OID de-conflation (merge_group vs push:main on the same commit)', () => {
+  const OID = 'oidMixed';
+  const queuedDetail = {
+    r0: { nameWithOwner: 'acme/widgets', pr8962: {
+      number: 8962, title: 'x', url: 'u', isDraft: false, mergeStateStatus: 'BLOCKED',
+      mergedAt: null, headRefOid: 'h', autoMergeRequest: { mergeMethod: 'SQUASH' }, mergeCommit: null,
+      mergeQueueEntry: { position: 1, state: 'AWAITING_CHECKS', enqueuedAt: '2026-06-10T11:30:00Z',
+        headCommit: { oid: OID } },
+      commits: { nodes: [{ commit: { statusCheckRollup: { state: 'SUCCESS',
+        contexts: { pageInfo: { hasNextPage: false }, nodes: [{ ...CHECK_DONE }] } } } }] },
+    } },
+  };
+  const queueResponse = { repository: { mergeQueue: { entries: { nodes: [
+    { position: 1, state: 'AWAITING_CHECKS', enqueuedAt: '2026-06-10T11:30:00Z',
+      headCommit: { oid: OID }, pullRequest: { number: 8962 } },
+  ] } } } };
+  const mk = (name: string, event: string) => ({ __typename: 'CheckRun', name, status: 'COMPLETED',
+    conclusion: 'FAILURE', startedAt: '2026-06-10T11:50:00Z', completedAt: '2026-06-10T11:58:00Z',
+    detailsUrl: 'u', checkSuite: { workflowRun: { event, runNumber: 1, databaseId: event === 'push' ? 99 : 1,
+      workflow: { name: 'CI' } } } });
+  const rollup = { repository: { o0: { oid: OID, statusCheckRollup: { contexts: { nodes: [
+    mk('ci', 'merge_group'), mk('accessibility / axe', 'push'),
+  ] } } } } };
+  const client = () => ({ remaining: 4000, resetAt: null, graphql: vi.fn(async (q: string) => {
+    if (q.includes('open0: search')) return SWEEP_RESPONSE;
+    if (q.includes('pr8962: pullRequest')) return queuedDetail;
+    if (q.includes('object(oid:')) return rollup;
+    if (q.includes('mergeQueue')) return queueResponse;
+    throw new Error(`unexpected query: ${q.slice(0, 80)}`);
+  }) });
+
+  it('records only the merge_group failure as a train-killer; push:main is excluded', async () => {
+    const p = new Poller({ router: asRouter(client()), history, deploy: noDeploy(), config: CONFIG, now: () => NOW });
+    await p.sweepOnce(); await p.detailOnce(); await p.queueOnce();
+    const fails = history.groupFailuresSince('2026-06-01T00:00:00Z')
+      .filter((f) => f.repo === 'acme/widgets').map((f) => f.checkName);
+    expect(fails).toContain('ci');
+    expect(fails).not.toContain('accessibility / axe');
+    const pr = p.buildState().repos.find((r) => r.repo === 'acme/widgets')!.prs.find((x) => x.number === 8962)!;
+    expect((pr.groupChecks ?? []).map((c) => c.name)).not.toContain('accessibility / axe');
+  });
+});
