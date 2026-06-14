@@ -233,6 +233,33 @@ export interface MetricsPayload {
     recentCoveragePct: number | null; recentCoverageDate: string | null }[];
 }
 
+/** Delivery-spine cost stages (Spec 3) — the CI `event` mapped onto the four
+ *  pipeline stages the spine draws. Pipeline order; events outside this map are
+ *  ignored (no stage). */
+export type CostStage = 'pr' | 'queue' | 'main' | 'scheduled';
+export const COST_STAGES: readonly CostStage[] = ['pr', 'queue', 'main', 'scheduled'];
+const EVENT_TO_STAGE: Record<string, CostStage> = {
+  pull_request: 'pr', merge_group: 'queue', push: 'main', schedule: 'scheduled',
+};
+
+/**
+ * Cross-cutting GLOBAL cost summary (Spec 3) — the Delivery-spine Cost lane +
+ * per-lane cost chips. Cost is cross-cutting, not per-repo, so this aggregates
+ * priced runner-minutes over a 7-day window across ALL repos, split by pipeline
+ * stage. SINGLE SOURCE OF TRUTH: it reuses the exact same cost engine as
+ * `computeMetrics`'s cost section — `history.costRowsSince`, the foreign-name /
+ * exclude filters, `resolvePool` (pool resolution) and `poolRate`/`hasAnyRate`
+ * (pricing) — never re-deriving pools or rates. `dollars` is null for an
+ * unpriced stage subset; `totalDollars`/`retryWastePct` are null in
+ * minutes-only mode (no rate configured) — never a fabricated $0.
+ */
+export interface CostSummary {
+  totalDollars: number | null;
+  days: number;
+  byStage: { stage: CostStage; dollars: number | null; minutes: number }[];
+  retryWastePct: number | null;
+}
+
 /** Lead-time segment ids, in pipeline order (issue #44). */
 export const LEAD_TIME_SEGMENTS = [
   { id: 'toFirstGreen', from: 'createdAt', to: 'firstGreenAt' },
@@ -1002,4 +1029,73 @@ export function computeMetrics(history: HistoryStore, window: MetricsWindow,
   return { window, bucket, runnerWaits, queue, slowestJobs, velocity, leadTime, trends,
     calibration, flakiness, trainKillers, criticalPath, lint, regressions,
     runnerPools, reclaims, concurrency, cost, costJobs, costRuns, costActuals };
+}
+
+/**
+ * Global per-stage cost summary over a fixed 7-day window (Spec 3). Reuses the
+ * SAME cost engine as `computeMetrics`'s cost section — `costRowsSince`, the
+ * exclude/foreign-name filters, `resolvePool` for the pool key, and
+ * `poolRate`/`hasAnyRate` for pricing — so pool resolution and rates have a
+ * single source of truth. Rows are mapped CI-`event` → pipeline stage and
+ * summed across every repo. `dollars` is the priced subset only (unpriced
+ * pools contribute 0 to the priced sum but the figure stays null in
+ * minutes-only mode); `retryWastePct` = priced run_attempt>1 minutes ÷ priced
+ * total minutes ×100, null when no rate is configured.
+ */
+export function computeCostSummary(
+  history: HistoryStore,
+  now: Date,
+  exclude: string[],
+  resolvePool: (repo: string, name: string, event: string) =>
+    { pool: string; githubHosted: boolean } | null,
+  foreignNames: Map<string, Set<string>>,
+  poolMeta: Record<string, PoolMetaEntry> | null,
+  costPerMinute: Record<string, number> | null,
+): CostSummary {
+  const days = 7;
+  const dropped = new Set(exclude);
+  const windowMs = days * 86400_000;
+  const sinceMs = now.getTime() - windowMs;
+  const since = new Date(sinceMs).toISOString();
+  const poolKeyOf = (repo: string, name: string, event: string): string =>
+    resolvePool(repo, name, event)?.pool ?? 'unknown';
+  const hasRates = hasAnyRate(costPerMinute, poolMeta);
+  const rateFor = (pool: string): number | null => poolRate(pool, costPerMinute, poolMeta);
+
+  // Same row source + filters as the cost section: drop excluded repos, drop
+  // foreign rollup-mirror names (their spans are CI-lifecycle wall-clock, not
+  // runner occupancy), and clamp to rows that STARTED in-window (numeric — the
+  // derived startedAt carries ms a string compare would mis-order).
+  const rows = history.costRowsSince(since).filter((r) =>
+    !dropped.has(r.repo)
+    && !foreignNames.get(r.repo)?.has(r.name)
+    && Date.parse(r.startedAt) >= sinceMs);
+
+  const byStage = COST_STAGES.map((stage) => {
+    const stageRows = rows.filter((r) => EVENT_TO_STAGE[r.event] === stage);
+    const minutes = stageRows.reduce((s, r) => s + r.durationSecs, 0) / 60;
+    const dollars = !hasRates ? null : stageRows.reduce((s, r) => {
+      const rate = rateFor(poolKeyOf(r.repo, r.name, r.event));
+      return rate != null ? s + (r.durationSecs / 60) * rate : s;
+    }, 0);
+    return { stage, dollars, minutes };
+  });
+  const totalDollars = !hasRates ? null
+    : byStage.reduce((s, st) => s + (st.dollars ?? 0), 0);
+
+  // Retry waste: priced minutes on run_attempt>1 ÷ priced total minutes. Null
+  // in minutes-only mode (no honest percent without a $ denominator basis — we
+  // anchor it to priced minutes so an unpriced pool can't skew the ratio).
+  let retryWastePct: number | null = null;
+  if (hasRates) {
+    const priced = (r: { repo: string; name: string; event: string }) =>
+      EVENT_TO_STAGE[r.event] != null && rateFor(poolKeyOf(r.repo, r.name, r.event)) != null;
+    const pricedRows = rows.filter(priced);
+    const pricedMin = pricedRows.reduce((s, r) => s + r.durationSecs, 0) / 60;
+    const retryMin = pricedRows.filter((r) => r.runAttempt != null && r.runAttempt > 1)
+      .reduce((s, r) => s + r.durationSecs, 0) / 60;
+    retryWastePct = pricedMin > 0 ? (retryMin / pricedMin) * 100 : null;
+  }
+
+  return { totalDollars, days, byStage, retryWastePct };
 }

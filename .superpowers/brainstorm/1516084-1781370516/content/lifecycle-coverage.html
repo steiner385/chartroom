@@ -1,0 +1,59 @@
+<h2>From "PR pipeline" → full CI/CD lifecycle</h2>
+<p class="subtitle">Green = the app already sees it. Amber = partial. Gray = blind spot. The dark stages are where "full CI/CD view" lives — which should we light up first?</p>
+
+<style>
+  .pipe { display:flex; flex-wrap:wrap; gap:8px; align-items:stretch; margin:18px 0 8px; }
+  .stage { flex:1 1 0; min-width:110px; border-radius:10px; padding:10px 12px; border:1px solid #2a2a35;
+           display:flex; flex-direction:column; gap:4px; }
+  .stage .s-t { font-weight:600; font-size:13px; }
+  .stage .s-d { font-size:11px; opacity:.72; line-height:1.3; }
+  .stage .s-tag { font-size:9px; text-transform:uppercase; letter-spacing:.06em; opacity:.6; }
+  .cov   { background:rgba(34,170,90,.16);  border-color:rgba(34,170,90,.5); }
+  .part  { background:rgba(220,160,40,.16); border-color:rgba(220,160,40,.5); }
+  .blind { background:rgba(120,130,150,.12); border-color:rgba(120,130,150,.35); }
+  .legend { font-size:11px; opacity:.7; margin:2px 0 10px; }
+</style>
+
+<div class="pipe">
+  <div class="stage cov"><span class="s-tag">covered</span><span class="s-t">Commit / PR</span><span class="s-d">open PRs, draft state, conflicts</span></div>
+  <div class="stage cov"><span class="s-tag">covered</span><span class="s-t">PR CI</span><span class="s-d">stage · %/ETA · needs-graph · required scoping</span></div>
+  <div class="stage cov"><span class="s-tag">covered</span><span class="s-t">Merge queue</span><span class="s-d">train cars, batch, eject risk, HEADGREEN</span></div>
+  <div class="stage part"><span class="s-tag">partial</span><span class="s-t">Merge → main</span><span class="s-d">push:main CI exists but is conflated w/ the queue's OID</span></div>
+  <div class="stage part"><span class="s-tag">partial</span><span class="s-t">QA deploy</span><span class="s-d">/health ancestry → "live", but thin</span></div>
+  <div class="stage part"><span class="s-tag">partial</span><span class="s-t">Prod deploy</span><span class="s-d">manual; tracked, no promotion/rollback view</span></div>
+  <div class="stage blind"><span class="s-tag">blind</span><span class="s-t">Scheduled</span><span class="s-d">nightly / weekly heavy tiers — invisible</span></div>
+  <div class="stage blind"><span class="s-tag">blind</span><span class="s-t">Releases</span><span class="s-d">android release, version timeline — invisible</span></div>
+</div>
+<div class="legend">Cross-cutting today: <b>Metrics</b> (waits, throughput, leaderboards, velocity) and <b>Cost</b> ($/job·run·PR) — these would extend across every stage above.</div>
+
+<h3 style="margin-top:22px">Which dark/partial stages matter most to you? (pick any)</h3>
+<div class="options" data-multiselect>
+  <div class="option" data-choice="main-health" onclick="toggleSelect(this)">
+    <div class="letter">A</div>
+    <div class="content">
+      <h3>Main-branch health</h3>
+      <p>"Is main green right now?" — push:main CI, post-merge e2e, and the merge_group↔push:main de-conflation, as a first-class lane.</p>
+    </div>
+  </div>
+  <div class="option" data-choice="deploy-release" onclick="toggleSelect(this)">
+    <div class="letter">B</div>
+    <div class="content">
+      <h3>Deploy & release lifecycle</h3>
+      <p>What commit is live in QA vs prod, promotion flow, version/release timeline, rollback visibility — Railway-aware.</p>
+    </div>
+  </div>
+  <div class="option" data-choice="scheduled" onclick="toggleSelect(this)">
+    <div class="letter">C</div>
+    <div class="content">
+      <h3>Scheduled-run health</h3>
+      <p>Nightly/weekly heavy tiers (accessibility, android, integration) — "what broke overnight", flaky-tier trends, last-green.</p>
+    </div>
+  </div>
+  <div class="option" data-choice="failure-intel" onclick="toggleSelect(this)">
+    <div class="letter">D</div>
+    <div class="content">
+      <h3>Failure & incident intelligence</h3>
+      <p>Cross-run failure clustering (CI Failure Reporter / Sentry), top flaky checks, MTTR, "who/what is red and why".</p>
+    </div>
+  </div>
+</div>
