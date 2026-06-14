@@ -232,7 +232,7 @@ export interface MetricsPayload {
    *  actual rows in-window are omitted; 'fleet' sorts first. */
   costActuals: { scope: string;
     days: { date: string; actualDollars: number; attributedDollars: number | null;
-      coveragePct: number | null }[];
+      coveragePct: number | null; cumulativeCoveragePct: number | null }[];
     totalActualDollars: number; totalAttributedDollars: number | null;
     coveragePct: number | null; coverageSince: string | null;
     /** Coverage of the most recent fully-billed day (excludes today's still-
@@ -1094,13 +1094,31 @@ export function computeMetrics(history: HistoryStore, window: MetricsWindow,
   const costActuals = [...groupBy(fleetActuals, (r) => r.scope)]
     .sort(([a], [b]) => (a === 'fleet' ? -1 : b === 'fleet' ? 1 : a.localeCompare(b)))
     .map(([scope, rows]) => {
+      // `cumulativeCoveragePct` is attributed-to-date ÷ actual-to-date over
+      // COMPARABLE days. The per-day `coveragePct` is near-useless for a
+      // fixed-capacity fleet — attributed-per-day is `minutes that ran × rate`
+      // while actual-per-day is whatever Cost Explorer allocated to that
+      // calendar day, so a burst day overshoots its flat node bill (>100%) and a
+      // quiet day undershoots. The running cumulative smooths that and converges
+      // to the headline; the table shows IT, not the raw daily ratio.
+      let runActual = 0;
+      let runAttributed = 0;
       const days = [...rows].sort((a, b) => a.date.localeCompare(b.date)).map((r) => {
         // a priced window with zero job rows that day is an honest 0, not null
         const attributed = hasRates
           ? attributedByScopeDay.get(`${scope}${SEP}${r.date}`) ?? 0 : null;
+        const comparableDay = trackingStart != null
+          && r.date >= trackingStart && r.date < todayUtc;
+        let cumulativeCoveragePct: number | null = null;
+        if (hasRates && comparableDay) {
+          runActual += r.dollars;
+          runAttributed += attributed ?? 0;
+          cumulativeCoveragePct = runActual > 0 ? (runAttributed / runActual) * 100 : null;
+        }
         return { date: r.date, actualDollars: r.dollars, attributedDollars: attributed,
           coveragePct: attributed != null && r.dollars > 0
-            ? (attributed / r.dollars) * 100 : null };
+            ? (attributed / r.dollars) * 100 : null,
+          cumulativeCoveragePct };
       });
       const totalActualDollars = days.reduce((s, d) => s + d.actualDollars, 0);
       const totalAttributedDollars = hasRates

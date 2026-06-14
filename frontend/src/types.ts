@@ -434,7 +434,7 @@ export interface MetricsPayload {
    *  Optional to tolerate pre-upgrade payloads. */
   costActuals?: { scope: string;
     days: { date: string; actualDollars: number; attributedDollars: number | null;
-      coveragePct: number | null }[];
+      coveragePct: number | null; cumulativeCoveragePct: number | null }[];
     totalActualDollars: number; totalAttributedDollars: number | null;
     /** Coverage is computed over COMPARABLE days only (tracked + fully billed);
      *  `coverageSince` is the first such day. Not the naive total ratio. */

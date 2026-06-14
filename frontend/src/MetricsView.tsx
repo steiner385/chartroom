@@ -542,7 +542,13 @@ export function MetricsView({ now }: {
                     <th>day</th>
                     <th title={defTitle(DEFS.costActualsActual)}>actual $</th>
                     <th title={defTitle(DEFS.costActualsAttributed)}>attributed $</th>
-                    <th title={defTitle(DEFS.costActualsCoverage)}>coverage</th>
+                    <th title="Coverage to date — attributed ÷ actual summed over comparable
+                      days up to and including this one. Cumulative, not per-day: a single
+                      day's attributed (jobs that ran × rate) and actual (what AWS billed
+                      that date) aren't comparable, so this running figure is the honest one.
+                      Blank for pre-tracking days and today's still-settling bill.">
+                      coverage to date
+                    </th>
                   </tr>
                 </thead>
                 <tbody>
@@ -551,11 +557,21 @@ export function MetricsView({ now }: {
                       <td>{d.date}</td>
                       <td>{fmtDollars(d.actualDollars)}</td>
                       <td>{d.attributedDollars != null ? fmtDollars(d.attributedDollars) : '–'}</td>
-                      <td>{d.coveragePct != null ? fmtPct(d.coveragePct) : '–'}</td>
+                      <td>{d.cumulativeCoveragePct != null
+                        ? fmtPct(d.cumulativeCoveragePct) : '–'}</td>
                     </tr>
                   ))}
                 </tbody>
               </table>
+              {a.totalAttributedDollars != null && (
+                <p className="metric-note">
+                  per-day <em>attributed</em> can exceed <em>actual</em> on a burst day — a
+                  fixed-capacity fleet’s nodes cost the same whether they run 100 or 36,000
+                  job-minutes, so a heavy day overshoots its flat daily bill and a quiet day
+                  undershoots. Only the cumulative reconciles, which is why coverage is shown
+                  to-date.
+                </p>
+              )}
               {a.totalAttributedDollars == null && (
                 <p className="metric-note">
                   attribution needs rates — set costPerMinute or poolMeta $/min in
