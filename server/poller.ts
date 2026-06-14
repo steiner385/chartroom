@@ -33,6 +33,7 @@ import { computeRepoLaneHealth, type RepoLaneHealth } from './estimator/lane-hea
 import { computeRepoDeploy, type RepoDeployStatus } from './estimator/deploy-status';
 import { diffCiGraphs, type WorkflowImpact } from './workflow-impact';
 import { splitOidChecks } from './oid-checks';
+import { computeCostSummary, type CostSummary } from './metrics';
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
@@ -403,6 +404,11 @@ export interface DashboardState {
   staleSince: string | null;
   repos: { repo: string; hasDeploy: boolean; prs: PrView[]; queue: RepoQueueView | null;
     laneHealth?: RepoLaneHealth; deploy?: RepoDeployStatus }[];
+  /** Cross-cutting global cost summary (Cost lane, Spec 3) — top-level, not
+   *  per-repo, because cost is cross-cutting. Computed once per cycle in
+   *  refreshCostSummary and cached (spec §15: buildState never hits SQLite).
+   *  Absent until the first refresh. Mirror of metrics.ts CostSummary. */
+  cost?: CostSummary;
 }
 
 interface PollerDeps {
@@ -443,6 +449,11 @@ const MAX_OPEN_PAGES = 5;
 
 /** Re-derive required-check prefixes from a deploy repo's ci.yml at most this often. */
 const PREFIX_DERIVE_INTERVAL_MS = 24 * 3600_000;
+
+/** Recompute the global cost summary (Cost lane, Spec 3) at most this often —
+ *  a 7-day rollup of every cost row moves slowly, so a per-sweep recompute
+ *  would be wasted SQLite work. */
+const COST_SUMMARY_INTERVAL_MS = 3 * 60_000;
 
 /** Re-list a repo's recent push runs (to learn push-only job pools) at most
  *  this often per repo — the push job set is near-static, so 6h is plenty to
@@ -556,6 +567,8 @@ export class Poller extends EventEmitter {
   private workflowImpactCache = new Map<string, WorkflowImpact | null>(); // repo\0headSha → derived-graph diff (#49)
   private laneHealthCache = new Map<string, RepoLaneHealth>();            // repo → per-cycle main-lane health (spec §15)
   private deployStatusCache = new Map<string, RepoDeployStatus>();        // repo → per-deploy-cycle deploy status (Deploy lane, spec §15)
+  private costSummaryCache: CostSummary | undefined;                     // global per-stage cost (Cost lane, Spec 3); buildState reads this (spec §15)
+  private costSummaryAt = 0;                                              // epoch ms of the last cost recompute (throttled — cost moves slowly)
   private lastHourlyScanAt = 0;                           // epoch ms of the last hourly scan pass (#41/#45)
   private warnedAncestryFallback = new Set<string>();    // repos whose api→clone ancestry fallback was logged (log once)
   private warnedJobsApi = new Set<string>();             // repos whose jobs-API pool-learn fetch failed (log once)
@@ -709,6 +722,9 @@ export class Poller extends EventEmitter {
     // Per-cycle lane-health recompute (spec §15): once here, at the end of the
     // sweep that just updated this.prs — buildState only reads the cache.
     this.refreshLaneHealth();
+    // Global cost summary (Cost lane, Spec 3) — same cycle, throttled internally
+    // (cost moves slowly); buildState only reads the cache.
+    this.refreshCostSummary();
     this.emitUpdate();
   }
 
@@ -1829,6 +1845,24 @@ export class Poller extends EventEmitter {
   }
 
   /**
+   * Recompute the global per-stage cost summary (Cost lane, Spec 3), throttled
+   * to COST_SUMMARY_INTERVAL_MS — buildState only reads the cache (spec §15:
+   * never a per-buildState SQLite hit). Reuses the SAME cost-engine inputs as
+   * the metrics endpoint (resolvePool + liveForeignNames + the file-only
+   * cost rate config), so pool resolution and pricing have a single home.
+   */
+  private refreshCostSummary(): void {
+    const nowMs = this.now().getTime();
+    if (this.costSummaryCache !== undefined && nowMs - this.costSummaryAt < COST_SUMMARY_INTERVAL_MS) return;
+    const { history, config } = this.deps;
+    this.costSummaryCache = computeCostSummary(
+      history, this.now(), this.currentExclude(),
+      (repo, name, event) => this.resolvePool(repo, name, event),
+      this.liveForeignNames(), config.poolMeta ?? null, config.costPerMinute ?? null);
+    this.costSummaryAt = nowMs;
+  }
+
+  /**
    * Recompute per-repo deploy status once per deploy cycle (Deploy lane, spec
    * §15) — runs after the env loop has refreshed `envShas`, so the cached live
    * sha is current. buildState only reads the cache. Only repos with an
@@ -1910,7 +1944,10 @@ export class Poller extends EventEmitter {
         };
       })
       .sort((a, b) => a.repo.localeCompare(b.repo));
-    return { generatedAt: now.toISOString(), staleSince: this.staleSince, repos };
+    // pure cache read — the global cost summary is computed once per cycle in
+    // refreshCostSummary (spec §15), never via a SQLite hit here
+    return { generatedAt: now.toISOString(), staleSince: this.staleSince, repos,
+      cost: this.costSummaryCache };
   }
 
   /** Build a RepoQueueView from the pre-computed group progress for a repo.
