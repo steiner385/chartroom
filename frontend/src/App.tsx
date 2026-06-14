@@ -55,9 +55,10 @@ export function App() {
   const [activeFilter, setActiveFilter] = useState<Bucket | null>(null);
   const [collapsedRepos, setCollapsedRepos] = useState<Set<string>>(() => readCollapsedSet());
   const [settingsOpen, setSettingsOpen] = useState(false);
-  const [tab, setTab] = useState<TabId>('delivery');
-  // Delivery is the default tab, so it's "visited" from the first render.
-  const [deliveryVisited] = useState(true);
+  const [tab, setTab] = useState<TabId>('pipeline');
+  // Mount the Delivery spine lazily (first visit) and keep it mounted, like
+  // MetricsView — Pipeline is the default tab so the spine isn't built up front.
+  const [deliveryVisited, setDeliveryVisited] = useState(false);
   // Mount MetricsView lazily (first visit) and keep it mounted afterwards, so
   // switching tabs doesn't refetch; the panel divs always exist in the DOM so
   // every aria-controls id resolves.
@@ -87,6 +88,7 @@ export function App() {
   // lifecycle rail read-only, with no tab rotation.
   useEffect(() => {
     if (!kiosk || repoCount === 0) return;
+    setDeliveryVisited(true);
     setTab('delivery');
   }, [kiosk, cycleTick, repoCount]);
 
@@ -181,17 +183,17 @@ export function App() {
         returnFocusRef={legendRef}
       />
       <nav className="tab-bar" role="tablist" aria-label="Dashboard views">
-        <button type="button" role="tab" id="tab-delivery"
-          aria-selected={tab === 'delivery'} aria-controls="tabpanel-delivery"
-          className={tab === 'delivery' ? 'tab active' : 'tab'}
-          onClick={() => setTab('delivery')}>
-          Delivery
-        </button>
         <button type="button" role="tab" id="tab-pipeline"
           aria-selected={tab === 'pipeline'} aria-controls="tabpanel-pipeline"
           className={tab === 'pipeline' ? 'tab active' : 'tab'}
           onClick={() => setTab('pipeline')}>
           Pipeline
+        </button>
+        <button type="button" role="tab" id="tab-delivery"
+          aria-selected={tab === 'delivery'} aria-controls="tabpanel-delivery"
+          className={tab === 'delivery' ? 'tab active' : 'tab'}
+          onClick={() => { setTab('delivery'); setDeliveryVisited(true); }}>
+          Delivery
         </button>
         <button type="button" role="tab" id="tab-metrics"
           aria-selected={tab === 'metrics'} aria-controls="tabpanel-metrics"

@@ -162,30 +162,31 @@ vi.mock('../MetricsView', () => ({
 }));
 
 describe('App tab bar', () => {
-  it('defaults to the Delivery tab and renders the spine', () => {
+  it('defaults to the Pipeline tab and shows the board (spine lazy-mounted)', () => {
     render(<App />);
-    expect(screen.getByRole('tab', { name: /delivery/i })).toHaveAttribute('aria-selected', 'true');
-    expect(screen.getByTestId('spine-lane-pr-ci')).toBeInTheDocument();
+    expect(screen.getByRole('tab', { name: 'Pipeline' })).toHaveAttribute('aria-selected', 'true');
+    expect(screen.getByRole('group', { name: 'Status overview' })).toBeInTheDocument();
+    // the Delivery spine is not built until its tab is visited
+    expect(screen.queryByTestId('spine-lane-pr-ci')).not.toBeInTheDocument();
   });
 
-  it('renders Delivery | Pipeline | Metrics tabs with Delivery selected by default', () => {
+  it('renders Pipeline | Delivery | Metrics tabs with Pipeline selected by default', () => {
     render(<App />);
     const tablist = screen.getByRole('tablist', { name: 'Dashboard views' });
     const tabs = within(tablist).getAllByRole('tab');
-    expect(tabs.map((t) => t.textContent)).toEqual(['Delivery', 'Pipeline', 'Metrics']);
+    expect(tabs.map((t) => t.textContent)).toEqual(['Pipeline', 'Delivery', 'Metrics']);
     expect(tabs[0]).toHaveAttribute('aria-selected', 'true');
-    // pipeline content (status strip) is only visible after switching to Pipeline
-    expect(screen.queryByRole('group', { name: 'Status overview' })).not.toBeInTheDocument();
+    // metrics is lazy/hidden until visited
     expect(screen.queryByTestId('metrics-view-stub')).not.toBeInTheDocument();
   });
 
-  it('switching to Pipeline shows the board and selects the Pipeline tab', () => {
+  it('switching to Delivery mounts the spine and selects the Delivery tab', () => {
     render(<App />);
-    fireEvent.click(screen.getByRole('tab', { name: 'Pipeline' }));
+    fireEvent.click(screen.getByRole('tab', { name: /delivery/i }));
     const tabs = within(screen.getByRole('tablist', { name: 'Dashboard views' })).getAllByRole('tab');
-    expect(tabs[1]).toHaveAttribute('aria-selected', 'true');
-    expect(tabs[0]).toHaveAttribute('aria-selected', 'false');
-    expect(screen.getByRole('group', { name: 'Status overview' })).toBeInTheDocument();
+    expect(tabs[1]).toHaveAttribute('aria-selected', 'true');   // Delivery is now the 2nd tab
+    expect(tabs[0]).toHaveAttribute('aria-selected', 'false');  // Pipeline
+    expect(screen.getByTestId('spine-lane-pr-ci')).toBeInTheDocument();
   });
 
   it('tabs wire aria-controls to tabpanel ids that exist in the DOM', () => {
@@ -334,12 +335,12 @@ describe('App kiosk mode (issue #20)', () => {
     expect(screen.queryByTestId('metrics-view-stub')).not.toBeInTheDocument();
   });
 
-  it('does not switch tabs outside kiosk mode (Delivery stays the default)', () => {
+  it('does not switch tabs outside kiosk mode (Pipeline stays the default)', () => {
     vi.useFakeTimers();
     render(<App />);
     act(() => { vi.advanceTimersByTime(120_000); });
-    expect(document.getElementById('tabpanel-delivery')).not.toHaveAttribute('hidden');
-    expect(document.getElementById('tabpanel-pipeline')).toHaveAttribute('hidden');
+    expect(document.getElementById('tabpanel-pipeline')).not.toHaveAttribute('hidden');
+    expect(document.getElementById('tabpanel-delivery')).toHaveAttribute('hidden');
   });
 });
 
