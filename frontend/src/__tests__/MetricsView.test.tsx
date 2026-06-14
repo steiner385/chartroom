@@ -1023,8 +1023,10 @@ describe('MetricsView — cost actuals + attribution coverage (phase 2)', () => 
   const ACTUALS: NonNullable<MetricsPayload['costActuals']> = [
     { scope: 'fleet',
       days: [
-        { date: '2026-06-10', actualDollars: 123.45, attributedDollars: 71.6, coveragePct: 58 },
-        { date: '2026-06-11', actualDollars: 100, attributedDollars: 40, coveragePct: 40 },
+        { date: '2026-06-10', actualDollars: 123.45, attributedDollars: 71.6,
+          coveragePct: 58, cumulativeCoveragePct: 58 },
+        { date: '2026-06-11', actualDollars: 100, attributedDollars: 40,
+          coveragePct: 40, cumulativeCoveragePct: null },  // today
       ],
       totalActualDollars: 223.45, totalAttributedDollars: 111.6,
         coveragePct: 58, coverageSince: '2026-06-10',
@@ -1056,7 +1058,8 @@ describe('MetricsView — cost actuals + attribution coverage (phase 2)', () => 
   it('minutes-only mode: attributed/coverage read "–", no headline, and the rates nudge shows', async () => {
     const minutesOnly: NonNullable<MetricsPayload['costActuals']> = [
       { scope: 'fleet',
-        days: [{ date: '2026-06-11', actualDollars: 100, attributedDollars: null, coveragePct: null }],
+        days: [{ date: '2026-06-11', actualDollars: 100, attributedDollars: null,
+          coveragePct: null, cumulativeCoveragePct: null }],
         totalActualDollars: 100, totalAttributedDollars: null, coveragePct: null,
         coverageSince: null, recentCoveragePct: null, recentCoverageDate: null },
     ];
@@ -1073,7 +1076,8 @@ describe('MetricsView — cost actuals + attribution coverage (phase 2)', () => 
   it('renders per-pool scopes alongside fleet (scope name in the heading and headline)', async () => {
     const scoped = [...ACTUALS,
       { scope: 'kindash-arc',
-        days: [{ date: '2026-06-10', actualDollars: 50, attributedDollars: 45, coveragePct: 90 }],
+        days: [{ date: '2026-06-10', actualDollars: 50, attributedDollars: 45,
+          coveragePct: 90, cumulativeCoveragePct: 90 }],
         totalActualDollars: 50, totalAttributedDollars: 45, coveragePct: 90,
         coverageSince: '2026-06-10', recentCoveragePct: 90, recentCoverageDate: '2026-06-10' }];
     mockFetchOk({ ...PAYLOAD, costActuals: scoped });
@@ -1091,9 +1095,12 @@ describe('MetricsView — cost actuals + attribution coverage (phase 2)', () => 
     const overPriced: NonNullable<MetricsPayload['costActuals']> = [
       { scope: 'fleet',
         days: [
-          { date: '2026-06-09', actualDollars: 100, attributedDollars: 150, coveragePct: 150 },
-          { date: '2026-06-10', actualDollars: 100, attributedDollars: 90, coveragePct: 90 },
-          { date: '2026-06-11', actualDollars: 50, attributedDollars: 5, coveragePct: 10 },
+          { date: '2026-06-09', actualDollars: 100, attributedDollars: 150,
+            coveragePct: 150, cumulativeCoveragePct: 150 },
+          { date: '2026-06-10', actualDollars: 100, attributedDollars: 90,
+            coveragePct: 90, cumulativeCoveragePct: 120 },          // (150+90)/(100+100)
+          { date: '2026-06-11', actualDollars: 50, attributedDollars: 5,
+            coveragePct: 10, cumulativeCoveragePct: null },          // today
         ],
         totalActualDollars: 250, totalAttributedDollars: 245,
         coveragePct: 120, coverageSince: '2026-06-09',

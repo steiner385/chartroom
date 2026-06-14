@@ -1305,7 +1305,8 @@ describe('computeMetrics: cost actuals + attribution coverage (phase 2)', () => 
       scope: 'fleet',
       // the per-day row still carries its own coverage
       days: [{ date: '2026-06-11', actualDollars: 0.60,
-        attributedDollars: expect.closeTo(0.30, 6), coveragePct: expect.closeTo(50, 6) }],
+        attributedDollars: expect.closeTo(0.30, 6), coveragePct: expect.closeTo(50, 6),
+        cumulativeCoveragePct: null }],  // 06-11 is today → not a comparable day
       totalActualDollars: 0.60,
       totalAttributedDollars: expect.closeTo(0.30, 6),
       // ...but the only billed day is NOW's day (today, still settling), so it is
@@ -1337,6 +1338,24 @@ describe('computeMetrics: cost actuals + attribution coverage (phase 2)', () => 
     expect(fleet!.coverageSince).toBe('2026-06-10');
   });
 
+  it('per-day coverage can exceed 100% on a burst day, but cumulative-to-date smooths it', () => {
+    // A fixed-capacity fleet bills ~flat per day; pricing minutes×rate overshoots
+    // on a heavy day and undershoots on a light one. The per-day ratio is noisy
+    // (>100% allowed); cumulativeCoveragePct converges and is what the table shows.
+    job('burst', '2026-06-09T10:00:00Z', 6000);                // 100 min × $0.01 = $1.00
+    job('light', '2026-06-10T10:00:00Z', 600);                 //  10 min × $0.01 = $0.10
+    h.upsertCostActual('fleet', '2026-06-09', 0.50, 'aws-ce'); // burst day: attributed $1.00 > actual → 200%
+    h.upsertCostActual('fleet', '2026-06-10', 1.00, 'aws-ce'); // light day: $0.10 / $1.00 → 10%
+    const [fleet] = computeMetrics(h, '30d', 'day', NOW, [], () => 1, new Map(), new Map(),
+      [], poolsFor, [], { spot: 0.01 }, null, () => null).costActuals;
+    const [d09, d10] = fleet!.days;
+    expect(d09!.coveragePct).toBeCloseTo(200, 6);              // raw per-day overshoots
+    expect(d09!.cumulativeCoveragePct).toBeCloseTo(200, 6);    // running = just day 1 so far
+    expect(d10!.coveragePct).toBeCloseTo(10, 6);               // raw per-day undershoots
+    expect(d10!.cumulativeCoveragePct).toBeCloseTo(73.333, 3); // 1.10 / 1.50 — smoothed
+    expect(fleet!.coveragePct).toBeCloseTo(73.333, 3);         // headline = final cumulative
+  });
+
   it('recentCoveragePct = coverage of the latest fully-billed day, skipping today', () => {
     // two billed days; NOW is 2026-06-11 noon so 06-11 is "today" (excluded),
     // 06-10 is the latest complete day → its coverage is the headline
@@ -1354,7 +1373,8 @@ describe('computeMetrics: cost actuals + attribution coverage (phase 2)', () => 
     h.upsertCostActual('fleet', '2026-06-11', 123, null);
     const [fleet] = actuals();
     expect(fleet!.days).toEqual([
-      { date: '2026-06-11', actualDollars: 123, attributedDollars: null, coveragePct: null }]);
+      { date: '2026-06-11', actualDollars: 123, attributedDollars: null,
+        coveragePct: null, cumulativeCoveragePct: null }]);
     expect(fleet!.totalAttributedDollars).toBeNull();
     expect(fleet!.coveragePct).toBeNull();
   });
@@ -1363,7 +1383,8 @@ describe('computeMetrics: cost actuals + attribution coverage (phase 2)', () => 
     h.upsertCostActual('fleet', '2026-06-11', 50, null);
     const [fleet] = actuals({ cpm: { spot: 0.01 } });
     expect(fleet!.days).toEqual([
-      { date: '2026-06-11', actualDollars: 50, attributedDollars: 0, coveragePct: 0 }]);
+      { date: '2026-06-11', actualDollars: 50, attributedDollars: 0,
+        coveragePct: 0, cumulativeCoveragePct: null }]);
   });
 
   it('a $0 actual cannot be a coverage denominator — per-day and headline go null', () => {
