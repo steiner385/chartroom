@@ -626,3 +626,12 @@ section h2 { font-size: 14px; margin: 18px 0 8px; color: var(--muted); }
 .spine-cost-stage-dollars { color: var(--text); }
 .spine-cost-stage-pct, .spine-cost-stage-minutes { color: var(--muted, #888); font-size: 12px; }
 .spine-cost-retry { color: var(--muted, #888); margin-top: 4px; font-size: 12px; }
+
+/* Failures & flake lane (Spec 5) — advisory flaky-check table. */
+.spine-flake-list { list-style: none; margin: 0; padding: 0; }
+.spine-flake-row { display: inline-flex; align-items: baseline; gap: 8px; width: 100%; }
+.spine-flake-name { color: var(--text); }
+.spine-flake-event, .spine-flake-rate, .spine-flake-events { color: var(--muted, #888); font-size: 12px; }
+.spine-flake-rate { min-width: 3em; text-align: right; }
+.spine-flake-soon { color: var(--muted, #888); margin-top: 6px; font-size: 12px; font-style: italic; }
+.spine-panel-note { color: var(--muted, #888); }

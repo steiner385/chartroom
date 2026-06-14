@@ -30,6 +30,7 @@ import { measureDurationStep, flagsRegression, holdsRegression, regressionDetail
 import { evaluateStarvation, nextStarving, starvationDetail } from './estimator/starvation';
 import { countMergeTrains } from './trains';
 import { computeRepoLaneHealth, type RepoLaneHealth } from './estimator/lane-health';
+import { computeRepoFlakeSummary, type RepoFlakeSummary } from './estimator/flake-summary';
 import { computeRepoDeploy, type RepoDeployStatus } from './estimator/deploy-status';
 import { diffCiGraphs, type WorkflowImpact } from './workflow-impact';
 import { splitOidChecks } from './oid-checks';
@@ -404,7 +405,8 @@ export interface DashboardState {
   generatedAt: string;
   staleSince: string | null;
   repos: { repo: string; hasDeploy: boolean; prs: PrView[]; queue: RepoQueueView | null;
-    laneHealth?: RepoLaneHealth; deploy?: RepoDeployStatus; scheduled?: RepoScheduledStatus }[];
+    laneHealth?: RepoLaneHealth; deploy?: RepoDeployStatus; scheduled?: RepoScheduledStatus;
+    flake?: RepoFlakeSummary }[];
   /** Cross-cutting global cost summary (Cost lane, Spec 3) — top-level, not
    *  per-repo, because cost is cross-cutting. Computed once per cycle in
    *  refreshCostSummary and cached (spec §15: buildState never hits SQLite).
@@ -465,6 +467,17 @@ const PREFIX_DERIVE_INTERVAL_MS = 24 * 3600_000;
  *  a 7-day rollup of every cost row moves slowly, so a per-sweep recompute
  *  would be wasted SQLite work. */
 const COST_SUMMARY_INTERVAL_MS = 3 * 60_000;
+
+/** Failures & flake lane (Spec 5): the flake summary looks back this far — a
+ *  wider window than the live likelyFlake radar (FLAKE_LOOKBACK_MS, 7d) so a
+ *  slow-burn flake accumulates enough samples to clear FLAKE_MIN_RUNS. */
+const FLAKE_SUMMARY_LOOKBACK_MS = 14 * 86400_000;
+
+/** Recompute the per-repo flake summary (Failures & flake lane, Spec 5) at most
+ *  this often — a 14-day rollup is slow-moving, so per-sweep SQLite work is
+ *  wasted; this is a distinct slow cadence from the per-build flakeRatesFor
+ *  cache (FLAKE_CACHE_TTL_MS) used by the live check-radar. */
+const FLAKE_SUMMARY_INTERVAL_MS = 3 * 60_000;
 
 /** Re-list a repo's recent push runs (to learn push-only job pools) at most
  *  this often per repo — the push job set is near-static, so 6h is plenty to
@@ -594,6 +607,8 @@ export class Poller extends EventEmitter {
   private scheduledRunsThrottle = new RetryThrottle(SCHEDULED_RUNS_INTERVAL_MS);           // ~1h per repo on success, backoff on failure
   private costSummaryCache: CostSummary | undefined;                     // global per-stage cost (Cost lane, Spec 3); buildState reads this (spec §15)
   private costSummaryAt = 0;                                              // epoch ms of the last cost recompute (throttled — cost moves slowly)
+  private flakeSummaryCache = new Map<string, RepoFlakeSummary>();        // repo → per-cycle flake summary (Failures & flake lane, Spec 5); buildState reads this (spec §15)
+  private flakeSummaryAt = 0;                                             // epoch ms of the last flake-summary recompute (throttled — 14-day rollup moves slowly)
   private lastHourlyScanAt = 0;                           // epoch ms of the last hourly scan pass (#41/#45)
   private warnedAncestryFallback = new Set<string>();    // repos whose api→clone ancestry fallback was logged (log once)
   private warnedJobsApi = new Set<string>();             // repos whose jobs-API pool-learn fetch failed (log once)
@@ -750,6 +765,9 @@ export class Poller extends EventEmitter {
     // Global cost summary (Cost lane, Spec 3) — same cycle, throttled internally
     // (cost moves slowly); buildState only reads the cache.
     this.refreshCostSummary();
+    // Per-repo flake summary (Failures & flake lane, Spec 5) — same cycle,
+    // throttled internally (14-day rollup moves slowly); buildState reads cache.
+    this.refreshFlakeSummary();
     this.emitUpdate();
   }
 
@@ -1989,6 +2007,27 @@ export class Poller extends EventEmitter {
   }
 
   /**
+   * Recompute the per-repo flake summary (Failures & flake lane, Spec 5),
+   * throttled to FLAKE_SUMMARY_INTERVAL_MS — buildState only reads the cache
+   * (spec §15: never a per-buildState SQLite hit). Reuses the flake engine's
+   * `flakeStats` (same-sha fail-then-pass resolution, CANCELLED never a verdict)
+   * over a 14-day window; computeRepoFlakeSummary only filters/sorts/trims.
+   */
+  private refreshFlakeSummary(): void {
+    const nowMs = this.now().getTime();
+    if (nowMs - this.flakeSummaryAt < FLAKE_SUMMARY_INTERVAL_MS && this.flakeSummaryCache.size) return;
+    const since = new Date(nowMs - FLAKE_SUMMARY_LOOKBACK_MS).toISOString();
+    this.flakeSummaryCache.clear();
+    for (const repo of this.trackedRepos()) {
+      const summary = computeRepoFlakeSummary(this.deps.history.flakeStats(repo, since));
+      // Only repos that actually have flaky checks get an entry; a clean repo
+      // stays absent (no flake field) so the lane reads idle, not a false amber.
+      if (summary.flakyCount > 0) this.flakeSummaryCache.set(repo, summary);
+    }
+    this.flakeSummaryAt = nowMs;
+  }
+
+  /**
    * Recompute per-repo deploy status once per deploy cycle (Deploy lane, spec
    * §15) — runs after the env loop has refreshed `envShas`, so the cached live
    * sha is current. buildState only reads the cache. Only repos with an
@@ -2070,6 +2109,9 @@ export class Poller extends EventEmitter {
           // pure cache read — scheduled-lane snapshot computed once per deploy
           // cycle in refreshScheduled; absent for repos with no scheduled workflows
           scheduled: this.scheduledCache.get(repo),
+          // pure cache read — per-repo flake summary computed once per cycle in
+          // refreshFlakeSummary (spec §15); absent for repos with no flaky checks
+          flake: this.flakeSummaryCache.get(repo),
         };
       })
       .sort((a, b) => a.repo.localeCompare(b.repo));

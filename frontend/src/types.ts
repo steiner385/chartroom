@@ -151,7 +151,14 @@ export interface DashboardState {
      *  RepoScheduledStatus. Optional to tolerate pre-upgrade payloads. */
     scheduled?: { runs: { workflow: string; conclusion: string | null;
       status: string | null; createdAt: string | null; htmlUrl: string | null }[];
-      discovered: number }; }[];
+      discovered: number };
+    /** Advisory Failures & flake-lane snapshot (Spec 5): the top flaky checks
+     *  (≥ FLAKE_MIN_RUNS runs with same-sha fail-then-pass events) over a 14-day
+     *  window + the flaky-check count. Absent for repos with no flaky checks.
+     *  Mirror of server estimator/flake-summary.ts RepoFlakeSummary. Optional to
+     *  tolerate pre-upgrade payloads. */
+    flake?: { topChecks: { name: string; event: string; flakeRatePct: number; flakeEvents: number }[];
+      flakyCount: number }; }[];
   /** Cross-cutting global CI cost summary (Cost lane, Spec 3) — top-level, not
    *  per-repo. Priced runner-minutes over a 7-day window across all repos,
    *  split by pipeline stage. `dollars` is null for an unpriced stage subset;

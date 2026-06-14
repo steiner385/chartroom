@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { render, screen } from '@testing-library/react';
+import { render, screen, within } from '@testing-library/react';
 import { DeliverySpine } from '../DeliverySpine';
 import type { DashboardState } from '../../types';
 
@@ -16,6 +16,7 @@ describe('DeliverySpine', () => {
     expect(screen.getByTestId('spine-lane-main')).toBeInTheDocument();
     expect(screen.getByTestId('spine-lane-deploy')).toBeInTheDocument();
     expect(screen.getByTestId('spine-lane-scheduled')).toBeInTheDocument();
+    expect(screen.getByTestId('spine-lane-failures')).toBeInTheDocument();
     expect(screen.getByTestId('spine-rollup')).toHaveTextContent(/need attention/i);
   });
   it('skeleton state when state is null (no crash, lanes present)', () => {
@@ -66,6 +67,29 @@ describe('DeliverySpine', () => {
   it('renders a Cost lane row (always present)', () => {
     render(<DeliverySpine state={state({})} kiosk={false} />);
     expect(screen.getByTestId('spine-lane-cost')).toBeInTheDocument();
+  });
+
+  it('Failures & flake lane is wired and expands its panel when a repo ships flake data', () => {
+    const st = {
+      generatedAt: '', staleSince: null, repos: [{ repo: 'cairnea/KinDash', hasDeploy: false,
+        prs: [], queue: null,
+        flake: { flakyCount: 2, topChecks: [
+          { name: 'HighFiveCue', event: 'push', flakeRatePct: 27.7, flakeEvents: 5 },
+          { name: 'CalendarSearch', event: 'pull_request', flakeRatePct: 12.1, flakeEvents: 2 },
+        ] } }],
+    } as unknown as DashboardState;
+    render(<DeliverySpine state={st} kiosk />);
+    const lane = screen.getByTestId('spine-lane-failures');
+    expect(lane).toBeInTheDocument();
+    // amber, never red: aria-label carries the 'watch' status word, the glyph
+    // is the amber glyph (s-amber), and there is no red glyph anywhere.
+    expect(within(lane).getByRole('button')).toHaveAttribute('aria-label', expect.stringMatching(/watch/i));
+    expect(lane.querySelector('.s-amber')).not.toBeNull();
+    expect(lane.querySelector('.s-red')).toBeNull();
+    expect(lane).toHaveTextContent(/HighFiveCue/);
+    expect(lane).toHaveTextContent(/2 flaky/);
+    const rows = screen.getAllByTestId('spine-flake-row');
+    expect(rows[0]).toHaveTextContent('HighFiveCue');    // top by rate
   });
 
   it('weaves a cost chip into the PR CI lane when state.cost has stage dollars', () => {
