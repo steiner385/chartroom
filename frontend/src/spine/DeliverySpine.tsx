@@ -8,6 +8,7 @@ import { mergeQueueLane } from './lanes/mergeQueueLane';
 import { mainLane } from './lanes/mainLane';
 import { deployLane } from './lanes/deployLane';
 import { scheduledLane } from './lanes/scheduledLane';
+import { failuresLane } from './lanes/failuresLane';
 import { costLane } from './lanes/costLane';
 import { scrollBehavior } from '../motion';
 import { PrCiPanel } from './panels/PrCiPanel';
@@ -15,6 +16,7 @@ import { MergeQueuePanel } from './panels/MergeQueuePanel';
 import { MainPanel } from './panels/MainPanel';
 import { DeployPanel } from './panels/DeployPanel';
 import { ScheduledPanel } from './panels/ScheduledPanel';
+import { FailuresPanel } from './panels/FailuresPanel';
 import { CostPanel } from './panels/CostPanel';
 
 const LS_KEY = 'prdash.spine.expanded';
@@ -36,6 +38,7 @@ function buildLanes(state: DashboardState | null): Lane[] {
   const ml = state ? mainLane(repos) : { status: 'blind' as const, summary: 'loading…' };
   const dp = state ? deployLane(repos) : { status: 'blind' as const, summary: 'loading…' };
   const sl = state ? scheduledLane(repos) : { status: 'blind' as const, summary: 'loading…' };
+  const fl = state ? failuresLane(repos) : { status: 'blind' as const, summary: 'loading…' };
   const cl = state ? costLane(state.cost) : { status: 'blind' as const, summary: 'loading…' };
   // Advisory + not-wired whenever no repo ships a deploy snapshot, so the lane
   // is excluded from the worst-wins rollup (it must never red the spine).
@@ -81,6 +84,16 @@ function buildLanes(state: DashboardState | null): Lane[] {
       wiredness: scheduledWired ? 'wired' : 'not-wired', gating: true,
       status: sl.status, summary: sl.summary,
       renderExpanded: () => <ScheduledPanel repos={repos} />,
+    },
+    {
+      // Cross-cutting advisory lane (Spec 5): flake intelligence from the
+      // dashboard's own check_durations history. gating:false + amber-at-most
+      // (failuresLane never reds), so it can never escalate the worst-wins
+      // rollup; always wired (idle when clean is excluded from attention).
+      id: 'failures', title: 'Failures & flake', glyphPosition: 'crosscut',
+      wiredness: 'wired', gating: false,
+      status: fl.status, summary: fl.summary, costChip: undefined,
+      renderExpanded: () => <FailuresPanel repos={repos} />,
     },
     {
       id: 'cost', title: 'Cost', glyphPosition: 'crosscut',

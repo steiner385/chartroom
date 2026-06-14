@@ -5,6 +5,7 @@ import { mainLane } from '../lanes/mainLane';
 import { deployLane } from '../lanes/deployLane';
 import { costLane } from '../lanes/costLane';
 import { scheduledLane } from '../lanes/scheduledLane';
+import { failuresLane } from '../lanes/failuresLane';
 import type { DashboardState } from '../../types';
 
 const repo = (over: object) => ({ repo: 'acme/widgets', hasDeploy: false, prs: [], queue: null, ...over });
@@ -171,5 +172,58 @@ describe('scheduledLane', () => {
       discovered: 2, runs: [run('a.yml', 'success'), run('b.yml', 'cancelled')],
     })] as unknown as DashboardState['repos']);
     expect(['amber']).toContain(out.status);
+  });
+});
+
+describe('failuresLane', () => {
+  const check = (name: string, rate: number, over: object = {}) =>
+    ({ name, event: 'push', flakeRatePct: rate, flakeEvents: 3, ...over });
+  const flaky = (over: object) => repo({ flake: { topChecks: [], flakyCount: 0, ...over } });
+
+  it('is idle when no repo has any flaky check', () => {
+    const out = failuresLane([repo({})] as unknown as DashboardState['repos']);
+    expect(out.status).toBe('idle');
+    expect(out.summary).toMatch(/no active flake/i);
+  });
+
+  it('is idle when a repo ships a flake field but flakyCount is 0', () => {
+    const out = failuresLane([flaky({ topChecks: [], flakyCount: 0 })] as unknown as DashboardState['repos']);
+    expect(out.status).toBe('idle');
+  });
+
+  it('is amber when any flaky check is present, naming the top check + rounded rate', () => {
+    const out = failuresLane([flaky({
+      topChecks: [check('HighFiveCue', 27.7), check('CalendarSearch', 12.1)], flakyCount: 3,
+    })] as unknown as DashboardState['repos']);
+    expect(out.status).toBe('amber');
+    expect(out.summary).toMatch(/3 flaky/);
+    expect(out.summary).toMatch(/HighFiveCue/);
+    expect(out.summary).toMatch(/28%/);   // 27.7 rounded
+  });
+
+  it('picks the globally top check across repos (highest rate first)', () => {
+    const repos = [
+      flaky({ topChecks: [check('low', 9)], flakyCount: 1 }),
+      { ...flaky({ topChecks: [check('worst', 44)], flakyCount: 2 }), repo: 'b/b' },
+    ];
+    const out = failuresLane(repos as unknown as DashboardState['repos']);
+    expect(out.summary).toMatch(/worst/);
+    expect(out.summary).toMatch(/44%/);
+    // flakyCount sums across repos
+    expect(out.summary).toMatch(/3 flaky/);
+  });
+
+  it('NEVER returns red — flake is a watch, not an alarm', () => {
+    // even with many high-rate flaky checks the lane stays amber-at-most
+    const out = failuresLane([flaky({
+      topChecks: [check('a', 99), check('b', 95), check('c', 90)], flakyCount: 50,
+    })] as unknown as DashboardState['repos']);
+    expect(['idle', 'amber']).toContain(out.status);
+    expect(out.status).not.toBe('red');
+  });
+
+  it('never goes blind or green — only idle (clean) or amber (flake present)', () => {
+    expect(failuresLane([repo({})] as unknown as DashboardState['repos']).status).toBe('idle');
+    expect(failuresLane([flaky({ topChecks: [check('x', 30)], flakyCount: 1 })] as unknown as DashboardState['repos']).status).toBe('amber');
   });
 });
