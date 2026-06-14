@@ -556,7 +556,8 @@ export class HistoryStore {
          observed_at=excluded.observed_at`);
     this.stmtRecentMainCommits = this.db.prepare(
       `SELECT commit_sha, merged_at, push_ci_conclusion, push_ci_completed_at
-       FROM main_commits WHERE repo=? AND merged_at >= ? ORDER BY merged_at DESC LIMIT 20`);
+       FROM main_commits WHERE repo=? AND COALESCE(merged_at, observed_at) >= ?
+       ORDER BY COALESCE(merged_at, observed_at) DESC LIMIT 20`);
   }
 
   /** `headSha`/`runAttempt` (issue #34): the PR/group head commit the check ran
@@ -746,7 +747,7 @@ export class HistoryStore {
       { commit_sha: string; push_ci_conclusion: string | null }[];
     if (rows.length === 0) return { status: 'idle', lastGreenSha: null };
     const lastGreen = rows.find((r) => r.push_ci_conclusion === 'SUCCESS')?.commit_sha ?? null;
-    const fail = (c: string | null) => c === 'FAILURE' || c === 'TIMED_OUT' || c === 'STARTUP_FAILURE';
+    const fail = (c: string | null) => c != null && FAILING_CONCLUSIONS.has(c);
     const newest = rows[0];
     if (newest.push_ci_conclusion == null) return { status: 'blind', lastGreenSha: lastGreen };
     if (!fail(newest.push_ci_conclusion)) return { status: 'green', lastGreenSha: lastGreen };

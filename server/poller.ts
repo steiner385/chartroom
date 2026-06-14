@@ -291,6 +291,18 @@ export function ingestGroupFailures(history: HistoryStore, repo: string,
     history.recordGroupFailure(repo, c.name, groupSha, c.completedAt);
   }
 }
+/** Fold the push:main subset of an OID rollup into main_commits. The worst push
+ *  conclusion is the commit's push-CI verdict; an empty subset records nothing
+ *  (→ blind/idle, never a false green). */
+export function recordMainFromOid(history: HistoryStore, repo: string, oid: string,
+  mergedAt: string | null, pushChecks: CheckRun[]): void {
+  if (pushChecks.length === 0) return;
+  const order: Record<string, number> = { STARTUP_FAILURE: 5, TIMED_OUT: 5, FAILURE: 5, SUCCESS: 2, NEUTRAL: 1, SKIPPED: 0 };
+  const worst = pushChecks.reduce<string | null>((w, c) =>
+    (c.conclusion && (w == null || (order[c.conclusion] ?? 3) > (order[w] ?? 3))) ? c.conclusion : w, null);
+  const completedAt = pushChecks.map((c) => c.completedAt).filter(Boolean).sort().pop() ?? null;
+  history.recordMainCommit(repo, oid, mergedAt, worst, completedAt);
+}
 /**
  * Spot-reclaim live marker (issue #46): a CANCELLED check whose SHA already
  * has a newer-attempt check running/queued in the same rollup —
@@ -1140,6 +1152,7 @@ export class Poller extends EventEmitter {
             if (!commit?.oid) continue;
             const checks = mapRollupContexts(commit.statusCheckRollup?.contexts?.nodes ?? [], true);
             const split = splitOidChecks(checks);
+            recordMainFromOid(this.deps.history, repo, commit.oid as string, null, split.push);
             this.groupChecks.set(commit.oid, split.mergeGroup);
             ingestCheckSet(this.deps.history, repo, checks, (n) => this.needsFor(repo, n),
               (p, e) => this.needActiveFor(repo, p, e), this.graphKeysFor(repo),
