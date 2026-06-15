@@ -3,7 +3,8 @@ import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import { RunnerRouting } from '../RunnerRouting';
 
 const planResp = {
-  enabled: false, shedCount: 1, lastError: null, lastPushedAt: null, lastVerifiedAt: null, lastPushedHash: null,
+  enabled: false, shedCount: 1, shedThresholdMinutes: 1.5, reclaimRatePct: 2.3,
+  lastError: null, lastPushedAt: null, lastVerifiedAt: null, lastPushedHash: null,
   map: { integration: 'kindash-arc' },
   plan: [
     { key: 'unit', p90Secs: 480, scoreMinutes: 0.7, decision: 'kindash-arc-spot', source: 'auto', reason: 'spot', collecting: false },
@@ -39,5 +40,22 @@ describe('RunnerRouting panel', () => {
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: true, json: async () => ({ ...planResp, lastError: 'rate limited' }) }));
     render(<RunnerRouting />);
     expect((await screen.findByTestId('runner-push-status')).textContent).toMatch(/Push failed:/);
+  });
+
+  it('shows the current shedThresholdMinutes and PUTs it on blur (the knob)', async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce({ ok: true, json: async () => planResp })
+      .mockResolvedValueOnce({ ok: true, json: async () => ({ applied: ['shedThresholdMinutes'] }) })
+      .mockResolvedValueOnce({ ok: true, json: async () => planResp });
+    vi.stubGlobal('fetch', fetchMock);
+    render(<RunnerRouting />);
+    const knob = await screen.findByLabelText(/shed threshold/i) as HTMLInputElement;
+    expect(knob.value).toBe('1.5'); // the live threshold, NOT shedCount
+    fireEvent.change(knob, { target: { value: '3' } });
+    fireEvent.blur(knob);
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledWith('/api/runner-routing',
+      expect.objectContaining({ method: 'PUT', body: expect.stringContaining('shedThresholdMinutes') })));
+    expect(JSON.parse((fetchMock.mock.calls.find((c) => c[0] === '/api/runner-routing')![1] as RequestInit).body as string))
+      .toEqual({ shedThresholdMinutes: 3 });
   });
 });

@@ -22,6 +22,11 @@ export interface RoutingDeps {
 
 export interface RoutingState {
   enabled: boolean;
+  /** The live knob value — what the UI's threshold input must show/edit. */
+  shedThresholdMinutes: number;
+  /** The reclaim rate (percent) the decision was made from; null when no spot
+   *  jobs ran. Lets the UI show the live rate without diverging from a metrics window. */
+  reclaimRatePct: number | null;
   lastPushedAt: number | null;
   lastPushedHash: string | null;
   lastVerifiedAt: number | null;
@@ -33,6 +38,8 @@ export interface RoutingState {
 export class RunnerRoutingController {
   private state: RoutingState = {
     enabled: false,
+    shedThresholdMinutes: 1,
+    reclaimRatePct: null,
     lastPushedAt: null,
     lastPushedHash: null,
     lastVerifiedAt: null,
@@ -62,7 +69,12 @@ export class RunnerRoutingController {
   }
 
   getState(): RoutingState {
-    return { ...this.state };
+    // shedThresholdMinutes + reclaimRatePct are read live from deps so the API
+    // is correct even before the first tick (and never lags a config edit).
+    const cfg = this.deps.config();
+    const rate = this.deps.inputs().reclaimRate;
+    return { ...this.state, enabled: cfg.enabled, shedThresholdMinutes: cfg.shedThresholdMinutes,
+      reclaimRatePct: rate == null ? null : Math.round(rate * 1000) / 10 };
   }
 
   getPlan(): RunnerPlan {

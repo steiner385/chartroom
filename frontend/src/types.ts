@@ -513,9 +513,13 @@ export interface RunnerPlanResponse {
   map: Record<string, string>;
   /** Number of jobs currently routed to on-demand due to shed. */
   shedCount: number;
+  /** The live knob value (minutes) — what the threshold input shows/edits. */
+  shedThresholdMinutes: number;
+  /** Reclaim rate (percent) the decision was made from; null when no spot jobs ran. */
+  reclaimRatePct: number | null;
   /** ISO timestamp of the last successful RUNNER_MAP push; null if never pushed. */
   lastPushedAt: string | null;
-  /** Commit SHA that the last push targeted; null if never pushed. */
+  /** Canonical-map JSON hash of the last push (NOT a commit SHA); null if never pushed. */
   lastPushedHash: string | null;
   /** ISO timestamp of the last map-vs-GH verification pass; null if never run. */
   lastVerifiedAt: string | null;

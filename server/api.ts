@@ -341,6 +341,7 @@ export function createApp(opts: {
       const s = rr.state();
       const { map, plan } = rr.plan();
       res.json({ plan, map, enabled: s.enabled, shedCount: s.shedCount,
+        shedThresholdMinutes: s.shedThresholdMinutes, reclaimRatePct: s.reclaimRatePct,
         lastPushedAt: s.lastPushedAt, lastPushedHash: s.lastPushedHash,
         lastVerifiedAt: s.lastVerifiedAt, lastError: s.lastError });
     });

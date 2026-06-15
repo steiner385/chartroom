@@ -696,7 +696,8 @@ import { validateRunnerRoutingPatch } from '../config';
 
 describe('runner routing endpoints', () => {
   const plan = { map: { integration: 'kindash-arc' as const }, plan: [{ key: 'integration', decision: 'kindash-arc' as const, source: 'auto' as const, p90Secs: 120, scoreMinutes: 2, reason: 'auto', collecting: false }] };
-  const state = { enabled: false, lastPushedAt: null, lastPushedHash: null, lastVerifiedAt: null,
+  const state = { enabled: false, shedThresholdMinutes: 1, reclaimRatePct: null,
+    lastPushedAt: null, lastPushedHash: null, lastVerifiedAt: null,
     lastError: null, plan: plan.plan, shedCount: 1 };
   const deps = () => ({ runnerRouting: { state: () => state, plan: () => plan, applyConfig: vi.fn() } });
 

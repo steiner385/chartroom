@@ -127,14 +127,16 @@ export function RunnerRouting() {
         </label>
         <input
           id="shed-threshold"
+          key={data.shedThresholdMinutes}
           type="number"
           className="runner-shed-input"
-          min={0}
+          min={0.1}
           step={0.1}
-          defaultValue={data.shedCount ?? 0}
-          aria-valuetext={`${data.shedCount} minutes`}
-          onBlur={(e) => handleShedChange(Number(e.target.value))}
-          onChange={(e) => handleShedChange(Number(e.target.value))}
+          defaultValue={data.shedThresholdMinutes}
+          aria-valuetext={`${data.shedThresholdMinutes} minutes`}
+          // commit on blur only — onChange would PUT (write the config file +
+          // reconfigure) on every keystroke mid-entry
+          onBlur={(e) => { const n = Number(e.target.value); if (n > 0) handleShedChange(n); }}
         />
         <span className="runner-shed-hint" aria-hidden="true">
           ← Reliability (lower) · Cost (higher) →
