@@ -8,6 +8,8 @@ import { maskWebhookUrl } from './notifier';
 import { resolveMetricsQuery, type MetricsBucket, type MetricsPayload, type MetricsWindow } from './metrics';
 import { verifySignature, routeEvent, type WebhookRoute } from './webhooks';
 import { PermissionError, type MergeMethod, type ReadyMergeInput, type ReadyMergeResult } from './pr-actions';
+import type { RoutingState } from './runner-routing';
+import type { RunnerPlan } from './estimator/runner-plan';
 
 /**
  * Wiring for /api/config. Note the security boundary lives HERE (and in
@@ -163,6 +165,15 @@ export function createApp(opts: {
   /** POST /api/pr/ready-merge — flip a draft PR ready-for-review and arm
    *  auto-merge. Wired in index.ts to the per-owner GithubClient. */
   prActions?: { readyAndAutoMerge: (input: ReadyMergeInput) => Promise<ReadyMergeResult> };
+  /** Runner-routing capability (feature/runner-routing) — the controller's live
+   *  state + computed plan, plus a write path for the browser-writable config
+   *  subset. The endpoints that consume this are added by a later task; this
+   *  task only threads the capability through. */
+  runnerRouting?: {
+    state: () => RoutingState;
+    plan: () => RunnerPlan;
+    applyConfig: (patch: Record<string, unknown>) => void;
+  };
   /** Restart endpoint knobs — `exit` injectable for tests. */
   restart?: { exit?: (code: number) => void; delayMs?: number };
 }): express.Express {

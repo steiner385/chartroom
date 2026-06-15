@@ -1,6 +1,8 @@
-import { mkdirSync } from 'node:fs';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
+import { mkdirSync, appendFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { loadConfig, resolveOwners, writeConfigPatch, configFileSources,
+import { loadConfig, resolveOwners, writeConfigPatch, writeRunnerRoutingPatch, configFileSources,
   type AppConfig, type InstallationAccountsSource, type ViewerClient } from './config';
 import { createTokenSource, AppJwtSigner, InstallationRegistry, type TokenProvider } from './auth';
 import { GithubClient } from './github';
@@ -9,6 +11,7 @@ import { readyAndAutoMerge } from './pr-actions';
 import { HistoryStore } from './history';
 import { DeployWatcher } from './deploy-watcher';
 import { Poller, describeError } from './poller';
+import { RunnerRoutingController } from './runner-routing';
 import { Notifier, NOTIFICATION_EVENT_TYPES, maskWebhookUrl } from './notifier';
 import { DigestScheduler, composeDigest, gatherDigestInput, queueHealthFromState } from './digest';
 import { backfillRepo } from './backfill';
@@ -19,6 +22,26 @@ import { dataDir, staticDir, configPath } from './paths';
 
 /** Re-list the App's installations this often (new installs appear without a restart). */
 const REGISTRY_REFRESH_MS = 24 * 3600_000;
+
+const pexec = promisify(execFile);
+
+/** gh env hygiene: a stale GITHUB_TOKEN/GH_TOKEN in the environment shadows the
+ *  gh keyring login (matches server/auth.ts) — strip both before exec'ing gh. */
+function ghEnv(): NodeJS.ProcessEnv {
+  const e = { ...process.env };
+  delete e.GITHUB_TOKEN;
+  delete e.GH_TOKEN;
+  return e;
+}
+
+/** Append one runner-routing audit entry (write/delete) to a JSONL log. Best
+ *  effort: a logging failure must never break the control loop. */
+function appendRunnerAudit(entry: object): void {
+  try {
+    mkdirSync('logs', { recursive: true });
+    appendFileSync('logs/runner-map.jsonl', `${JSON.stringify(entry)}\n`);
+  } catch { /* best effort */ }
+}
 
 async function main() {
   let config: AppConfig;
@@ -183,6 +206,47 @@ async function main() {
   digest.start();
 
   const cfgPath = configPath();
+
+  // Runner-routing controller (feature/runner-routing). Reads the LIVE config
+  // (so a hot config change reroutes without a restart), projects its inputs
+  // from the poller's throttled cache, and reads/writes/deletes the target
+  // repo's RUNNER_MAP GitHub Actions variable via `gh` — execFile with an argv
+  // ARRAY (never a shell: the JSON --body is an injection surface), GITHUB_TOKEN
+  // stripped so the gh keyring login wins. SAFETY: runnerRouting.enabled
+  // defaults false, so the controller only ever DELETEs (converges to absent),
+  // never writes, until an operator opts in.
+  const routing = new RunnerRoutingController({
+    config: () => config.runnerRouting,
+    inputs: () => poller.runnerRoutingInputs(config.runnerRouting.targetRepo),
+    readVar: async () => {
+      try {
+        const { stdout } = await pexec('gh',
+          ['variable', 'get', 'RUNNER_MAP', '--repo', config.runnerRouting.targetRepo], { env: ghEnv() });
+        return stdout.trim() || null;
+      } catch { return null; }
+    },
+    writeVar: async (json) => {
+      await pexec('gh',
+        ['variable', 'set', 'RUNNER_MAP', '--repo', config.runnerRouting.targetRepo, '--body', json],
+        { env: ghEnv() });
+    },
+    deleteVar: async () => {
+      try {
+        await pexec('gh',
+          ['variable', 'delete', 'RUNNER_MAP', '--repo', config.runnerRouting.targetRepo], { env: ghEnv() });
+      } catch { /* already absent */ }
+    },
+    now: () => Date.now(),
+    audit: appendRunnerAudit,
+  });
+  await routing.init();
+  // One controller step at the end of every poll cycle. The poller emits
+  // 'update' after each metrics/state refresh; tick() self-serializes (an
+  // in-flight guard), so overlapping cycles can't double-write. void: fire and
+  // forget — a tick failure surfaces via the controller's lastError state, not
+  // an unhandled rejection here.
+  poller.on('update', () => { void routing.tick(); });
+
   const app = createApp({
     getState: () => poller.getState(),
     bus: poller,
@@ -230,6 +294,28 @@ async function main() {
           return Promise.reject(new Error(`no installation covers ${input.owner}`));
         }
         return readyAndAutoMerge(client, input);
+      },
+    },
+    // Runner-routing capability (feature/runner-routing) — the controller's
+    // live state + plan, and a write path for the browser-writable config
+    // subset. The endpoints that consume this are a later task.
+    runnerRouting: {
+      state: () => routing.getState(),
+      plan: () => routing.getPlan(),
+      applyConfig: (patch) => {
+        // Persist ONLY the writable subset (enabled, shedThresholdMinutes,
+        // overrides). writeRunnerRoutingPatch does the nested merge so file-only
+        // keys (targetRepo, reclaimWindow) survive; the controller reads the
+        // live `config` ref, so reconfigure(next) hot-applies without a restart.
+        const next = writeRunnerRoutingPatch(cfgPath, {
+          enabled: typeof patch.enabled === 'boolean' ? patch.enabled : undefined,
+          shedThresholdMinutes: typeof patch.shedThresholdMinutes === 'number'
+            ? patch.shedThresholdMinutes : undefined,
+          overrides: patch.overrides as Record<string, 'spot' | 'ondemand'> | undefined,
+        });
+        if (next.owners.length === 0) next.owners = config.owners;
+        config = next;
+        poller.reconfigure(next);
       },
     },
     restart: {},

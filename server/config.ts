@@ -608,6 +608,41 @@ export function writeConfigPatch(path: string, patch: ConfigPatch): AppConfig {
   return loadConfig(path);
 }
 
+/**
+ * Writable subset of a runner-routing patch (the dedicated PUT endpoint's body).
+ * Only the three browser-writable keys; file-only `targetRepo`/`reclaimWindow`
+ * are intentionally absent. Every field optional (partial patches allowed).
+ */
+export interface RunnerRoutingPatch {
+  enabled?: boolean;
+  shedThresholdMinutes?: number;
+  overrides?: Record<string, 'spot' | 'ondemand'>;
+}
+
+/**
+ * Read-modify-write ONLY the writable subset of `runnerRouting` into the config
+ * file. Nested merge: the file-only keys (`targetRepo`, `reclaimWindow`) and any
+ * unrelated config survive verbatim. `runnerRouting` is deliberately NOT a
+ * SAFE_CONFIG_KEY (the generic PUT /api/config can't reach it) — this is its
+ * dedicated, write-restricted persistence path. Returns the re-loaded AppConfig
+ * so callers hot-apply exactly what persisted.
+ */
+export function writeRunnerRoutingPatch(path: string, patch: RunnerRoutingPatch): AppConfig {
+  const existing: Record<string, unknown> = existsSync(path)
+    ? (JSON.parse(readFileSync(path, 'utf8')) as Record<string, unknown>)
+    : {};
+  const prevBlock = (typeof existing.runnerRouting === 'object' && existing.runnerRouting
+    ? existing.runnerRouting as Record<string, unknown> : {});
+  const writable: Record<string, unknown> = {};
+  for (const k of RUNNER_ROUTING_WRITABLE) {
+    if (patch[k] !== undefined) writable[k] = patch[k];
+  }
+  const next = { ...existing, runnerRouting: { ...prevBlock, ...writable } };
+  mkdirSync(dirname(path), { recursive: true });
+  writeFileSync(path, `${JSON.stringify(next, null, 2)}\n`);
+  return loadConfig(path);
+}
+
 /** Per-key attribution for the instance config: set in the file vs default. */
 export function configFileSources(path: string): Record<string, 'default' | 'file'> {
   let existing: Record<string, unknown> = {};
