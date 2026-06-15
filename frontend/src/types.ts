@@ -485,6 +485,50 @@ export interface MetricsPayload {
     trackedMinutes: number; windowDays: number } | null;
 }
 
+// ---- Runner routing API mirror (GET /api/runner-plan, PUT /api/runner-routing) ----
+
+/** A single job row from the runner-plan optimizer. */
+export interface PlanRow {
+  /** Job key (e.g. 'unit', 'integration'). */
+  key: string;
+  /** Observed p90 duration in seconds. */
+  p90Secs: number;
+  /** Score in minutes used for the shed/on-demand boundary. */
+  scoreMinutes: number;
+  /** Routing decision: on-demand runner or spot runner. */
+  decision: 'kindash-arc' | 'kindash-arc-spot';
+  /** Textual reason for the decision. */
+  reason: string;
+  /** Whether this row came from an operator override or was auto-computed. */
+  source: 'auto' | 'override';
+  /** True while the job doesn't have enough samples to produce a reliable p90. */
+  collecting: boolean;
+}
+
+/** Full response of `GET /api/runner-plan`. */
+export interface RunnerPlanResponse {
+  /** Whether the runner-routing feature is enabled (pushing RUNNER_MAP). */
+  enabled: boolean;
+  /** Current in-effect RUNNER_MAP as a key→pool object. */
+  map: Record<string, string>;
+  /** Number of jobs currently routed to on-demand due to shed. */
+  shedCount: number;
+  /** The live knob value (minutes) — what the threshold input shows/edits. */
+  shedThresholdMinutes: number;
+  /** Reclaim rate (percent) the decision was made from; null when no spot jobs ran. */
+  reclaimRatePct: number | null;
+  /** ISO timestamp of the last successful RUNNER_MAP push; null if never pushed. */
+  lastPushedAt: string | null;
+  /** Canonical-map JSON hash of the last push (NOT a commit SHA); null if never pushed. */
+  lastPushedHash: string | null;
+  /** ISO timestamp of the last map-vs-GH verification pass; null if never run. */
+  lastVerifiedAt: string | null;
+  /** Last push/verify error message; null when healthy. */
+  lastError: string | null;
+  /** Per-job routing plan rows. */
+  plan: PlanRow[];
+}
+
 // ---- Delivery Spine (spec §2, §3.1, §4.2, §14) ----
 
 /** The single public status vocabulary for Delivery-spine lanes (spec §2). */

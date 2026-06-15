@@ -35,6 +35,8 @@ import { computeRepoDeploy, type RepoDeployStatus } from './estimator/deploy-sta
 import { diffCiGraphs, type WorkflowImpact } from './workflow-impact';
 import { splitOidChecks } from './oid-checks';
 import { computeCostSummary, type CostSummary } from './metrics';
+import { RUNNER_JOB_KEYS, type RunnerJobInput } from './estimator/runner-plan';
+import { projectInputs, reclaimWindowMs } from './estimator/routing-inputs';
 import { parseScheduledWorkflows, scheduledRunsApiPath, type ScheduledRunsApiResponse } from './scheduled';
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
@@ -614,6 +616,8 @@ export class Poller extends EventEmitter {
   private scheduledRunsThrottle = new RetryThrottle(SCHEDULED_RUNS_INTERVAL_MS);           // ~1h per repo on success, backoff on failure
   private costSummaryCache: CostSummary | undefined;                     // global per-stage cost (Cost lane, Spec 3); buildState reads this (spec §15)
   private costSummaryAt = 0;                                              // epoch ms of the last cost recompute (throttled — cost moves slowly)
+  private routingInputsCache: { jobs: RunnerJobInput[]; reclaimRate: number | null } | undefined; // runner-routing inputs (feature/runner-routing); throttled like costSummary
+  private routingInputsAt = 0;                                            // epoch ms of the last routing-inputs recompute
   private flakeSummaryCache = new Map<string, RepoFlakeSummary>();        // repo → per-cycle flake summary (Failures & flake lane, Spec 5); buildState reads this (spec §15)
   private flakeSummaryAt = 0;                                             // epoch ms of the last flake-summary recompute (throttled — 14-day rollup moves slowly)
   private lastHourlyScanAt = 0;                           // epoch ms of the last hourly scan pass (#41/#45)
@@ -776,6 +780,9 @@ export class Poller extends EventEmitter {
     // Global cost summary (Cost lane, Spec 3) — same cycle, throttled internally
     // (cost moves slowly); buildState only reads the cache.
     this.refreshCostSummary();
+    // Runner-routing inputs (feature/runner-routing) — same cycle, throttled
+    // internally; runnerRoutingInputs() only reads the cache.
+    this.refreshRoutingInputs();
     // Per-repo flake summary (Failures & flake lane, Spec 5) — same cycle,
     // throttled internally (14-day rollup moves slowly); buildState reads cache.
     this.refreshFlakeSummary();
@@ -2054,6 +2061,63 @@ export class Poller extends EventEmitter {
       this.liveForeignNames(), config.poolMeta ?? null, config.costPerMinute ?? null,
       config.costAutoRate);
     this.costSummaryAt = nowMs;
+  }
+
+  /**
+   * Recompute the runner-routing controller inputs (feature/runner-routing) for
+   * the configured target repo, THROTTLED to COST_SUMMARY_INTERVAL_MS so a poll
+   * tick never adds a fresh full-table scan — `runnerRoutingInputs` only reads
+   * the cache. Computes the spot reclaim FRACTION + per-job-key p90 together in
+   * one window pass over the reclaim window. Reuses the SAME engine pieces as
+   * the metrics reclaim section: history.reclaimEventsByRepo (spot/infra-kill
+   * events), history.checkIntervalsSince (the spot-job denominator), the
+   * /spot/i pool test (via projectInputs), and resolvePool — never re-deriving
+   * pools. p90 is over the matching pull_request check-name samples per key
+   * (shards collapse to one key via RUNNER_JOB_KEYS' regexes).
+   */
+  private refreshRoutingInputs(): void {
+    const nowMs = this.now().getTime();
+    if (this.routingInputsCache !== undefined && nowMs - this.routingInputsAt < COST_SUMMARY_INTERVAL_MS) return;
+    const { history, config } = this.deps;
+    const repo = config.runnerRouting.targetRepo;
+    const since = new Date(nowMs - reclaimWindowMs(config.runnerRouting.reclaimWindow)).toISOString();
+
+    const reclaimEvents = history.reclaimEventsByRepo(since).get(repo) ?? [];
+    const intervals = history.checkIntervalsSince(since)
+      .filter((r) => r.repo === repo)
+      .map((r) => ({ name: r.name, event: r.event }));
+
+    // Per-key pull_request duration samples: many check names (shards) collapse
+    // onto one RUNNER_JOB_KEY via its regex over the check NAME.
+    const durations = history.checkDurationsSince(since)
+      .filter((r) => r.repo === repo && r.event === 'pull_request');
+    const samplesByKey = new Map<string, number[]>();
+    for (const [key, re] of Object.entries(RUNNER_JOB_KEYS)) {
+      const matched = durations.filter((d) => re.test(d.name)).map((d) => d.durationSecs);
+      samplesByKey.set(key, matched);
+    }
+
+    this.routingInputsCache = projectInputs(
+      reclaimEvents, intervals, samplesByKey,
+      (name, event) => this.resolvePool(repo, name, event)?.pool ?? null);
+    this.routingInputsAt = nowMs;
+  }
+
+  /**
+   * Runner-routing controller inputs for `repo` (feature/runner-routing): the
+   * per-job-key p90 list + spot reclaim fraction. Reads the throttled cache
+   * (refreshRoutingInputs runs once per poll cycle, ≤ once / 3 min). `repo` is
+   * the controller's configured target — the cache is computed for the live
+   * config.runnerRouting.targetRepo, so a mismatch (config changed without a
+   * refresh) returns empty inputs rather than the wrong repo's data.
+   */
+  runnerRoutingInputs(repo: string): { jobs: RunnerJobInput[]; reclaimRate: number | null } {
+    this.refreshRoutingInputs();
+    if (repo !== this.deps.config.runnerRouting.targetRepo || this.routingInputsCache === undefined) {
+      // cold (pre-first-refresh) or a stale repo arg — return cold-start inputs
+      return { jobs: Object.keys(RUNNER_JOB_KEYS).map((key) => ({ key, p90Secs: null })), reclaimRate: null };
+    }
+    return this.routingInputsCache;
   }
 
   /**

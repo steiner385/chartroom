@@ -3,11 +3,13 @@ import type { EventEmitter } from 'node:events';
 import { existsSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import type { DashboardState, RepoSettingsReport } from './poller';
-import { READ_ONLY_CONFIG_KEYS, validateConfigPatch, type AppConfig, type ConfigPatch } from './config';
+import { READ_ONLY_CONFIG_KEYS, validateConfigPatch, validateRunnerRoutingPatch, type AppConfig, type ConfigPatch } from './config';
 import { maskWebhookUrl } from './notifier';
 import { resolveMetricsQuery, type MetricsBucket, type MetricsPayload, type MetricsWindow } from './metrics';
 import { verifySignature, routeEvent, type WebhookRoute } from './webhooks';
 import { PermissionError, type MergeMethod, type ReadyMergeInput, type ReadyMergeResult } from './pr-actions';
+import type { RoutingState } from './runner-routing';
+import type { RunnerPlan } from './estimator/runner-plan';
 
 /**
  * Wiring for /api/config. Note the security boundary lives HERE (and in
@@ -163,6 +165,15 @@ export function createApp(opts: {
   /** POST /api/pr/ready-merge — flip a draft PR ready-for-review and arm
    *  auto-merge. Wired in index.ts to the per-owner GithubClient. */
   prActions?: { readyAndAutoMerge: (input: ReadyMergeInput) => Promise<ReadyMergeResult> };
+  /** Runner-routing capability (feature/runner-routing) — the controller's live
+   *  state + computed plan, plus a write path for the browser-writable config
+   *  subset. The endpoints that consume this are added by a later task; this
+   *  task only threads the capability through. */
+  runnerRouting?: {
+    state: () => RoutingState;
+    plan: () => RunnerPlan;
+    applyConfig: (patch: Record<string, unknown>) => void;
+  };
   /** Restart endpoint knobs — `exit` injectable for tests. */
   restart?: { exit?: (code: number) => void; delayMs?: number };
 }): express.Express {
@@ -319,6 +330,37 @@ export function createApp(opts: {
       // the whole safe subset is hot-appliable today; restartRequired is kept
       // for future fields that can't be
       res.json({ applied: Object.keys(v.patch), restartRequired: [] });
+    });
+  }
+
+  if (opts.runnerRouting) {
+    const rr = opts.runnerRouting;
+    // GET is read-only (no origin guard). Returns the computed plan + map plus
+    // the live routing state fields so the UI can show sync health.
+    app.get('/api/runner-plan', (_req, res) => {
+      const s = rr.state();
+      const { map, plan } = rr.plan();
+      res.json({ plan, map, enabled: s.enabled, shedCount: s.shedCount,
+        shedThresholdMinutes: s.shedThresholdMinutes, reclaimRatePct: s.reclaimRatePct,
+        lastPushedAt: s.lastPushedAt, lastPushedHash: s.lastPushedHash,
+        lastVerifiedAt: s.lastVerifiedAt, lastError: s.lastError });
+    });
+    // PUT accepts only the browser-writable subset (enabled, shedThresholdMinutes,
+    // overrides); file-only keys (targetRepo, reclaimWindow) are rejected.
+    // Origin-guarded like /api/config to block cross-site mutation.
+    app.put('/api/runner-routing', originGuard, (req, res) => {
+      const v = validateRunnerRoutingPatch(req.body);
+      if (!v.ok) {
+        res.status(400).json({ error: 'invalid runner-routing patch', errors: v.errors });
+        return;
+      }
+      try {
+        rr.applyConfig(req.body as Record<string, unknown>);
+      } catch (e) {
+        res.status(500).json({ error: e instanceof Error ? e.message : String(e) });
+        return;
+      }
+      res.json({ applied: Object.keys(req.body as object) });
     });
   }
 
