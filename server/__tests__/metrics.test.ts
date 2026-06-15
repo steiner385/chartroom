@@ -1606,35 +1606,23 @@ describe('queue efficiency (issue #23)', () => {
     expect(qe!.runsPerMerge).toBeNull();
   });
 
-  it('admin-bypass rate = non-[bot] merges ÷ merges with a known merger', () => {
-    const mergeBy = (n: number, by: string | null) => h.upsertMergedPr({ repo: REPO, number: n,
-      title: `pr ${n}`, url: `u/${n}`, mergedAt: '2026-06-10T11:00:00Z',
-      mergeCommitSha: `m${n}`, mergedBy: by });
-    mergeBy(1, 'queue-bot[bot]'); mergeBy(2, 'queue-bot[bot]'); mergeBy(3, 'queue-bot[bot]');
-    mergeBy(4, 'alice');     // human admin merge — bypassed the queue
-    mergeBy(5, null);        // unknown merger — excluded from the ratio
+  it('admin-bypass rate = merges that skipped the queue (no enqueue), by the enqueue signal', () => {
+    const mergePr = (n: number, day: string, enqueued: boolean) => h.upsertMergedPr({
+      repo: REPO, number: n, title: `pr ${n}`, url: `u/${n}`,
+      mergedAt: `${day}T11:0${n}:00Z`, mergeCommitSha: `m${n}`,
+      enqueuedAt: enqueued ? `${day}T10:0${n}:00Z` : null });
+    // 2026-06-10: an OBSERVED day (queue active) — 3 enqueued, 1 bypass
+    mergePr(1, '2026-06-10', true); mergePr(2, '2026-06-10', true);
+    mergePr(3, '2026-06-10', true); mergePr(4, '2026-06-10', false);
+    // 2026-06-09: an UNOBSERVED day (0 enqueues) — must be excluded, not 100% bypass
+    mergePr(5, '2026-06-09', false); mergePr(6, '2026-06-09', false);
     const [qe] = run(['ci']);
-    expect(qe!.queueMerges).toBe(5);          // every merge counts toward runs/merge
-    expect(qe!.adminBypass.merges).toBe(4);   // …but only known-merger rows feed the bypass rate
-    expect(qe!.adminBypass.bypasses).toBe(1); // alice
+    expect(qe!.queueMerges).toBe(6);            // every merge counts toward runs/merge
+    expect(qe!.adminBypass.merges).toBe(4);     // only the observed day (06-10)
+    expect(qe!.adminBypass.bypasses).toBe(1);   // the one non-enqueued merge that day
     expect(qe!.adminBypass.rate).toBeCloseTo(0.25, 6);
   });
 
-  it('recognises a configured autoMergeActor whose login lacks the [bot] suffix', () => {
-    const mergeBy = (n: number, by: string) => h.upsertMergedPr({ repo: REPO, number: n,
-      title: `pr ${n}`, url: `u/${n}`, mergedAt: '2026-06-10T11:00:00Z',
-      mergeCommitSha: `m${n}`, mergedBy: by });
-    mergeBy(1, 'kindash-automerge'); mergeBy(2, 'kindash-automerge');  // the bot (no [bot] suffix)
-    mergeBy(3, 'steiner385');                                          // human admin merge — bypass
-    // autoMergeActorFor returns the configured actor for REPO.
-    const qe = computeMetrics(h, '7d', 'day', NOW, [], () => 1, new Map(), new Map(), [],
-      () => null, [], null, null, () => null, false, () => ['ci'],
-      (repo) => (repo === REPO ? 'kindash-automerge' : null)).queueEfficiency;
-    const ab = qe[0]!.adminBypass;
-    expect(ab.merges).toBe(3);
-    expect(ab.bypasses).toBe(1);                  // only steiner385, NOT the two bot merges
-    expect(ab.rate).toBeCloseTo(1 / 3, 6);
-  });
 });
 
 describe('batch-size advisor (issue #52)', () => {

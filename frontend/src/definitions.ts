@@ -160,7 +160,7 @@ export const METRIC_DEFINITIONS = {
   queueEffRequiredFailed: { label: 'required-gate failures',
     text: 'merge_group runs where a REQUIRED check (matching requiredCheckPrefixes) failed — the real gate failures, distinct from advisory noise. Needs requiredCheckPrefixes configured for the repo; without it the required/advisory split can’t be computed and every failure reads as advisory' },
   queueEffAdminBypass: { label: 'admin-bypass rate',
-    text: 'fraction of merged PRs NOT merged by the queue bot — i.e. a human/admin merged directly, bypassing the merge queue. Classified by who merged (mergedBy), counting only merges whose merger is known (the metric ramps up as new merges are observed — rows predating the merged_by column are excluded). Sustained >10% is a queue-confidence alarm: people are routing around the queue' },
+    text: 'fraction of merged PRs that SKIPPED the merge queue — merged without ever being observed in it (no enqueue timestamp). The signal is the enqueue observation, NOT who merged: GitHub’s mergedBy reports who ENABLED auto-merge (often a human), not whether the queue performed the merge, so it would falsely flag the normal enqueue-and-let-it-run flow. Days the queue wasn’t observed at all (zero enqueues — e.g. before the poller watched the repo) are excluded so a coverage gap can’t inflate the rate. Sustained >10% is a queue-confidence alarm' },
 
   // ---- merge velocity panel ----
   velocityMerged: { label: 'merged',

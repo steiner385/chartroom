@@ -130,12 +130,6 @@ export interface AppConfig {
   allowedOriginHosts: string[];
   retentionDays: number;
   batchSize: number;
-  /** Admin-bypass metric (issue #23 follow-up): per-repo login of the merge-queue
-   *  / automerge actor (e.g. `kindash-automerge`). A merge by anyone else counts
-   *  as a queue bypass. Unset for a repo → the metric falls back to treating any
-   *  `…[bot]` login as automated (which misses bot logins without the suffix).
-   *  File-only. */
-  autoMergeActors?: Record<string, string>;
   /** Where the GitHub token comes from: 'gh' = gh CLI keyring, 'env' = GITHUB_TOKEN,
    *  'app' = GitHub App installation tokens (requires the `app` block). */
   tokenSource: 'gh' | 'env' | 'app';
