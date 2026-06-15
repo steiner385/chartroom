@@ -106,14 +106,13 @@ export class RunnerRoutingController {
           this.state.lastVerifiedAt = this.deps.now();
           this.state.lastError = null;
           this.deps.audit({ at: this.deps.now(), action: 'delete' });
+          // Mark done ONLY on success. A kill switch must CONVERGE to deleted: if
+          // the delete fails the variable is still live and routing still active,
+          // so leave deletedOnce=false and retry on the next disabled tick.
+          this.deletedOnce = true;
         } catch (e) {
           this.state.lastError = e instanceof Error ? e.message : String(e);
         }
-        // Set deletedOnce regardless of success/failure: we attempted the delete.
-        // On failure we'll retry next tick is NOT the contract — idempotent means once.
-        // If the caller wants retries they should call tick() again after clearing state.
-        // For simplicity: set after attempt so errors are surfaced but we don't thrash.
-        this.deletedOnce = true;
       }
       return;
     }

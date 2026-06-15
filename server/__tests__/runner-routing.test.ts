@@ -48,6 +48,21 @@ describe('RunnerRoutingController', () => {
     expect(deleteVar).toHaveBeenCalledTimes(1);
   });
 
+  it('the kill switch retries delete until it succeeds (must converge to deleted)', async () => {
+    const deleteVar = vi.fn()
+      .mockRejectedValueOnce(new Error('network'))   // first disabled tick fails
+      .mockResolvedValueOnce(undefined);             // second succeeds
+    const { ctl } = make({ deleteVar }, { enabled: false });
+    await ctl.tick();
+    expect(deleteVar).toHaveBeenCalledTimes(1);
+    expect(ctl.getState().lastError).toMatch(/network/);
+    await ctl.tick();                                 // retries because the first failed
+    expect(deleteVar).toHaveBeenCalledTimes(2);
+    expect(ctl.getState().lastError).toBeNull();
+    await ctl.tick();                                 // now converged — no more deletes
+    expect(deleteVar).toHaveBeenCalledTimes(2);
+  });
+
   it('records lastError when a push fails and exposes it in getState()', async () => {
     const { ctl } = make({ writeVar: vi.fn().mockRejectedValue(new Error('rate limited')) });
     await ctl.tick();
