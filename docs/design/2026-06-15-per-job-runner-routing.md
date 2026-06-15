@@ -67,9 +67,21 @@ For each PR-tier job `j`:
   decision uses the always-available time proxy.
 - **Manual `overrides[j] ∈ {spot, ondemand}` win unconditionally.**
 
-`reclaimRate` is the spot-reclaim rate (PR #122) over a configurable trailing
-window (`reclaimWindow`, default e.g. 2h). `p90duration(j)` is the job's p90 over
-the same history the cost/concurrency panels already use.
+**Inputs — exact sources (no recomputation, no unit traps):**
+- `reclaimRate` = `MetricsPayload.reclaims[targetRepo].spot.ratePct / 100` (the
+  PR #122 metric is a **percent**; normalize to a fraction at the `runner-plan.ts`
+  boundary). `spot.ratePct` is **`null` when no spot jobs ran** in the window —
+  treat `null` as `0` (assume healthy spot), never as on-demand.
+- `p90duration(j)` = the job's existing p90 from `history.expected(repo,name,event)`
+  / the `slowestJobs` projection the poller already computes — **not** a new
+  percentile or a per-job query. Cold start (no history for a key) → omit the key
+  from the map (falls through to spot) and render it as **"collecting"** in the UI.
+- Both inputs are read from the **poller's cached metrics** (recomputed on a
+  throttle, e.g. the existing `COST_SUMMARY_INTERVAL_MS` 3-min cadence / the
+  `reclaimWindow`), **never a fresh SQLite scan per poll tick**. `reclaimWindow`
+  is a single configurable trailing window that drives **both** the decision and
+  the rate the UI displays, so they can't diverge; constrain it to a value the
+  metric supports.
 
 ## Map schema + the ci.yml change
 
@@ -89,10 +101,14 @@ runs-on: ${{ github.event_name == 'merge_group' && 'kindash-arc'
 
 **Triple fail-safe:** missing var → `'{}'`; key absent → `|| 'kindash-arc-spot'`;
 merge_group → hard-pinned on-demand. With no/empty map, CI behaves exactly as
-today. Job keys are a fixed vocabulary agreed between the optimizer and ci.yml
-(e.g. `unit`, `integration`, `server`, `build`, `build-test`, `tsc`, `db`,
-`eslint`, `security`). The optimizer only emits keys it knows; unknown jobs fall
-through to spot.
+today. Job keys are a fixed vocabulary that is the **cross-repo contract**: a single
+`RUNNER_JOB_KEYS` const (e.g. `unit`, `integration`, `server`, `build`,
+`build-test`, `tsc`, `db`, `eslint`, `security`). The optimizer only emits keys
+it knows; unknown jobs fall through to spot. **Drift guard:** a pr-dashboard test
+parses the live `cairnea/KinDash` `ci.yml` + reusable `_*.yml` `runs-on` lines
+and asserts every PR-tier key they reference is in `RUNNER_JOB_KEYS` (catches a
+renamed/added job silently defeating the feature). The API also surfaces
+`noHistoryKeys` so the UI can show "no duration data yet" for un-emitted keys.
 
 ## Dashboard components
 
@@ -100,26 +116,57 @@ through to spot.
   `(jobs: {key, p90Secs}[], reclaimRate, config) → { map: Record<key,label>, plan: PlanRow[] }`
   where `PlanRow = { key, p90Secs, score, decision, reason, source: 'auto'|'override' }`.
   Unit-tested in isolation (no I/O).
-- **`GET /api/runner-plan`** — returns `{ plan, map, enabled, lastPushedAt, lastPushedHash }`
-  for the UI and for debugging.
-- **Writer** — in the poller cycle, recompute the map; **on change only** (hash
-  compare) and only when `enabled`, push via
-  `gh variable set RUNNER_MAP --repo <targetRepo> --body <json>` with the same
-  `env -u GITHUB_TOKEN -u GH_TOKEN` hygiene the existing gh calls use. When
-  `enabled` flips false, **delete** the variable (revert to all-spot).
-- **Config** (`config.json`, editable via the Settings drawer + `PUT /api/config`):
-  ```
-  runnerRouting: {
-    enabled: boolean,            // default false
-    shedThresholdMinutes: number,// the knob, default e.g. 1.0
-    reclaimWindow: string,       // e.g. '2h'
-    overrides: Record<jobKey, 'spot'|'ondemand'>,
-    targetRepo: string           // 'cairnea/KinDash'
-  }
-  ```
-- **UI** — a "Runner routing" panel (Reliability section): per-job assignment,
-  each job's score vs threshold + reason, the `shedThreshold` knob, override
-  toggles, an enable/kill switch, and a "last pushed" status line.
+  Plan is computed **even when disabled** (read-only preview). Override beats auto.
+- **`GET /api/runner-plan`** — returns the full state, distinguishing *computed*
+  from *actually-live*:
+  `{ plan, map, enabled, shedThresholdMinutes, reclaimRatePct, shedCount, noHistoryKeys, lastPushedAt, lastPushedHash, lastVerifiedAt, lastError }`.
+  `lastError` / `lastVerifiedAt` let the UI show "plan computed but **push failed
+  / not yet live**" instead of implying CI uses the displayed plan.
+- **Writer** — a serialized, single-in-flight controller in the poller cycle:
+  - **`execFile('gh', ['variable','set','RUNNER_MAP','--repo',targetRepo,'--body',json], {env})`**
+    — never a shell (the JSON body is an injection surface); same `delete
+    env.GITHUB_TOKEN; delete env.GH_TOKEN` hygiene as `auth.ts`. (REST via the
+    token provider is an acceptable alternative — same no-shell property.)
+  - **Push gating:** only when `enabled`; **on change only** vs a *canonical*
+    (sorted-key JSON) hash; plus a **min re-push interval** (≈5 min) and a
+    *hold-stable-one-cycle* damper so boundary jitter can't thrash the variable
+    (it shares the 5k/hr REST budget).
+  - **Validation before any write:** emit only valid JSON whose values ∈
+    {`kindash-arc`,`kindash-arc-spot`}; never anything that could break `fromJSON`.
+  - **Startup reconciliation:** read the current `RUNNER_MAP` first so a restart
+    with a cached hash doesn't skip a needed write.
+  - **Kill switch:** `enabled=false` → **delete** the variable; surface success/
+    failure (don't just flip a local flag). **Every** gh-write path is gated on
+    `enabled` (no debug/UI bypass) to preserve inert-by-default.
+  - **Audit:** append every push/delete to a local `logs/runner-map.jsonl`
+    (timestamp, map, reason summary, reclaim rate, knob).
+- **Config** — split by trust tier, mirroring the existing file-only vs
+  PUT-writable boundary:
+  - **PUT-writable** via a dedicated **`PUT /api/runner-routing`** endpoint
+    (origin-guarded; the generic `PUT /api/config` allowlist stays unchanged):
+    `enabled` (default `false`), `shedThresholdMinutes` (validated `> 0`, finite),
+    `overrides: Record<jobKey,'spot'|'ondemand'>` (values validated).
+  - **File-only** (write/network targets — a malicious page must not redirect the
+    writer): `targetRepo` (validated against an allowlist, e.g. `['cairnea/KinDash']`)
+    and `reclaimWindow`. `loadConfig` validates the whole `runnerRouting` block.
+- **UI** — a "Runner routing" `Panel` in the Reliability section (`section="reliability"`):
+  - per-job row: assignment, score vs threshold, reason, **decision shown as
+    text/icon (never color alone)**, and a `.source-tag`/`.source-override` pill
+    distinguishing auto vs override (and, for overridden rows, what auto *would* be).
+  - the **`shedThreshold` control**: a labeled native input (`<label htmlFor>` +
+    `aria-valuetext` with the unit), with its ends labeled **Reliability ↔ Cost**
+    so direction is obvious under stress.
+  - **three-state override per job** — force-spot / force-on-demand / **clear-to-auto**
+    (two `aria-pressed` buttons + a clear, or a radiogroup; a 2-state toggle can't
+    express "auto").
+  - **enable/kill switch** — `aria-pressed` + an `aria-label` encoding the effect.
+  - **push-status line** via `role="status"` (live), with a non-color-only
+    **failed** state, and a **shed-count** with a warning when high (on-demand
+    contends with the merge queue).
+  - All new interactive controls added to the shared `:focus-visible` rule; the
+    job list wrapped in a labeled `role="group"`. Fetch lifecycle: the panel is
+    permanently mounted (CSS `display:none`), so fetch on section-active + re-fetch
+    after a save so scores aren't stale.
 
 ## Safety / rollout (production CI)
 
@@ -148,6 +195,37 @@ Guards:
 - Single `targetRepo` (no org-level / multi-repo).
 - No auto-tuning of the knob — one manual knob + per-job overrides.
 - No on-demand-capacity throttle in v1 (note it; add only if shedding overloads).
+
+## Spec review (8 standard personas, 2026-06-15)
+
+Reviewed by the 8 standard personas. Child-psych & COPPA correctly returned
+**N/A** (no child-facing surface). All **Critical** and key **Important** findings
+are folded into the sections above; the recurring high-signal ones were:
+
+- **Config trust tiers** (Architecture/Security/QA/Frontend): `runnerRouting`
+  writable subset via a dedicated `PUT /api/runner-routing`; `targetRepo`/`reclaimWindow`
+  file-only; validated. *(folded into Dashboard › Config)*
+- **No shell, no injection** (Architecture/Security): `execFile`, env hygiene.
+  *(folded into Writer)*
+- **reclaimRate units + null + no per-cycle scan** (Architecture/Perf/QA): `/100`,
+  null→0, read from cached metrics. *(folded into Cost model › Inputs)*
+- **p90 reuse + cold-start "collecting"** (Architecture/Perf/QA). *(Inputs / UI)*
+- **Canonical hash + debounce + startup reconcile + serialized writes**
+  (QA/Security/Perf). *(Writer)*
+- **Plan vs. live-map state machine** (`lastError`/`lastVerified`) + kill-switch
+  confirmation (Frontend/UX/Security). *(API / Writer / UI)*
+- **Three-state override** (Frontend/UX/A11y). *(UI)*
+- **Job-key drift guard** (Architecture/Security/QA). *(ci.yml change)*
+- **Full a11y bar** — labeled knob, `aria-pressed` overrides, `role="status"`
+  push line, shared focus ring, no color-only, group label (A11y/Frontend). *(UI)*
+- **Knob direction (Reliability↔Cost) + shed-count warning** (UX). *(UI)*
+
+**Deferred (Minor — tracked, not v1):** fine-grained PAT scoped to Actions-variables
+as future hardening (vs. the `repo`-scope keyring token); Storybook stories +
+`data-testid` conventions for the panel; a plan-change history log ("what did it do
+while I wasn't watching"); the on-demand shed-count *cap* (v1 surfaces the count +
+warning only — file a tracking issue); dangling-override cleanup when a job key
+disappears. None block implementation.
 
 ## Out-of-band step for go-live
 
