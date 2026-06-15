@@ -366,6 +366,16 @@ section h2 { font-size: 14px; margin: 18px 0 8px; color: var(--muted); }
 /* --- Metrics tab (Round 12, readability overhaul) --- */
 .metrics-controls { display: flex; gap: 6px; align-items: center; margin-bottom: 14px;
   flex-wrap: wrap; }
+/* Metrics sub-tabs (page cleanup): section navigation within the Metrics tab */
+.metrics-subtabs { display: flex; gap: 4px; flex-wrap: wrap; margin-bottom: 16px;
+  border-bottom: 1px solid var(--border); }
+.metrics-subtab { background: none; border: none; border-bottom: 2px solid transparent;
+  color: var(--muted); font: inherit; font-size: 13px; font-weight: 600; cursor: pointer;
+  padding: 6px 12px; margin-bottom: -1px; }
+.metrics-subtab:hover { color: var(--text); }
+.metrics-subtab.active { color: var(--text); border-bottom-color: var(--accent); }
+/* Panels in a non-active sub-tab: hidden from view + screen readers, kept in the DOM */
+.metric-panel--inactive { display: none; }
 .metrics-group { display: flex; gap: 4px; }
 .metrics-sep { width: 1px; height: 20px; background: var(--border); margin: 0 4px; }
 .metrics-window-btn {

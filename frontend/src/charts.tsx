@@ -179,7 +179,7 @@ function tooltipTargets(buckets: string[], geom: Geom, kind: BucketKind,
  * the zero baseline. `populated` overrides the sparse-data count for series
  * that were zero-filled onto the full window axis (real sample count).
  */
-export function AreaSeries({ points, kind, height = 140, color = 'var(--accent)',
+export function AreaSeries({ points, kind, height = 150, color = 'var(--accent)',
   format = fmt, label, populated, markers }: {
   points: ChartPoint[]; kind: BucketKind; height?: number; color?: string;
   format?: (v: number) => string;
@@ -222,7 +222,7 @@ export function AreaSeries({ points, kind, height = 140, color = 'var(--accent)'
  * visual language as the Gantt expected-duration band). `compact` renders a
  * small fixed-size variant for table cells (no axes, no caption).
  */
-export function BandSeries({ points, kind, height = 140, color = 'var(--accent)',
+export function BandSeries({ points, kind, height = 150, color = 'var(--accent)',
   format = fmt, label, compact = false }: {
   points: BandPoint[]; kind: BucketKind; height?: number; color?: string;
   format?: (v: number) => string; label?: string; compact?: boolean;
@@ -293,7 +293,7 @@ export function BandSeries({ points, kind, height = 140, color = 'var(--accent)'
  * calibrated") and renders emphasized (solid, full-strength stroke, marked
  * `data-zero-gridline`); the extremes get the usual dashed treatment.
  */
-export function SignedLine({ points, kind, height = 140, color = 'var(--accent)',
+export function SignedLine({ points, kind, height = 150, color = 'var(--accent)',
   format = fmt, label }: {
   points: ChartPoint[]; kind: BucketKind; height?: number; color?: string;
   format?: (v: number) => string; label?: string;
@@ -393,7 +393,7 @@ export function ScatterPlot({ points, format = fmt, label, height = 200 }: {
  * Several aligned series on one shared scale, with a color-chip legend —
  * the Trends panel's open/ci/queue/failed multi-line chart.
  */
-export function MultiLine({ series, kind, height = 160, format = fmt, label, markers }: {
+export function MultiLine({ series, kind, height = 150, format = fmt, label, markers }: {
   series: LineSeries[]; kind: BucketKind; height?: number;
   format?: (v: number) => string; label?: string;
   /** Vertical event markers (e.g. config changes), at their bucket's x. */

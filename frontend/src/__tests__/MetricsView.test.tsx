@@ -1235,3 +1235,47 @@ describe('MetricsView — cost actuals + attribution coverage (phase 2)', () => 
     expect(within(panel).getByTestId('cost-actuals-fleet')).toBeInTheDocument();
   });
 });
+
+describe('MetricsView sub-tabs (page cleanup)', () => {
+  beforeEach(() => { try { localStorage.removeItem('prdash.metrics.section'); } catch { /* ignore */ } });
+
+  it('renders the 5 section sub-tabs and defaults to Throughput', async () => {
+    mockFetchOk();
+    render(<MetricsView now={NOW} />);
+    await screen.findByTestId('metrics-subtab-throughput');
+    for (const id of ['tuning', 'throughput', 'performance', 'reliability', 'cost']) {
+      expect(screen.getByTestId(`metrics-subtab-${id}`)).toBeInTheDocument();
+    }
+    expect(screen.getByTestId('metrics-subtab-throughput')).toHaveAttribute('aria-selected', 'true');
+  });
+
+  it('switching sub-tabs moves the active marker and persists to localStorage', async () => {
+    mockFetchOk();
+    render(<MetricsView now={NOW} />);
+    await screen.findByTestId('metrics-subtab-reliability');
+    fireEvent.click(screen.getByTestId('metrics-subtab-reliability'));
+    expect(screen.getByTestId('metrics-subtab-reliability')).toHaveAttribute('aria-selected', 'true');
+    expect(screen.getByTestId('metrics-subtab-throughput')).toHaveAttribute('aria-selected', 'false');
+    expect(localStorage.getItem('prdash.metrics.section')).toBe('reliability');
+  });
+
+  it('assigns each panel to a section, and only the active section is shown', async () => {
+    mockFetchOk();
+    render(<MetricsView now={NOW} />);
+    await screen.findByTestId('metrics-subtab-cost');
+    // CI cost lives in the Cost section
+    expect(document.getElementById('metrics-ci-cost')).toHaveAttribute('data-section', 'cost');
+    // default Throughput active → Cost section inactive (hidden by class)
+    expect(document.getElementById('metrics-ci-cost')!.className).toContain('metric-panel--inactive');
+    fireEvent.click(screen.getByTestId('metrics-subtab-cost'));
+    expect(document.getElementById('metrics-ci-cost')!.className).not.toContain('metric-panel--inactive');
+  });
+
+  it('restores the persisted section on mount', async () => {
+    localStorage.setItem('prdash.metrics.section', 'reliability');
+    mockFetchOk();
+    render(<MetricsView now={NOW} />);
+    await screen.findByTestId('metrics-subtab-reliability');
+    expect(screen.getByTestId('metrics-subtab-reliability')).toHaveAttribute('aria-selected', 'true');
+  });
+});

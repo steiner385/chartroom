@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type ReactNode } from 'react';
+import { createContext, useContext, useEffect, useRef, useState, type ReactNode } from 'react';
 import { scrollBehavior } from './motion';
 import type { HeadlineStat, MetricsBucket, MetricsPayload, MetricsWindow } from './types';
 import { LEAD_TIME_SEGMENTS } from './leadtime';
@@ -84,11 +84,31 @@ function calibrationHeadline(medianErrorPct: number, n: number): string {
   return `p50 ETAs run ${pct}% ${medianErrorPct > 0 ? 'optimistic' : 'pessimistic'} (n=${n})`;
 }
 
-function Panel({ id, title, empty, emptyText = 'no data yet', children }: {
-  id?: string; title: string; empty: boolean; emptyText?: string; children: ReactNode;
+// ---- Metrics sub-tabs (page cleanup): group the 20+ panels into 5 sections,
+// each rendered on its own sub-tab so the page isn't one endless scroll.
+type MetricsSection = 'tuning' | 'throughput' | 'performance' | 'reliability' | 'cost';
+const METRICS_SECTIONS: { id: MetricsSection; label: string }[] = [
+  { id: 'tuning', label: 'Tuning' },
+  { id: 'throughput', label: 'Throughput & queue' },
+  { id: 'performance', label: 'Performance' },
+  { id: 'reliability', label: 'Reliability' },
+  { id: 'cost', label: 'Cost' },
+];
+const SECTION_STORAGE_KEY = 'prdash.metrics.section';
+const ActiveSectionContext = createContext<MetricsSection>('throughput');
+
+function Panel({ id, title, empty, emptyText = 'no data yet', section, children }: {
+  id?: string; title: string; empty: boolean; emptyText?: string;
+  /** Which metrics sub-tab this panel belongs to; hidden unless that tab is active. */
+  section: MetricsSection; children: ReactNode;
 }) {
+  const active = useContext(ActiveSectionContext);
+  // Hide inactive sections with a CSS class (display:none) rather than the
+  // `hidden` attribute — display:none hides from screen readers too (correct for
+  // an inactive tab), and it keeps the panels in the DOM for one-payload data.
   return (
-    <section className="metric-panel" id={id}>
+    <section className={`metric-panel${section === active ? '' : ' metric-panel--inactive'}`}
+      id={id} data-section={section}>
       <h2 tabIndex={id ? -1 : undefined}>{title}</h2>
       {empty ? <p className="metric-empty">{emptyText}</p> : children}
     </section>
@@ -196,6 +216,17 @@ export function MetricsView({ now, focusCostNonce }: {
 } = {}) {
   const [window, setWindow] = useState<MetricsWindow>('3d');
   const [bucketPref, setBucketPref] = useState<MetricsBucket>('hour');
+  const [section, setSection] = useState<MetricsSection>(() => {
+    try {
+      const s = localStorage.getItem(SECTION_STORAGE_KEY);
+      if (s && METRICS_SECTIONS.some((x) => x.id === s)) return s as MetricsSection;
+    } catch { /* private mode */ }
+    return 'throughput';
+  });
+  const selectSection = (s: MetricsSection) => {
+    setSection(s);
+    try { localStorage.setItem(SECTION_STORAGE_KEY, s); } catch { /* ignore */ }
+  };
   const [payload, setPayload] = useState<MetricsPayload | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [refreshTick, setRefreshTick] = useState(0);
@@ -360,7 +391,20 @@ export function MetricsView({ now, focusCostNonce }: {
     <div className="metrics">
       {controls}
 
-      <Panel title="Tuning actions" empty={recommendations.length === 0}
+      <nav className="metrics-subtabs" role="tablist" aria-label="Metrics sections">
+        {METRICS_SECTIONS.map((s) => (
+          <button key={s.id} type="button" role="tab" aria-selected={section === s.id}
+            className={section === s.id ? 'metrics-subtab active' : 'metrics-subtab'}
+            data-testid={`metrics-subtab-${s.id}`}
+            onClick={() => selectSection(s.id)}>
+            {s.label}
+          </button>
+        ))}
+      </nav>
+
+      <ActiveSectionContext.Provider value={section}>
+
+      <Panel title="Tuning actions" section="tuning" empty={recommendations.length === 0}
         emptyText="nothing to tune — every advisor is satisfied">
         <p className="metric-note">
           everything the dashboard recommends, ranked. Derived from the panels below;
@@ -381,7 +425,7 @@ export function MetricsView({ now, focusCostNonce }: {
         </ul>
       </Panel>
 
-      <Panel title="Recent config changes" empty={configChanges.length === 0}
+      <Panel title="Recent config changes" section="tuning" empty={configChanges.length === 0}
         emptyText="no tuning-knob changes in this window">
         <p className="metric-note">
           auto-detected changes to batch size, requiredCheckPrefixes, and workflow path —
@@ -404,7 +448,7 @@ export function MetricsView({ now, focusCostNonce }: {
         </ul>
       </Panel>
 
-      <Panel title="Duration regressions" empty={regressionRepos.length === 0}
+      <Panel title="Duration regressions" section="performance" empty={regressionRepos.length === 0}
         emptyText="none active">
         {regressionRepos.map((r) => (
           <div key={r.repo} className="metric-repo">
@@ -432,11 +476,11 @@ export function MetricsView({ now, focusCostNonce }: {
         ))}
       </Panel>
 
-      <Panel title="Lead time" empty={leadTimeRepos.length === 0}>
+      <Panel title="Lead time" section="throughput" empty={leadTimeRepos.length === 0}>
         {leadTimeRepos.map((lt) => <LeadTimeRepo key={lt.repo} lt={lt} />)}
       </Panel>
 
-      <Panel title="Trends" empty={trendRepos.length === 0}>
+      <Panel title="Trends" section="throughput" empty={trendRepos.length === 0}>
         {trendRepos.map((t) => {
           const latest = t.points[t.points.length - 1]!;
           const series: LineSeries[] = TREND_SERIES.map((s) => ({
@@ -461,7 +505,7 @@ export function MetricsView({ now, focusCostNonce }: {
         })}
       </Panel>
 
-      <Panel title="Runner-wait health" empty={runnerByRepo.size === 0}>
+      <Panel title="Runner-wait health" section="performance" empty={runnerByRepo.size === 0}>
         {[...runnerByRepo.entries()].map(([repo, tiers]) => (
           <div key={repo} className="metric-repo">
             <h3>{repo}</h3>
@@ -484,7 +528,7 @@ export function MetricsView({ now, focusCostNonce }: {
         ))}
       </Panel>
 
-      <Panel title="Runner pools" empty={poolsByRepo.size === 0}
+      <Panel title="Runner pools" section="performance" empty={poolsByRepo.size === 0}
         emptyText="no pool-labeled waits yet — samples label from new runs onward">
         {[...poolsByRepo.entries()].map(([repo, pools]) => (
           <div key={repo} className="metric-repo">
@@ -525,7 +569,7 @@ export function MetricsView({ now, focusCostNonce }: {
         ))}
       </Panel>
 
-      <Panel title="Concurrency demand" empty={concByRepo.size === 0}
+      <Panel title="Concurrency demand" section="performance" empty={concByRepo.size === 0}
         emptyText="no job intervals in window yet">
         {[...concByRepo.entries()].map(([repo, pools]) => (
           <div key={repo} className="metric-repo">
@@ -552,7 +596,7 @@ export function MetricsView({ now, focusCostNonce }: {
         ))}
       </Panel>
 
-      <Panel id="metrics-ci-cost" title="CI cost"
+      <Panel id="metrics-ci-cost" title="CI cost" section="cost"
         empty={costRepos.length === 0 && costActualScopes.length === 0}
         emptyText="no runner-minutes in window yet">
         {/* Cost empirical auto-rate (issue #100): when enabled and derivable,
@@ -795,7 +839,7 @@ export function MetricsView({ now, focusCostNonce }: {
         })}
       </Panel>
 
-      <Panel title="Queue throughput" empty={queueRepos.length === 0}>
+      <Panel title="Queue throughput" section="throughput" empty={queueRepos.length === 0}>
         {queueRepos.map((q) => (
           <div key={q.repo} className="metric-repo">
             <h3>{q.repo}</h3>
@@ -830,7 +874,7 @@ export function MetricsView({ now, focusCostNonce }: {
         ))}
       </Panel>
 
-      <Panel title="Queue efficiency" empty={(payload.queueEfficiency ?? []).length === 0}
+      <Panel title="Queue efficiency" section="throughput" empty={(payload.queueEfficiency ?? []).length === 0}
         emptyText="no merge_group runs or merges in window yet">
         {(payload.queueEfficiency ?? []).map((q) => {
           const rc = q.runConclusion;
@@ -866,7 +910,7 @@ export function MetricsView({ now, focusCostNonce }: {
         })}
       </Panel>
 
-      <Panel title="Batch-size advisor" empty={(payload.batchAdvisor ?? []).length === 0}
+      <Panel title="Batch-size advisor" section="throughput" empty={(payload.batchAdvisor ?? []).length === 0}
         emptyText="not enough observed merge_group trains to model yet">
         <p className="metric-note">
           queueing-theory replay over observed arrival rate, train duration, and eject
@@ -915,7 +959,7 @@ export function MetricsView({ now, focusCostNonce }: {
         ))}
       </Panel>
 
-      <Panel title="Slowest / most-variable jobs" empty={jobRepos.length === 0}>
+      <Panel title="Slowest / most-variable jobs" section="performance" empty={jobRepos.length === 0}>
         {jobRepos.map((r) => (
           <div key={r.repo} className="metric-repo">
             <h3>{r.repo}</h3>
@@ -953,7 +997,7 @@ export function MetricsView({ now, focusCostNonce }: {
         ))}
       </Panel>
 
-      <Panel title="Flakiest jobs" empty={flakeRepos.length === 0}>
+      <Panel title="Flakiest jobs" section="reliability" empty={flakeRepos.length === 0}>
         {flakeRepos.map((f) => (
           <div key={f.repo} className="metric-repo">
             <h3>{f.repo}</h3>
@@ -995,7 +1039,7 @@ export function MetricsView({ now, focusCostNonce }: {
         ))}
       </Panel>
 
-      <Panel title="Spot reclaims" empty={reclaimRepos.length === 0}
+      <Panel title="Spot reclaims" section="reliability" empty={reclaimRepos.length === 0}
         emptyText="no reclaim events in window">
         {reclaimRepos.map((r) => (
           <div key={r.repo} className="metric-repo">
@@ -1030,7 +1074,7 @@ export function MetricsView({ now, focusCostNonce }: {
         ))}
       </Panel>
 
-      <Panel title="Train killers" empty={killerRepos.length === 0}>
+      <Panel title="Train killers" section="reliability" empty={killerRepos.length === 0}>
         {killerRepos.map((t) => (
           <div key={t.repo} className="metric-repo">
             <h3>{t.repo}</h3>
@@ -1068,7 +1112,7 @@ export function MetricsView({ now, focusCostNonce }: {
         ))}
       </Panel>
 
-      <Panel title="Critical path" empty={cpByRepo.size === 0}>
+      <Panel title="Critical path" section="performance" empty={cpByRepo.size === 0}>
         {[...cpByRepo.entries()].map(([repo, entries]) => (
           <div key={repo} className="metric-repo">
             <h3>{repo}</h3>
@@ -1111,7 +1155,7 @@ export function MetricsView({ now, focusCostNonce }: {
         ))}
       </Panel>
 
-      <Panel title="CI needs graph" empty={(payload.needsGraph ?? []).length === 0}
+      <Panel title="CI needs graph" section="performance" empty={(payload.needsGraph ?? []).length === 0}
         emptyText="no derived needs-graph with observed durations yet">
         <p className="needs-graph-legend">
           nodes are jobs (run p50 + runner wait); edges are <code>needs:</code> dependencies;
@@ -1135,7 +1179,7 @@ export function MetricsView({ now, focusCostNonce }: {
         ))}
       </Panel>
 
-      <Panel title="Workflow lint" empty={lintRepos.length === 0} emptyText="no findings">
+      <Panel title="Workflow lint" section="reliability" empty={lintRepos.length === 0} emptyText="no findings">
         {lintRepos.map((l) => (
           <div key={l.repo} className="metric-repo">
             <h3>{l.repo}</h3>
@@ -1170,7 +1214,7 @@ export function MetricsView({ now, focusCostNonce }: {
         ))}
       </Panel>
 
-      <Panel title="Merge velocity + deploy lag" empty={velocityRepos.length === 0}>
+      <Panel title="Merge velocity + deploy lag" section="throughput" empty={velocityRepos.length === 0}>
         {velocityRepos.map((v) => (
           <div key={v.repo} className="metric-repo">
             <h3>{v.repo}</h3>
@@ -1202,7 +1246,7 @@ export function MetricsView({ now, focusCostNonce }: {
         ))}
       </Panel>
 
-      <Panel title="ETA calibration" empty={calByRepo.size === 0}>
+      <Panel title="ETA calibration" section="performance" empty={calByRepo.size === 0}>
         {[...calByRepo.entries()].map(([repo, stages]) => (
           <div key={repo} className="metric-repo">
             <h3>{repo}</h3>
@@ -1227,6 +1271,8 @@ export function MetricsView({ now, focusCostNonce }: {
           </div>
         ))}
       </Panel>
+
+      </ActiveSectionContext.Provider>
     </div>
   );
 }
