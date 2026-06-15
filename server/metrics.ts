@@ -75,6 +75,11 @@ export interface MetricsPayload {
   /** Recommendations digest (tuning tool): the panels' tuning advice, collected
    *  and ranked by priority. Derived — no new measurement. */
   recommendations: Recommendation[];
+  /** Config-change annotations (tuning tool): auto-detected tuning-knob changes
+   *  in-window, overlaid as markers on the charts so a change's effect is
+   *  visible. `at` is ISO; the client buckets it like every other timestamp. */
+  configChanges: { repo: string; at: string; field: string;
+    oldValue: string | null; newValue: string | null }[];
   slowestJobs: { repo: string; jobs: { name: string; event: string; p50: number; p90: number;
     variability: number; n: number;
     trend: { bucket: string; p50: number; p90: number; n: number }[] }[] }[]; // top 10 by p50, variability = p90/p50
@@ -1290,8 +1295,12 @@ export function computeMetrics(history: HistoryStore, window: MetricsWindow,
   // already computed into one ranked list.
   const recommendations = deriveRecommendations({ batchAdvisor, queueEfficiency, lint });
 
+  // Config-change annotations (tuning tool): the in-window tuning-knob changes,
+  // exclude-filtered. The client overlays them as chart markers.
+  const configChanges = keep(history.configChangesSince(since));
+
   return { window, bucket, runnerWaits, queue, queueEfficiency, batchAdvisor, recommendations,
-    slowestJobs, velocity, leadTime,
+    configChanges, slowestJobs, velocity, leadTime,
     trends, calibration, flakiness, trainKillers, criticalPath, needsGraph, lint, regressions,
     runnerPools, reclaims, concurrency, cost, costJobs, costRuns, costActuals,
     costAutoRate: blended != null

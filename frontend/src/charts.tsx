@@ -73,6 +73,32 @@ function makeGeom(count: number, yMax: number, height: number): Geom {
   };
 }
 
+/** A vertical event marker on a chart (config-change annotations, tuning tool). */
+export interface ChartMarker { bucket: string; label: string }
+
+/** Render vertical event markers at the x of each marker's bucket (index-based,
+ *  so the bucket key must be one of the series' buckets). A triangle pip at top
+ *  + a native `<title>` for the change detail on hover. */
+function markerShapes(markers: ChartMarker[] | undefined, buckets: string[], geom: Geom) {
+  if (!markers?.length) return null;
+  return (
+    <g className="chart-markers">
+      {markers.map((m, i) => {
+        const idx = buckets.indexOf(m.bucket);
+        if (idx < 0) return null;
+        const x = geom.x(idx);
+        return (
+          <g key={`mk${i}`} className="chart-marker">
+            <line x1={x} y1={PAD_T} x2={x} y2={geom.y(0)} />
+            <polygon points={`${x - 4},${PAD_T} ${x + 4},${PAD_T} ${x},${PAD_T + 6}`} />
+            <title>{m.label}</title>
+          </g>
+        );
+      })}
+    </g>
+  );
+}
+
 /** Sparse-data guard placeholder ("collecting data — n samples so far"). */
 function Placeholder({ n, compact }: { n: number; compact?: boolean }) {
   return (
@@ -154,13 +180,15 @@ function tooltipTargets(buckets: string[], geom: Geom, kind: BucketKind,
  * that were zero-filled onto the full window axis (real sample count).
  */
 export function AreaSeries({ points, kind, height = 140, color = 'var(--accent)',
-  format = fmt, label, populated }: {
+  format = fmt, label, populated, markers }: {
   points: ChartPoint[]; kind: BucketKind; height?: number; color?: string;
   format?: (v: number) => string;
   /** Accessible name for the chart (aria-label). */
   label?: string;
   /** Real sample count behind the series (sparse-data guard override). */
   populated?: number;
+  /** Vertical event markers (e.g. config changes), at their bucket's x. */
+  markers?: ChartMarker[];
 }) {
   const values = points.map((p) => p.value);
   const present = values.filter((v): v is number => v != null);
@@ -181,6 +209,7 @@ export function AreaSeries({ points, kind, height = 140, color = 'var(--accent)'
         return <polygon key={`a${si}`} points={`${top} ${closing}`} fill={color} fillOpacity={0.14} />;
       })}
       {lineShapes(values, geom, color, 's')}
+      {markerShapes(markers, points.map((p) => p.bucket), geom)}
       {tooltipTargets(points.map((p) => p.bucket), geom, kind, (i) =>
         points[i]!.value == null ? null
           : `${formatBucketTooltip(points[i]!.bucket, kind)}: ${format(points[i]!.value!)}`)}
@@ -364,9 +393,11 @@ export function ScatterPlot({ points, format = fmt, label, height = 200 }: {
  * Several aligned series on one shared scale, with a color-chip legend —
  * the Trends panel's open/ci/queue/failed multi-line chart.
  */
-export function MultiLine({ series, kind, height = 160, format = fmt, label }: {
+export function MultiLine({ series, kind, height = 160, format = fmt, label, markers }: {
   series: LineSeries[]; kind: BucketKind; height?: number;
   format?: (v: number) => string; label?: string;
+  /** Vertical event markers (e.g. config changes), at their bucket's x. */
+  markers?: ChartMarker[];
 }) {
   const count = Math.max(...series.map((s) => s.points.length), 0);
   const buckets = (series[0]?.points ?? []).map((p) => p.bucket);
@@ -385,6 +416,7 @@ export function MultiLine({ series, kind, height = 160, format = fmt, label }: {
         <GridAndAxes geom={geom} yMax={yMax} format={format}
           ticks={axisTicks(buckets, kind)} count={count} />
         {series.map((s, si) => lineShapes(s.points.map((p) => p.value), geom, s.color, `s${si}`))}
+        {markerShapes(markers, buckets, geom)}
         {tooltipTargets(buckets, geom, kind, (i) => {
           const parts = series.flatMap((s) =>
             s.points[i]?.value == null ? [] : [`${s.name} ${format(s.points[i]!.value!)}`]);

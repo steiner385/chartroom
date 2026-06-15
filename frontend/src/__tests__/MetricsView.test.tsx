@@ -245,7 +245,7 @@ beforeEach(() => {
   vi.unstubAllGlobals();
 });
 
-const PANELS = ['Tuning actions', 'Lead time', 'Trends', 'Runner-wait health', 'Queue throughput',
+const PANELS = ['Tuning actions', 'Recent config changes', 'Lead time', 'Trends', 'Runner-wait health', 'Queue throughput',
   'Queue efficiency', 'Batch-size advisor', 'CI needs graph',
   'Slowest / most-variable jobs', 'Merge velocity + deploy lag', 'ETA calibration'];
 
@@ -438,6 +438,18 @@ describe('MetricsView', () => {
     expect(items[0]!.className).toContain('rec-high');
     expect(items[2]!.className).toContain('rec-low');
     expect(within(list).getByTestId('rec-batch-size').textContent).toContain('raise merge-queue batch 6 → 12');
+  });
+
+  it('config-change panel lists changes and overlays a marker on the queue charts', async () => {
+    mockFetchOk({ ...PAYLOAD, configChanges: [
+      { repo: 'acme/widgets', at: '2026-06-11T09:30:00Z', field: 'batchSize',
+        oldValue: '6', newValue: '12' }] });
+    render(<MetricsView now={NOW} />);
+    const list = await screen.findByTestId('config-changes');
+    expect(within(list).getByTestId('cfg-change-batchSize').textContent).toContain('batchSize');
+    expect(within(list).getByText('12')).toBeInTheDocument();
+    // an amber marker is overlaid on the queue chart at the change's bucket (H9)
+    await waitFor(() => expect(document.querySelector('.chart-marker line')).toBeInTheDocument());
   });
 
   it('batch-size advisor renders the curve and marks the recommended + current batch', async () => {
