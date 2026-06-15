@@ -577,7 +577,8 @@ export class Poller extends EventEmitter {
   private stageTracker = new Map<string, StageTrack>();   // PR key → current stage + first ETA
   private repoFileConfigs = new Map<string, RepoFileConfig>(); // repo → parsed .pr-dashboard.yml
   private repoConfigThrottle = new RetryThrottle(PREFIX_DERIVE_INTERVAL_MS); // 24h on success, backoff on failure
-  private repoConfigSig = new Map<string, string>();           // repo → loaded-config signature (log-on-change)
+  private repoConfigSig = new Map<string, string>();           // repo → loaded-config signa
+  private lastConfigSnapshot = new Map<string, string>();      // `repo\0field` → value (change detection)ture (log-on-change)
   private discoveredWorkflowPath = new Map<string, string>();  // repo → auto-discovered rollup workflow path (file-rename tolerance)
   private derivedPrefixes = new Map<string, string[]>();  // repo → ci.yml-derived prefixes
   private derivedGraph = new Map<string, Map<string, CiGraphNode>>(); // repo → node prefix → { needs, activity }
@@ -650,6 +651,10 @@ export class Poller extends EventEmitter {
       const raw = this.deps.history.getMeta('discoveredRepos');
       if (raw) for (const r of JSON.parse(raw) as string[]) this.discovered.add(r);
     } catch { /* corrupt meta — rediscovered by the next sweep */ }
+    // Seed the config-change baseline from the last recorded values so a restart
+    // with unchanged config doesn't re-emit every knob as a "change".
+    try { this.lastConfigSnapshot = this.deps.history.latestConfigValues(); }
+    catch { /* fresh DB — baseline set lazily on first cycle */ }
     const { history } = this.deps;
     for (const { key, value } of history.listMeta('repoConfig:')) {
       const repo = key.slice('repoConfig:'.length);
@@ -1323,7 +1328,43 @@ export class Poller extends EventEmitter {
     // Hourly scans (duration regressions #41, pool starvation #45) ride this
     // cycle with a shared hourly throttle — local SQLite only, no API budget.
     this.maybeRunHourlyScans();
+    // Config-change annotations (tuning tool): now that each repo's effective
+    // config is freshly loaded, diff the tuning knobs vs last cycle and record a
+    // change row when one moved. Runs before emitUpdate so the change is in the
+    // next frame.
+    this.detectConfigChanges(now);
     this.emitUpdate();
+  }
+
+  /** Tuning knobs whose changes we annotate on the charts. */
+  private configFingerprint(repo: string): Record<string, string> {
+    const s = this.settingsFor(repo);
+    return {
+      batchSize: String(s.batchSize),
+      requiredCheckPrefixes: [...(s.requiredCheckPrefixes ?? [])].sort().join(',') || '(none)',
+      workflowPath: s.workflowPath,
+    };
+  }
+
+  /** Edge-trigger: record a config_changes row whenever a knob moved since last
+   *  cycle. The baseline is seeded from history at startup (see restorePersisted)
+   *  so an unchanged config never re-emits after a restart; a field seen for the
+   *  first time only sets the baseline (the initial value is not a "change"). */
+  private detectConfigChanges(now: Date): void {
+    const at = now.toISOString();
+    for (const repo of this.watchedRepos()) {
+      if (this.deps.config.exclude.includes(repo)) continue;
+      const fp = this.configFingerprint(repo);
+      for (const [field, value] of Object.entries(fp)) {
+        const k = `${repo}::${field}`;
+        const prior = this.lastConfigSnapshot.get(k);
+        if (prior !== undefined && prior !== value) {
+          this.deps.history.recordConfigChange(repo, at, field, prior, value);
+          console.log(`[config-change] ${repo}: ${field} ${prior} -> ${value}`);
+        }
+        this.lastConfigSnapshot.set(k, value);
+      }
+    }
   }
 
   /**

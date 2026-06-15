@@ -148,6 +148,9 @@ export class HistoryStore {
   private readonly stmtSelectDurationsP99: Database.Statement;
   private readonly stmtSelectExpectedSet: Database.Statement;
   private readonly stmtSelectMergeGroupChecks: Database.Statement;
+  private readonly stmtInsertConfigChange: Database.Statement;
+  private readonly stmtSelectConfigChangesSince: Database.Statement;
+  private readonly stmtLatestConfigValues: Database.Statement;
   private readonly stmtUpsertPr: Database.Statement;
   private readonly stmtMarkQaLive: Database.Statement;
   private readonly stmtMarkProdLive: Database.Statement;
@@ -270,6 +273,16 @@ export class HistoryStore {
         UNIQUE(repo, group_sha, check_name)
       );
       CREATE INDEX IF NOT EXISTS idx_group_failures_observed ON group_failures(observed_at);
+      -- Config-change annotations (tuning tool): one edge-triggered row when a
+      -- repo's tuning knob (batch size, requiredCheckPrefixes, workflow path)
+      -- changes between polls — overlaid as markers on the metric charts so a
+      -- change's effect is visible. UNIQUE keeps re-detection idempotent.
+      CREATE TABLE IF NOT EXISTS config_changes (
+        repo TEXT NOT NULL, observed_at TEXT NOT NULL, field TEXT NOT NULL,
+        old_value TEXT, new_value TEXT,
+        UNIQUE(repo, observed_at, field)
+      );
+      CREATE INDEX IF NOT EXISTS idx_config_changes ON config_changes(observed_at);
       -- Cost actuals import (cost explorer phase 2): operator-pushed ACTUAL
       -- daily spend per scope ('fleet', or a single pool label) — deliberately
       -- provider-agnostic: anything that can curl POST /api/cost/actuals can
@@ -391,6 +404,20 @@ export class HistoryStore {
       `SELECT repo, check_name, conclusion, head_sha, run_number, completed_at
        FROM check_durations
        WHERE event='merge_group' AND completed_at >= ? ORDER BY completed_at`
+    );
+    this.stmtInsertConfigChange = this.db.prepare(
+      'INSERT OR IGNORE INTO config_changes (repo, observed_at, field, old_value, new_value) VALUES (?,?,?,?,?)'
+    );
+    this.stmtSelectConfigChangesSince = this.db.prepare(
+      `SELECT repo, observed_at AS at, field, old_value, new_value
+       FROM config_changes WHERE observed_at >= ? ORDER BY repo, observed_at`
+    );
+    // Latest new_value per (repo, field) — seeds the poller's in-memory baseline
+    // on restart so the first cycle doesn't re-emit unchanged config as a change.
+    this.stmtLatestConfigValues = this.db.prepare(
+      `SELECT repo, field, new_value FROM config_changes
+       WHERE observed_at = (SELECT MAX(observed_at) FROM config_changes c2
+         WHERE c2.repo = config_changes.repo AND c2.field = config_changes.field)`
     );
     this.stmtUpsertPr = this.db.prepare(
       `INSERT INTO merged_prs (repo, number, title, url, merged_at, merge_commit_sha, created_at,
@@ -926,6 +953,29 @@ export class HistoryStore {
       repo: r.repo as string, checkName: r.check_name as string,
       groupSha: r.group_sha as string, at: r.at as string,
     }));
+  }
+
+  /** Record a config-change annotation (tuning tool). Idempotent on
+   *  (repo, observed_at, field); returns false on the dedupe path. */
+  recordConfigChange(repo: string, observedAt: string, field: string,
+    oldValue: string | null, newValue: string | null): boolean {
+    return this.stmtInsertConfigChange.run(repo, observedAt, field, oldValue, newValue).changes > 0;
+  }
+
+  /** Config-change rows at/after `since`, ordered repo → observed_at. */
+  configChangesSince(since: string): { repo: string; at: string; field: string;
+    oldValue: string | null; newValue: string | null }[] {
+    const rows = this.stmtSelectConfigChangesSince.all(since) as Record<string, unknown>[];
+    return rows.map((r) => ({ repo: r.repo as string, at: r.at as string, field: r.field as string,
+      oldValue: (r.old_value as string | null) ?? null, newValue: (r.new_value as string | null) ?? null }));
+  }
+
+  /** Latest recorded value per (repo, field) — `${repo}::${field}` → value. */
+  latestConfigValues(): Map<string, string> {
+    const rows = this.stmtLatestConfigValues.all() as Record<string, unknown>[];
+    const m = new Map<string, string>();
+    for (const r of rows) m.set(`${r.repo as string}::${r.field as string}`, (r.new_value as string) ?? '');
+    return m;
   }
 
   /** Every completed merge_group check at/after `since` (queue-efficiency, #23).

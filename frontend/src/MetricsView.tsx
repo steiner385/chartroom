@@ -4,7 +4,7 @@ import type { HeadlineStat, MetricsBucket, MetricsPayload, MetricsWindow } from 
 import { LEAD_TIME_SEGMENTS } from './leadtime';
 import {
   AreaSeries, BandSeries, MultiLine, ScatterPlot, SignedLine,
-  type BandPoint, type ChartPoint, type LineSeries,
+  type BandPoint, type ChartPoint, type LineSeries, type ChartMarker,
 } from './charts';
 import { formatDur, formatSince } from './format';
 import { NeedsGraph } from './NeedsGraph';
@@ -345,6 +345,17 @@ export function MetricsView({ now, focusCostNonce }: {
   const dayAxis = windowBuckets(payload.window, 'day', (now ?? (() => new Date()))());
 
   const recommendations = payload.recommendations ?? [];
+  // Config-change annotations (tuning tool): bucket each change like every other
+  // timestamp and group by repo, so the charts can overlay markers and the
+  // digest below can list "what changed when".
+  const configChanges = payload.configChanges ?? [];
+  const changeMarkersByRepo = new Map<string, ChartMarker[]>();
+  for (const c of configChanges) {
+    const b = c.at.slice(0, payload.bucket === 'hour' ? 13 : 10);
+    const label = `${c.field}: ${c.oldValue ?? '∅'} → ${c.newValue ?? '∅'}`;
+    if (!changeMarkersByRepo.has(c.repo)) changeMarkersByRepo.set(c.repo, []);
+    changeMarkersByRepo.get(c.repo)!.push({ bucket: b, label });
+  }
   return (
     <div className="metrics">
       {controls}
@@ -364,6 +375,29 @@ export function MetricsView({ now, focusCostNonce }: {
                 <span className="rec-title">{r.title}</span>
                 <span className="rec-detail">{r.detail}</span>
                 <span className="rec-repo">{r.repo}</span>
+              </span>
+            </li>
+          ))}
+        </ul>
+      </Panel>
+
+      <Panel title="Recent config changes" empty={configChanges.length === 0}
+        emptyText="no tuning-knob changes in this window">
+        <p className="metric-note">
+          auto-detected changes to batch size, requiredCheckPrefixes, and workflow path —
+          also overlaid as <span className="cfg-marker-swatch">amber markers</span> on the queue
+          charts below, so you can see each change’s effect.
+        </p>
+        <ul className="cfg-change-list" data-testid="config-changes">
+          {[...configChanges].reverse().map((c, i) => (
+            <li key={`${c.repo}-${c.field}-${c.at}-${i}`} className="cfg-change"
+              data-testid={`cfg-change-${c.field}`}>
+              <span className="cfg-change-when">{new Date(c.at).toLocaleString()}</span>
+              <span className="cfg-change-body">
+                <span className="cfg-change-field">{c.field}</span>
+                {' '}<span className="cfg-change-from">{c.oldValue ?? '∅'}</span>
+                {' → '}<span className="cfg-change-to">{c.newValue ?? '∅'}</span>
+                <span className="rec-repo">{c.repo}</span>
               </span>
             </li>
           ))}
@@ -779,15 +813,18 @@ export function MetricsView({ now, focusCostNonce }: {
             <ChartBlock label={`merges per ${noun}`}>
               <AreaSeries points={alignCounts(axis, q.mergesPerBucket)} kind={kind}
                 format={fmtCount} populated={q.mergesPerBucket.length}
+                markers={changeMarkersByRepo.get(q.repo)}
                 label={`${q.repo} merges per ${noun}`} />
             </ChartBlock>
             <ChartBlock label={`time in queue (p50) per ${noun}`}>
               <AreaSeries points={align(axis, q.queueWaitBuckets, (b) => b.p50)} kind={kind}
-                format={formatDur} label={`${q.repo} time in queue p50 per ${noun}`} />
+                format={formatDur} markers={changeMarkersByRepo.get(q.repo)}
+                label={`${q.repo} time in queue p50 per ${noun}`} />
             </ChartBlock>
             <ChartBlock label={`merge-group run (p50) per ${noun}`}>
               <AreaSeries points={align(axis, q.groupRunBuckets, (b) => b.p50)} kind={kind}
-                format={formatDur} label={`${q.repo} merge-group run p50 per ${noun}`} />
+                format={formatDur} markers={changeMarkersByRepo.get(q.repo)}
+                label={`${q.repo} merge-group run p50 per ${noun}`} />
             </ChartBlock>
           </div>
         ))}

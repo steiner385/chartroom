@@ -294,7 +294,7 @@ describe('computeMetrics: empty history', () => {
   it('returns the full payload shape with empty sections', () => {
     expect(computeMetrics(h, '3d', 'hour', NOW)).toEqual({
       window: '3d', bucket: 'hour',
-      runnerWaits: [], queue: [], queueEfficiency: [], batchAdvisor: [], recommendations: [], slowestJobs: [], velocity: [],
+      runnerWaits: [], queue: [], queueEfficiency: [], batchAdvisor: [], recommendations: [], configChanges: [], slowestJobs: [], velocity: [],
       leadTime: [], trends: [],
       calibration: [], flakiness: [], trainKillers: [], criticalPath: [], needsGraph: [],
       lint: [],
@@ -1661,5 +1661,20 @@ describe('batch-size advisor (issue #52)', () => {
       mergedAt: '2026-06-10T11:00:00Z', mergeCommitSha: 'm1' });
     const m = computeMetrics(h, '3d', 'day', NOW);
     expect(m.batchAdvisor.find((b) => b.repo === REPO)).toBeUndefined();
+  });
+});
+
+describe('config changes section (tuning tool)', () => {
+  it('emits in-window config changes, exclude-filtered', () => {
+    h.recordConfigChange(REPO, '2026-06-10T10:00:00Z', 'batchSize', '6', '12');   // in the 3d window
+    h.recordConfigChange(REPO, '2026-05-01T10:00:00Z', 'batchSize', '4', '6');     // out of window
+    h.recordConfigChange('other/repo', '2026-06-10T11:00:00Z', 'batchSize', '2', '3');
+    const m = computeMetrics(h, '3d', 'day', NOW);
+    expect(m.configChanges).toHaveLength(2);                          // both in-window changes
+    expect(m.configChanges.find((c) => c.repo === REPO))
+      .toMatchObject({ field: 'batchSize', oldValue: '6', newValue: '12' });
+    // excluded repos are filtered out
+    expect(computeMetrics(h, '3d', 'day', NOW, [REPO]).configChanges.map((c) => c.repo))
+      .not.toContain(REPO);
   });
 });

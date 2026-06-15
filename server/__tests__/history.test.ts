@@ -1564,3 +1564,21 @@ describe('main_commits + mainLaneHealth', () => {
     expect(s.lastGreenAt).toBe('2026-06-10T10:00:00Z');
   });
 });
+
+describe('config changes (tuning tool)', () => {
+  it('records edge changes idempotently, reads them since, and seeds latest values', () => {
+    expect(h.recordConfigChange(REPO, '2026-06-10T10:00:00Z', 'batchSize', '6', '12')).toBe(true);
+    expect(h.recordConfigChange(REPO, '2026-06-10T10:00:00Z', 'batchSize', '6', '12')).toBe(false); // dedupe
+    h.recordConfigChange(REPO, '2026-06-11T09:00:00Z', 'workflowPath', 'a.yml', 'b.yml');
+
+    const since = h.configChangesSince('2026-06-10T00:00:00Z');
+    expect(since).toHaveLength(2);
+    expect(since[0]).toMatchObject({ repo: REPO, field: 'batchSize', oldValue: '6', newValue: '12' });
+    expect(h.configChangesSince('2026-06-11T00:00:00Z')).toHaveLength(1);   // window excludes the older
+
+    h.recordConfigChange(REPO, '2026-06-12T09:00:00Z', 'batchSize', '12', '8');  // a later change
+    const latest = h.latestConfigValues();
+    expect(latest.get(`${REPO}::batchSize`)).toBe('8');        // newest value per field
+    expect(latest.get(`${REPO}::workflowPath`)).toBe('b.yml');
+  });
+});

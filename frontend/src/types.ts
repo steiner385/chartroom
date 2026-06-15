@@ -346,6 +346,10 @@ export interface MetricsPayload {
    *  pre-upgrade payloads. */
   recommendations?: { repo: string; kind: string;
     priority: 'high' | 'medium' | 'low'; title: string; detail: string }[];
+  /** Config-change annotations (tuning tool) — auto-detected tuning-knob changes,
+   *  overlaid as chart markers. Optional for captured / pre-upgrade payloads. */
+  configChanges?: { repo: string; at: string; field: string;
+    oldValue: string | null; newValue: string | null }[];
   slowestJobs: { repo: string; jobs: { name: string; event: string; p50: number; p90: number;
     variability: number; n: number;
     trend: { bucket: string; p50: number; p90: number; n: number }[] }[] }[]; // top 10 by p50, variability = p90/p50

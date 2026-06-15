@@ -416,6 +416,10 @@ section h2 { font-size: 14px; margin: 18px 0 8px; color: var(--muted); }
 .metric-chart-block .metric-label { display: block; margin-bottom: 3px; }
 .chart-frame { width: 100%; }
 .chart-svg { width: 100%; height: auto; display: block; }
+/* Config-change markers (tuning tool): vertical event line + top pip */
+.chart-marker line { stroke: var(--amber); stroke-width: 1.5; stroke-dasharray: 3 3; }
+.chart-marker polygon { fill: var(--amber); }
+.chart-marker { cursor: help; }
 .chart-svg-compact { display: block; }
 .chart-placeholder { color: var(--muted); font-size: 12px; font-style: italic;
   padding: 8px 0 10px; }
@@ -459,6 +463,15 @@ section h2 { font-size: 14px; margin: 18px 0 8px; color: var(--muted); }
 .rec-title { font-weight: 600; color: var(--text); }
 .rec-detail { font-size: 12px; color: var(--muted); }
 .rec-repo { font-size: 11px; color: var(--muted); font-variant-numeric: tabular-nums; }
+
+/* Recent config changes (tuning tool): change-log list + chart-marker swatch */
+.cfg-change-list { list-style: none; margin: 6px 0 0; padding: 0; display: flex; flex-direction: column; gap: 4px; }
+.cfg-change { display: flex; gap: 10px; align-items: baseline; font-size: 12px; }
+.cfg-change-when { flex-shrink: 0; color: var(--muted); font-variant-numeric: tabular-nums; min-width: 11em; }
+.cfg-change-field { font-weight: 600; color: var(--text); }
+.cfg-change-from { color: var(--muted); }
+.cfg-change-to { color: var(--text); font-weight: 600; }
+.cfg-marker-swatch { color: var(--amber); font-weight: 600; }
 
 /* Batch-size advisor (#52): recommended row stands out, current row marked */
 .metric-table tr.batch-recommended td { background: color-mix(in srgb, var(--done) 14%, transparent);
