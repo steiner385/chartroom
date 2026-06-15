@@ -136,6 +136,10 @@ export const METRIC_DEFINITIONS = {
   costActualsCoverage: { label: 'attribution coverage',
     text: 'attributed ÷ actual — a confidence gauge on the breakdown, NOT a dollar amount. Computed over COMPARABLE days only: days since job-tracking began AND fully billed (today’s bill is still settling), so both sides cover the same span — comparing mismatched day-sets is what made attributed look like it beat actual. ~100% = priced jobs explain the bill well. BELOW = the gap is spend no single job owns (idle runner capacity, node boot/teardown, control-plane, unpriced pools; for fleet ~10% is non-compute EC2-Other/EKS/VPC). ABOVE 100% = the per-minute rate is over-pricing the fixed-capacity fleet (relay rate set too high, or the last day or two haven’t finished billing). The per-day column is noisy by nature — read the headline, not a single day' },
 
+  // ---- recommendations digest (tuning tool) ----
+  recommendationsPriority: { label: 'priority',
+    text: 'how much this is worth tuning. HIGH = a confidence/correctness signal (e.g. people bypassing the queue, mostly-advisory failures); MEDIUM = a throughput/efficiency win (batch size, a warn-level lint finding); LOW = a hygiene nudge (missing config, info-level lint). Ranked highest-first' },
+
   // ---- batch-size advisor (issue #52) ----
   batchAdvisorRecommend: { label: 'recommended batch',
     text: 'the throughput sweet spot from a queueing-theory replay over observed arrival rate, train duration, and eject probability: the batch with the most sustainable capacity before eject rework (1−q)^B erodes it. Batch size is a CAP, not a target — a low-traffic queue never fills a big batch, so a larger cap adds burst headroom at no latency cost until ejects make big trains waste re-runs. Static model, recomputed each load; the answer shifts as eject rate and train time drift' },

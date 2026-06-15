@@ -7,6 +7,7 @@ import { matchingPrefix, matchesRequiredPrefix } from './estimator/classify';
 import { computeCriticalPath, type CriticalPathNodeInput } from './estimator/critical-path';
 import { ejectProbability } from './estimator/queue';
 import { modelBatchSizes } from './estimator/batch-advisor';
+import { deriveRecommendations, type Recommendation } from './estimator/recommendations';
 import {
   lintTimeouts, lintFastGatingJobs, lintWaitDominated, sortFindings,
   type LintFinding, type TimeoutLintInput, type FastGatingInput, type WaitDominatedInput,
@@ -71,6 +72,9 @@ export interface MetricsPayload {
     currentBatch: number; recommendedBatch: number;
     curve: { batch: number; throughputPerHour: number;
       timeInQueueSecs: number | null; stable: boolean }[] }[];
+  /** Recommendations digest (tuning tool): the panels' tuning advice, collected
+   *  and ranked by priority. Derived — no new measurement. */
+  recommendations: Recommendation[];
   slowestJobs: { repo: string; jobs: { name: string; event: string; p50: number; p90: number;
     variability: number; n: number;
     trend: { bucket: string; p50: number; p90: number; n: number }[] }[] }[]; // top 10 by p50, variability = p90/p50
@@ -533,7 +537,8 @@ export function computeMetrics(history: HistoryStore, window: MetricsWindow,
   poolMeta: Record<string, PoolMetaEntry> | null = null,
   prNumberForSha: (repo: string, sha: string) => number | null = () => null,
   costAutoRate = false,
-  requiredPrefixesFor: (repo: string) => string[] = () => []): MetricsPayload {
+  requiredPrefixesFor: (repo: string) => string[] = () => [],
+  autoMergeActorFor: (repo: string) => string | null = () => null): MetricsPayload {
   const dropped = new Set(exclude);
   const keep = <T extends { repo: string }>(rows: T[]): T[] =>
     dropped.size ? rows.filter((r) => !dropped.has(r.repo)) : rows;
@@ -624,12 +629,16 @@ export function computeMetrics(history: HistoryStore, window: MetricsWindow,
     const repoMerges = mergedByRepo.get(repo) ?? [];
     const queueMerges = repoMerges.length;
     // Admin-bypass rate (issue #23): fraction of merges NOT done by the queue
-    // bot. A login ending in '[bot]' is automated (the merge queue / automerge
-    // app); anything else is a human/admin merge that bypassed the queue.
-    // Only merges with a known merger count — the metric ramps up as new merges
-    // are observed (old rows predate the merged_by column).
+    // bot. The automated merger is the configured per-repo autoMergeActor when
+    // set (some bot logins lack the '[bot]' suffix, e.g. `kindash-automerge`);
+    // otherwise fall back to the '…[bot]' heuristic. Anything else is a
+    // human/admin merge that bypassed the queue. Only merges with a known merger
+    // count — the metric ramps up as new merges are observed.
+    const actor = autoMergeActorFor(repo);
+    const isAutomated = (login: string): boolean =>
+      actor != null ? login === actor : login.endsWith('[bot]');
     const knownMerges = repoMerges.filter((m) => m.mergedBy != null);
-    const bypasses = knownMerges.filter((m) => !m.mergedBy!.endsWith('[bot]')).length;
+    const bypasses = knownMerges.filter((m) => !isAutomated(m.mergedBy!)).length;
     return {
       repo,
       mergeGroupRuns: runs.size,
@@ -1277,7 +1286,12 @@ export function computeMetrics(history: HistoryStore, window: MetricsWindow,
         recentCoverageDate: recent?.date ?? null };
     });
 
-  return { window, bucket, runnerWaits, queue, queueEfficiency, batchAdvisor, slowestJobs, velocity, leadTime,
+  // Recommendations digest (tuning tool): collect the advice the panels above
+  // already computed into one ranked list.
+  const recommendations = deriveRecommendations({ batchAdvisor, queueEfficiency, lint });
+
+  return { window, bucket, runnerWaits, queue, queueEfficiency, batchAdvisor, recommendations,
+    slowestJobs, velocity, leadTime,
     trends, calibration, flakiness, trainKillers, criticalPath, needsGraph, lint, regressions,
     runnerPools, reclaims, concurrency, cost, costJobs, costRuns, costActuals,
     costAutoRate: blended != null

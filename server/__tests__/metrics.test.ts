@@ -294,7 +294,7 @@ describe('computeMetrics: empty history', () => {
   it('returns the full payload shape with empty sections', () => {
     expect(computeMetrics(h, '3d', 'hour', NOW)).toEqual({
       window: '3d', bucket: 'hour',
-      runnerWaits: [], queue: [], queueEfficiency: [], batchAdvisor: [], slowestJobs: [], velocity: [],
+      runnerWaits: [], queue: [], queueEfficiency: [], batchAdvisor: [], recommendations: [], slowestJobs: [], velocity: [],
       leadTime: [], trends: [],
       calibration: [], flakiness: [], trainKillers: [], criticalPath: [], needsGraph: [],
       lint: [],
@@ -1618,6 +1618,22 @@ describe('queue efficiency (issue #23)', () => {
     expect(qe!.adminBypass.merges).toBe(4);   // …but only known-merger rows feed the bypass rate
     expect(qe!.adminBypass.bypasses).toBe(1); // alice
     expect(qe!.adminBypass.rate).toBeCloseTo(0.25, 6);
+  });
+
+  it('recognises a configured autoMergeActor whose login lacks the [bot] suffix', () => {
+    const mergeBy = (n: number, by: string) => h.upsertMergedPr({ repo: REPO, number: n,
+      title: `pr ${n}`, url: `u/${n}`, mergedAt: '2026-06-10T11:00:00Z',
+      mergeCommitSha: `m${n}`, mergedBy: by });
+    mergeBy(1, 'kindash-automerge'); mergeBy(2, 'kindash-automerge');  // the bot (no [bot] suffix)
+    mergeBy(3, 'steiner385');                                          // human admin merge — bypass
+    // autoMergeActorFor returns the configured actor for REPO.
+    const qe = computeMetrics(h, '7d', 'day', NOW, [], () => 1, new Map(), new Map(), [],
+      () => null, [], null, null, () => null, false, () => ['ci'],
+      (repo) => (repo === REPO ? 'kindash-automerge' : null)).queueEfficiency;
+    const ab = qe[0]!.adminBypass;
+    expect(ab.merges).toBe(3);
+    expect(ab.bypasses).toBe(1);                  // only steiner385, NOT the two bot merges
+    expect(ab.rate).toBeCloseTo(1 / 3, 6);
   });
 });
 

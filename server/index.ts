@@ -206,7 +206,8 @@ async function main() {
       (repo, name, event) => poller.resolvePool(repo, name, event), poller.poolHealth(),
       config.costPerMinute ?? null, config.poolMeta ?? null,
       (repo, sha) => poller.prNumberForSha(repo, sha), config.costAutoRate,
-      (repo) => poller.settingsFor(repo).requiredCheckPrefixes ?? []),
+      (repo) => poller.settingsFor(repo).requiredCheckPrefixes ?? [],
+      (repo) => config.autoMergeActors?.[repo] ?? null),
     repos: () => poller.repoToggleList(),
     // cost actuals import (cost explorer phase 2) — rows land in SQLite and
     // surface through the metrics costActuals section

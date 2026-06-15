@@ -342,6 +342,10 @@ export interface MetricsPayload {
     currentBatch: number; recommendedBatch: number;
     curve: { batch: number; throughputPerHour: number;
       timeInQueueSecs: number | null; stable: boolean }[] }[];
+  /** Recommendations digest (tuning tool). Optional to tolerate captured /
+   *  pre-upgrade payloads. */
+  recommendations?: { repo: string; kind: string;
+    priority: 'high' | 'medium' | 'low'; title: string; detail: string }[];
   slowestJobs: { repo: string; jobs: { name: string; event: string; p50: number; p90: number;
     variability: number; n: number;
     trend: { bucket: string; p50: number; p90: number; n: number }[] }[] }[]; // top 10 by p50, variability = p90/p50

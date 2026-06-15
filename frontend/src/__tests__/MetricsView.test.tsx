@@ -245,7 +245,7 @@ beforeEach(() => {
   vi.unstubAllGlobals();
 });
 
-const PANELS = ['Lead time', 'Trends', 'Runner-wait health', 'Queue throughput',
+const PANELS = ['Tuning actions', 'Lead time', 'Trends', 'Runner-wait health', 'Queue throughput',
   'Queue efficiency', 'Batch-size advisor', 'CI needs graph',
   'Slowest / most-variable jobs', 'Merge velocity + deploy lag', 'ETA calibration'];
 
@@ -420,6 +420,24 @@ describe('MetricsView', () => {
     const block = await screen.findByTestId('queue-eff-acme/widgets');
     expect(within(block).getByText('set requiredCheckPrefixes')).toBeInTheDocument();
     expect(within(block).getByText(/required-gate split can.t be computed/)).toBeInTheDocument();
+  });
+
+  it('tuning-actions digest renders ranked recommendations with priority badges', async () => {
+    mockFetchOk({ ...PAYLOAD, recommendations: [
+      { repo: 'acme/widgets', kind: 'admin-bypass', priority: 'high',
+        title: 'admin-bypass rate 22% — investigate queue confidence', detail: '22% of merges bypassed' },
+      { repo: 'acme/widgets', kind: 'batch-size', priority: 'medium',
+        title: 'raise merge-queue batch 6 → 12', detail: 'modelled throughput headroom +50%' },
+      { repo: 'acme/widgets', kind: 'set-required-prefixes', priority: 'low',
+        title: 'set requiredCheckPrefixes', detail: 'no prefixes configured' }] });
+    render(<MetricsView now={NOW} />);
+    const list = await screen.findByTestId('recommendations');
+    const items = within(list).getAllByRole('listitem');
+    expect(items).toHaveLength(3);
+    // ranked high → low (rendered in payload order, which the server already sorts)
+    expect(items[0]!.className).toContain('rec-high');
+    expect(items[2]!.className).toContain('rec-low');
+    expect(within(list).getByTestId('rec-batch-size').textContent).toContain('raise merge-queue batch 6 → 12');
   });
 
   it('batch-size advisor renders the curve and marks the recommended + current batch', async () => {

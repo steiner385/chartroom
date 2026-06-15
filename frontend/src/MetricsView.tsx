@@ -344,9 +344,31 @@ export function MetricsView({ now, focusCostNonce }: {
   const costActualScopes = (payload.costActuals ?? []).filter((a) => a.days.length > 0);
   const dayAxis = windowBuckets(payload.window, 'day', (now ?? (() => new Date()))());
 
+  const recommendations = payload.recommendations ?? [];
   return (
     <div className="metrics">
       {controls}
+
+      <Panel title="Tuning actions" empty={recommendations.length === 0}
+        emptyText="nothing to tune — every advisor is satisfied">
+        <p className="metric-note">
+          everything the dashboard recommends, ranked. Derived from the panels below;
+          apply a change and watch its effect on the charts.
+        </p>
+        <ul className="rec-list" data-testid="recommendations">
+          {recommendations.map((r, i) => (
+            <li key={`${r.repo}-${r.kind}-${i}`} className={`rec rec-${r.priority}`}
+              data-testid={`rec-${r.kind}`}>
+              <span className="rec-priority" title={defTitle(DEFS.recommendationsPriority)}>{r.priority}</span>
+              <span className="rec-body">
+                <span className="rec-title">{r.title}</span>
+                <span className="rec-detail">{r.detail}</span>
+                <span className="rec-repo">{r.repo}</span>
+              </span>
+            </li>
+          ))}
+        </ul>
+      </Panel>
 
       <Panel title="Duration regressions" empty={regressionRepos.length === 0}
         emptyText="none active">

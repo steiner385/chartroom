@@ -444,6 +444,22 @@ section h2 { font-size: 14px; margin: 18px 0 8px; color: var(--muted); }
 .metric-table td { padding: 3px 10px 3px 0; border-bottom: 1px solid var(--border);
   font-variant-numeric: tabular-nums; }
 .metric-table tr:last-child td { border-bottom: none; }
+/* Recommendations digest (tuning tool): ranked action list */
+.rec-list { list-style: none; margin: 6px 0 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+.rec { display: flex; gap: 10px; align-items: baseline; padding: 6px 8px; border-radius: 6px;
+  border: 1px solid var(--border); background: var(--surface); }
+.rec-priority { flex-shrink: 0; min-width: 4.5em; text-align: center; font-size: 10px;
+  text-transform: uppercase; letter-spacing: 0.04em; font-weight: 700; padding: 2px 6px;
+  border-radius: 4px; }
+.rec.rec-high { border-color: var(--fail); }
+.rec.rec-high .rec-priority { color: var(--fail); background: color-mix(in srgb, var(--fail) 12%, transparent); }
+.rec.rec-medium .rec-priority { color: var(--amber); background: color-mix(in srgb, var(--amber) 12%, transparent); }
+.rec.rec-low .rec-priority { color: var(--muted); background: color-mix(in srgb, var(--muted) 14%, transparent); }
+.rec-body { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
+.rec-title { font-weight: 600; color: var(--text); }
+.rec-detail { font-size: 12px; color: var(--muted); }
+.rec-repo { font-size: 11px; color: var(--muted); font-variant-numeric: tabular-nums; }
+
 /* Batch-size advisor (#52): recommended row stands out, current row marked */
 .metric-table tr.batch-recommended td { background: color-mix(in srgb, var(--done) 14%, transparent);
   font-weight: 700; }
