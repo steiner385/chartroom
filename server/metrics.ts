@@ -542,8 +542,7 @@ export function computeMetrics(history: HistoryStore, window: MetricsWindow,
   poolMeta: Record<string, PoolMetaEntry> | null = null,
   prNumberForSha: (repo: string, sha: string) => number | null = () => null,
   costAutoRate = false,
-  requiredPrefixesFor: (repo: string) => string[] = () => [],
-  autoMergeActorFor: (repo: string) => string | null = () => null): MetricsPayload {
+  requiredPrefixesFor: (repo: string) => string[] = () => []): MetricsPayload {
   const dropped = new Set(exclude);
   const keep = <T extends { repo: string }>(rows: T[]): T[] =>
     dropped.size ? rows.filter((r) => !dropped.has(r.repo)) : rows;
@@ -633,17 +632,27 @@ export function computeMetrics(history: HistoryStore, window: MetricsWindow,
     }
     const repoMerges = mergedByRepo.get(repo) ?? [];
     const queueMerges = repoMerges.length;
-    // Admin-bypass rate (issue #23): fraction of merges NOT done by the queue
-    // bot. The automated merger is the configured per-repo autoMergeActor when
-    // set (some bot logins lack the '[bot]' suffix, e.g. `kindash-automerge`);
-    // otherwise fall back to the '…[bot]' heuristic. Anything else is a
-    // human/admin merge that bypassed the queue. Only merges with a known merger
-    // count — the metric ramps up as new merges are observed.
-    const actor = autoMergeActorFor(repo);
-    const isAutomated = (login: string): boolean =>
-      actor != null ? login === actor : login.endsWith('[bot]');
-    const knownMerges = repoMerges.filter((m) => m.mergedBy != null);
-    const bypasses = knownMerges.filter((m) => !isAutomated(m.mergedBy!)).length;
+    // Admin-bypass rate (issue #23): merges that skipped the merge queue. The
+    // signal is `enqueued_at` (was the PR ever observed in the queue?) — NOT
+    // `mergedBy`, which reports who ENABLED the merge (a human enqueuing
+    // auto-merge), not whether the queue performed it, so it falsely flags the
+    // normal enqueue-and-let-it-run flow as a bypass. Guard against poller
+    // observation gaps: a day with ZERO enqueues is "unobserved" (the queue may
+    // not have been watched yet), not "all bypassed" — exclude those days so a
+    // historical gap can't inflate the rate.
+    const byDay = new Map<string, { enqueued: number; bypass: number }>();
+    for (const m of repoMerges) {
+      const day = m.mergedAt.slice(0, 10);
+      const d = byDay.get(day) ?? { enqueued: 0, bypass: 0 };
+      if (m.enqueuedAt != null) d.enqueued += 1; else d.bypass += 1;
+      byDay.set(day, d);
+    }
+    let bypasses = 0; let observedMerges = 0;
+    for (const d of byDay.values()) {
+      if (d.enqueued === 0) continue;            // unobserved day — can't conclude bypass
+      bypasses += d.bypass;
+      observedMerges += d.enqueued + d.bypass;
+    }
     return {
       repo,
       mergeGroupRuns: runs.size,
@@ -656,8 +665,8 @@ export function computeMetrics(history: HistoryStore, window: MetricsWindow,
         requiredConfigured: prefixes.length > 0,
       },
       adminBypass: {
-        merges: knownMerges.length, bypasses,
-        rate: knownMerges.length > 0 ? bypasses / knownMerges.length : null,
+        merges: observedMerges, bypasses,
+        rate: observedMerges > 0 ? bypasses / observedMerges : null,
       },
     };
   }).filter((q) => q.mergeGroupRuns > 0 || q.queueMerges > 0);

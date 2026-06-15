@@ -531,7 +531,7 @@ export class HistoryStore {
        FROM group_runs WHERE completed_at >= ? ORDER BY repo, completed_at`
     );
     this.stmtSelectMergedSince = this.db.prepare(
-      `SELECT repo, merged_at, created_at, qa_live_at, merged_by
+      `SELECT repo, merged_at, created_at, qa_live_at, merged_by, enqueued_at
        FROM merged_prs WHERE merged_at >= ? ORDER BY repo, merged_at`
     );
     // Trains/hour (queue ops): per-repo merge timestamps for train clustering.
@@ -1404,11 +1404,11 @@ export class HistoryStore {
 
   /** Merged PRs at/after `since` (full timestamps — bucketing happens in metrics). */
   mergedSince(since: string): { repo: string; mergedAt: string; createdAt: string | null;
-    qaLiveAt: string | null; mergedBy: string | null }[] {
+    qaLiveAt: string | null; mergedBy: string | null; enqueuedAt: string | null }[] {
     const rows = this.stmtSelectMergedSince.all(since) as Record<string, unknown>[];
     return rows.map((r) => ({ repo: r.repo as string, mergedAt: r.merged_at as string,
       createdAt: (r.created_at as string) ?? null, qaLiveAt: (r.qa_live_at as string) ?? null,
-      mergedBy: (r.merged_by as string) ?? null }));
+      mergedBy: (r.merged_by as string) ?? null, enqueuedAt: (r.enqueued_at as string) ?? null }));
   }
 
   /** Lead-time decomposition rows (issue #44): merged_prs rows merged at/after
