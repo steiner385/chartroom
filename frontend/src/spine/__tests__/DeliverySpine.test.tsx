@@ -132,3 +132,14 @@ describe('DeliverySpine', () => {
     expect(screen.getByTestId('spine-lane-pr-ci')).not.toHaveTextContent(/·7d/);
   });
 });
+
+describe('DeliverySpine live region (UX-H4)', () => {
+  it('populates the sr-only role=status region with the rollup attention summary', () => {
+    const { container } = render(<DeliverySpine state={state({})} kiosk={false} />);
+    const live = container.querySelector('.spine-rollup-live')!;
+    expect(live).toHaveAttribute('role', 'status');
+    expect(live).toHaveAttribute('aria-live', 'polite');
+    // the CI-failed PR makes PR CI red → named in the announcement
+    expect(live.textContent).toMatch(/attention: .*PR CI/);
+  });
+});

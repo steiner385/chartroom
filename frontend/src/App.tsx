@@ -193,6 +193,12 @@ export function App() {
              actually live. The server keepalive re-emits at least every 60s. */
           <span className="generated">live · updated {new Date(state.generatedAt).toLocaleTimeString()}</span>
         )}
+        {/* Persistent assertive live region (UX-H4): the visible spans above are
+            not live regions, so a connection drop is silent for SR users. This
+            stays mounted and announces on change. */}
+        <span aria-live="assertive" aria-atomic="true" className="sr-only">
+          {!connected ? 'Connection lost — retrying' : ''}
+        </span>
         {!kiosk && (
         <>
         <button

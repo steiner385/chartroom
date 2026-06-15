@@ -1,4 +1,4 @@
-import { useState, type MouseEvent } from 'react';
+import { useState, type MouseEvent, type KeyboardEvent } from 'react';
 import type { PrView } from './types';
 import { formatDur, formatEta, stageLabel } from './format';
 import { MetroTrack } from './MetroTrack';
@@ -144,7 +144,20 @@ export function PrRow({ pr, hasDeploy, queueCulprit = null, expandable = true }:
   const sub = subLine(pr, queueCulprit);
   return (
     <div id={`pr-${pr.number}`} className={`pr-row ${parked ? `parked ${s.substate ?? ''}` : ''}`}>
-      <div className="pr-main" onClick={expandable ? () => setOpen(!open) : undefined}>
+      {/* Keyboard-operable expand toggle (UX-H1). role="button" rather than a
+          real <button> because the row nests interactive children (title link,
+          ready-merge action) which a <button> can't legally contain. */}
+      <div className="pr-main"
+        {...(expandable ? {
+          role: 'button' as const,
+          tabIndex: 0,
+          'aria-expanded': open,
+          'aria-label': `${open ? 'Collapse' : 'Expand'} PR #${pr.number} details`,
+          onClick: () => setOpen(!open),
+          onKeyDown: (e: KeyboardEvent) => {
+            if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); setOpen(!open); }
+          },
+        } : {})}>
         <div className="pr-head">
           <span className="pr-num">#{pr.number}</span>
           <a className="pr-title" href={pr.url} target="_blank" rel="noreferrer"

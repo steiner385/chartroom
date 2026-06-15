@@ -391,9 +391,12 @@ export function MetricsView({ now, focusCostNonce }: {
     <div className="metrics">
       {controls}
 
-      <nav className="metrics-subtabs" role="tablist" aria-label="Metrics sections">
+      {/* A group of aria-pressed toggle buttons, NOT a tablist (UX-H3): each
+          button reveals MANY panels of its section, so the one-tab-one-tabpanel
+          ARIA tabs contract doesn't apply. */}
+      <nav className="metrics-subtabs" role="group" aria-label="Metrics sections">
         {METRICS_SECTIONS.map((s) => (
-          <button key={s.id} type="button" role="tab" aria-selected={section === s.id}
+          <button key={s.id} type="button" aria-pressed={section === s.id}
             className={section === s.id ? 'metrics-subtab active' : 'metrics-subtab'}
             data-testid={`metrics-subtab-${s.id}`}
             onClick={() => selectSection(s.id)}>
