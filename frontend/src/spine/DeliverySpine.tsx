@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import type { DashboardState, Lane } from '../types';
 import { SpineLane } from './SpineLane';
-import { rollup } from './laneStatus';
+import { rollup, attentionLanes } from './laneStatus';
 import { buildLaneHealth } from './laneHealth';
 import { ErrorBoundary } from '../ErrorBoundary';
 import { scrollBehavior } from '../motion';
@@ -55,6 +55,14 @@ export function DeliverySpine({ state, kiosk, focus }: {
   const [expanded, setExpanded] = useState<Set<string>>(readExpanded);
   const lanes = useMemo(() => buildLanes(state), [state]);
   const roll = useMemo(() => rollup(lanes), [lanes]);
+  // Live-region text (UX-H4): announced by screen readers whenever it changes —
+  // a lane flipping red, the count moving, or recovery to all-green. Rendered as
+  // the region's text content; SRs re-announce only on a real change.
+  const liveSummary = useMemo(() => {
+    if (roll.state === 'green') return 'All delivery lanes healthy';
+    const names = attentionLanes(lanes).map((l) => l.title).join(', ');
+    return `${roll.count} ${roll.count === 1 ? 'lane needs' : 'lanes need'} attention: ${names}`;
+  }, [roll, lanes]);
 
   // Auto-expand + reveal a lane requested from the header (not in kiosk, where
   // every lane is already open and the header isn't shown).
@@ -92,7 +100,9 @@ export function DeliverySpine({ state, kiosk, focus }: {
 
   return (
     <div className="delivery-spine">
-      <span role="status" aria-live="polite" aria-atomic="true" className="spine-rollup-live" />
+      <span role="status" aria-live="polite" aria-atomic="true" className="spine-rollup-live">
+        {liveSummary}
+      </span>
       {!kiosk && (
         <button type="button" data-testid="spine-rollup" className={`spine-rollup r-${roll.state}`}
           aria-label={roll.state === 'green' ? 'All lanes healthy' : `${roll.count} lanes need attention — go to first`}

@@ -521,3 +521,27 @@ describe('PrRow ready+auto-merge action', () => {
     expect(msg.textContent).toMatch(/pull_requests:write/);
   });
 });
+
+describe('PrRow keyboard expand (UX-H1)', () => {
+  it('the summary is a keyboard-operable button that toggles on Enter/Space', () => {
+    const { container } = render(<PrRow pr={pr({})} hasDeploy />);
+    const main = container.querySelector('.pr-main')!;
+    expect(main).toHaveAttribute('role', 'button');
+    expect(main).toHaveAttribute('tabindex', '0');
+    expect(main).toHaveAttribute('aria-expanded', 'false');
+    // collapsed: expanded-only check gantt absent
+    expect(screen.queryByText('fast-checks / ESLint')).toBeNull();
+    fireEvent.keyDown(main, { key: 'Enter' });
+    expect(main).toHaveAttribute('aria-expanded', 'true');
+    expect(screen.getByText('fast-checks / ESLint')).toBeInTheDocument();
+    fireEvent.keyDown(main, { key: ' ' });
+    expect(main).toHaveAttribute('aria-expanded', 'false');
+  });
+
+  it('is inert (no role/tabindex) in non-expandable kiosk mode', () => {
+    const { container } = render(<PrRow pr={pr({})} hasDeploy expandable={false} />);
+    const main = container.querySelector('.pr-main')!;
+    expect(main).not.toHaveAttribute('role');
+    expect(main).not.toHaveAttribute('tabindex');
+  });
+});

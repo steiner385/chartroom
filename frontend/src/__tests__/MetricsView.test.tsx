@@ -1246,7 +1246,7 @@ describe('MetricsView sub-tabs (page cleanup)', () => {
     for (const id of ['tuning', 'throughput', 'performance', 'reliability', 'cost']) {
       expect(screen.getByTestId(`metrics-subtab-${id}`)).toBeInTheDocument();
     }
-    expect(screen.getByTestId('metrics-subtab-throughput')).toHaveAttribute('aria-selected', 'true');
+    expect(screen.getByTestId('metrics-subtab-throughput')).toHaveAttribute('aria-pressed', 'true');
   });
 
   it('switching sub-tabs moves the active marker and persists to localStorage', async () => {
@@ -1254,8 +1254,8 @@ describe('MetricsView sub-tabs (page cleanup)', () => {
     render(<MetricsView now={NOW} />);
     await screen.findByTestId('metrics-subtab-reliability');
     fireEvent.click(screen.getByTestId('metrics-subtab-reliability'));
-    expect(screen.getByTestId('metrics-subtab-reliability')).toHaveAttribute('aria-selected', 'true');
-    expect(screen.getByTestId('metrics-subtab-throughput')).toHaveAttribute('aria-selected', 'false');
+    expect(screen.getByTestId('metrics-subtab-reliability')).toHaveAttribute('aria-pressed', 'true');
+    expect(screen.getByTestId('metrics-subtab-throughput')).toHaveAttribute('aria-pressed', 'false');
     expect(localStorage.getItem('prdash.metrics.section')).toBe('reliability');
   });
 
@@ -1276,6 +1276,6 @@ describe('MetricsView sub-tabs (page cleanup)', () => {
     mockFetchOk();
     render(<MetricsView now={NOW} />);
     await screen.findByTestId('metrics-subtab-reliability');
-    expect(screen.getByTestId('metrics-subtab-reliability')).toHaveAttribute('aria-selected', 'true');
+    expect(screen.getByTestId('metrics-subtab-reliability')).toHaveAttribute('aria-pressed', 'true');
   });
 });
