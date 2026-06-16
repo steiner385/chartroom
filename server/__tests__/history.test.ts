@@ -1582,3 +1582,58 @@ describe('config changes (tuning tool)', () => {
     expect(latest.get(`${REPO}::workflowPath`)).toBe('b.yml');
   });
 });
+
+// ---------------------------------------------------------------------------
+// successStatsByRepo (demotion candidates) — per (check, event) success aggregate
+// ---------------------------------------------------------------------------
+
+describe('successStatsByRepo', () => {
+  const REPO2 = 'acme/widgets';
+  const SINCE = '2026-06-01T00:00:00Z';
+  /** Insert one check_durations row with full sha/attempt identity. */
+  const row = (conclusion: string, sha: string, attempt: number | null, completedAt: string,
+    durSecs = 60, name = 'lint: eslint', event = 'pull_request', repo = REPO2) =>
+    h.recordCheckDuration(repo, name, event,
+      new Date(Date.parse(completedAt) - durSecs * 1000).toISOString(), completedAt,
+      conclusion, sha, attempt);
+
+  it('aggregates total/failing distinct runs and sums duration, per (check,event)', () => {
+    row('SUCCESS', 'sha1', 1, '2026-06-10T10:00:00Z', 100);
+    row('SUCCESS', 'sha2', 1, '2026-06-10T11:00:00Z', 200);
+    row('FAILURE', 'sha3', 1, '2026-06-10T12:00:00Z', 50);
+    const [s] = h.successStatsByRepo(SINCE).get(REPO2)!;
+    expect(s).toMatchObject({ name: 'lint: eslint', event: 'pull_request',
+      totalRuns: 3, failingRuns: 1, sumDurationSecs: 350 });
+  });
+
+  it('excludes CANCELLED from both run counts and cost (a spot-kill is not a failure)', () => {
+    row('SUCCESS', 'sha1', 1, '2026-06-10T10:00:00Z', 100);
+    row('CANCELLED', 'sha2', 1, '2026-06-10T11:00:00Z', 9999);
+    const [s] = h.successStatsByRepo(SINCE).get(REPO2)!;
+    expect(s).toMatchObject({ totalRuns: 1, failingRuns: 0, sumDurationSecs: 100 });
+  });
+
+  it('counts distinct (sha, attempt): a re-poll of the same run collapses', () => {
+    row('SUCCESS', 'sha1', 1, '2026-06-10T10:00:00Z', 100);
+    row('SUCCESS', 'sha1', 1, '2026-06-10T10:00:01Z', 100); // same run re-observed
+    const [s] = h.successStatsByRepo(SINCE).get(REPO2)!;
+    expect(s!.totalRuns).toBe(1);
+  });
+
+  it('a fail-then-pass flake counts the failing attempt (→ below 100%)', () => {
+    row('FAILURE', 'sha1', 1, '2026-06-10T10:00:00Z');
+    row('SUCCESS', 'sha1', 2, '2026-06-10T10:20:00Z');
+    const [s] = h.successStatsByRepo(SINCE).get(REPO2)!;
+    expect(s).toMatchObject({ totalRuns: 2, failingRuns: 1 });
+  });
+
+  it('splits per repo and ignores rows before the window / without head_sha', () => {
+    row('SUCCESS', 'sha1', 1, '2026-06-10T10:00:00Z', 60, 'a', 'pull_request', 'acme/a');
+    row('SUCCESS', 'sha9', 1, '2026-05-01T10:00:00Z', 60, 'a', 'pull_request', 'acme/a'); // pre-window
+    h.recordCheckDuration('acme/a', 'a', 'pull_request',
+      '2026-06-10T09:59:00Z', '2026-06-10T10:00:00Z', 'SUCCESS'); // no sha → excluded
+    const m = h.successStatsByRepo(SINCE);
+    expect(m.get('acme/a')!.find((s) => s.name === 'a')!.totalRuns).toBe(1);
+    expect(m.has(REPO2)).toBe(false);
+  });
+});

@@ -320,6 +320,18 @@ export type LeadTimeSegmentId =
 
 export interface HeadlineStat { value: number | null; prev: number | null }
 
+/** One demotion candidate (mirror of server/estimator/demotion-candidates.ts). */
+export interface DemotionCandidate {
+  name: string;
+  event: string;
+  currentTier: string;
+  suggestedTier: string;
+  successRatePct: number;
+  runsInWindow: number;
+  minutesInWindow: number;
+  reason: string;
+}
+
 export interface MetricsPayload {
   window: MetricsWindow;
   bucket: MetricsBucket;
@@ -376,6 +388,11 @@ export interface MetricsPayload {
   flakiness: { repo: string; checks: { name: string; event: string;
     flakeEvents: number; totalRuns: number; flakeRatePct: number;
     trend: { bucket: string; flakeEvents: number; runs: number }[] }[] }[];
+  /** Demotion candidates (almost-always-green → lower frequency): per repo, the
+   *  checks whose success rate clears the bar over enough distinct runs, ranked
+   *  by runner-minutes spent (cost × greenness). Advisory; disjoint from
+   *  flakiness (a flaky check fails the success bar). */
+  demotionCandidates: { repo: string; candidates: DemotionCandidate[] }[];
   /** Train killers (issue #38): checks ranked by merge-group ejections.
    *  estCostTrainHours ≈ ejects × median group run × batchSize (hours); null
    *  without an observed median. flakeRatePct cross-references the flake radar. */

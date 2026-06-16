@@ -7,7 +7,7 @@ const EMPTY: MetricsPayload = {
   window: '3d', bucket: 'hour',
   runnerWaits: [], queue: [], queueEfficiency: [], slowestJobs: [], velocity: [],
   leadTime: [], trends: [],
-  calibration: [], flakiness: [], trainKillers: [], criticalPath: [], lint: [],
+  calibration: [], flakiness: [], demotionCandidates: [], trainKillers: [], criticalPath: [], lint: [],
   regressions: [], runnerPools: [], reclaims: [], concurrency: [], cost: [],
 };
 
@@ -118,6 +118,13 @@ const PAYLOAD: MetricsPayload = {
       { name: 'steady-job', event: 'merge_group',
         flakeEvents: 1, totalRuns: 10, flakeRatePct: 10,
         trend: [{ bucket: H(10), flakeEvents: 1, runs: 10 }] },
+    ] },
+  ],
+  demotionCandidates: [
+    { repo: 'acme/widgets', candidates: [
+      { name: 'lint: eslint', event: 'pull_request', currentTier: 'every PR push',
+        suggestedTier: 'merge queue only', successRatePct: 100, runsInWindow: 120,
+        minutesInWindow: 240, reason: '120/120 green · ~240 runner-min in window' },
     ] },
   ],
   trainKillers: [
@@ -1306,5 +1313,15 @@ describe('MetricsView sub-tabs (page cleanup)', () => {
     render(<MetricsView now={NOW} />);
     await screen.findByTestId('metrics-subtab-reliability');
     expect(screen.getByTestId('metrics-subtab-reliability')).toHaveAttribute('aria-pressed', 'true');
+  });
+
+  it('renders demotion candidates with the suggested lower tier', async () => {
+    mockFetchOk();
+    render(<MetricsView now={NOW} />);
+    const row = await screen.findByTestId('demotion-lint: eslint/pull_request');
+    expect(within(row).getByText('lint: eslint')).toBeInTheDocument();
+    expect(within(row).getByText('every PR push')).toBeInTheDocument();
+    expect(within(row).getByText('→ merge queue only')).toBeInTheDocument();
+    expect(within(row).getByText(/240 min/)).toBeInTheDocument();
   });
 });

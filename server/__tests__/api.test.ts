@@ -508,7 +508,7 @@ import type { MetricsBucket, MetricsPayload, MetricsWindow } from '../metrics';
 
 const EMPTY_METRICS = (w: MetricsWindow, b: MetricsBucket): MetricsPayload =>
   ({ window: w, bucket: b, runnerWaits: [], queue: [], queueEfficiency: [], batchAdvisor: [], recommendations: [], configChanges: [], slowestJobs: [],
-    velocity: [], leadTime: [], trends: [], calibration: [], flakiness: [], trainKillers: [],
+    velocity: [], leadTime: [], trends: [], calibration: [], flakiness: [], demotionCandidates: [], trainKillers: [],
     criticalPath: [], needsGraph: [], lint: [], regressions: [],
     runnerPools: [], reclaims: [], concurrency: [], cost: [], costJobs: [], costRuns: [],
     costActuals: [], costAutoRate: null });
