@@ -296,7 +296,7 @@ describe('computeMetrics: empty history', () => {
       window: '3d', bucket: 'hour',
       runnerWaits: [], queue: [], queueEfficiency: [], batchAdvisor: [], recommendations: [], configChanges: [], slowestJobs: [], velocity: [],
       leadTime: [], trends: [],
-      calibration: [], flakiness: [], trainKillers: [], criticalPath: [], needsGraph: [],
+      calibration: [], flakiness: [], demotionCandidates: [], trainKillers: [], criticalPath: [], needsGraph: [],
       lint: [],
       regressions: [], runnerPools: [], reclaims: [], concurrency: [], cost: [],
       costJobs: [], costRuns: [], costActuals: [], costAutoRate: null,

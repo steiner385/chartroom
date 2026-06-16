@@ -1,5 +1,6 @@
 import Database from 'better-sqlite3';
 import { median, percentile } from './math';
+import type { SuccessStat } from './estimator/demotion-candidates';
 
 export interface Expected { p10: number; p50: number; p90: number; n: number; }
 export interface MergedPrInput {
@@ -179,6 +180,7 @@ export class HistoryStore {
   private readonly stmtSelectStateSamplesSince: Database.Statement;
   private readonly stmtSelectRunnerWaitsSince: Database.Statement;
   private readonly stmtSelectDurationsSince: Database.Statement;
+  private readonly stmtSelectSuccessStatsSince: Database.Statement;
   private readonly stmtSelectQueueWaitsSince: Database.Statement;
   private readonly stmtSelectGroupRunsSince: Database.Statement;
   private readonly stmtSelectMergedSince: Database.Statement;
@@ -554,6 +556,21 @@ export class HistoryStore {
        FROM check_durations
        WHERE completed_at >= ? AND head_sha IS NOT NULL
        ORDER BY repo, check_name, event, completed_at`
+    );
+    // Demotion candidates (#almost-always-green): per (repo, check, event)
+    // success aggregate over the window. Counts DISTINCT (sha, attempt) runs so a
+    // re-poll never double-counts and a fail-then-pass flake shows its failing
+    // attempt (→ below 100%, excluded). CANCELLED excluded (a spot-kill is not a
+    // failure — same rule as flake detection). FAILING_CONCLUSIONS inlined here.
+    this.stmtSelectSuccessStatsSince = this.db.prepare(
+      `SELECT repo, check_name AS name, event,
+              COUNT(DISTINCT head_sha || '@' || IFNULL(run_attempt, 'x')) AS total,
+              COUNT(DISTINCT CASE WHEN conclusion IN ('FAILURE','TIMED_OUT','STARTUP_FAILURE')
+                    THEN head_sha || '@' || IFNULL(run_attempt, 'x') END) AS failing,
+              SUM(duration_secs) AS sum_secs
+       FROM check_durations
+       WHERE completed_at >= ? AND head_sha IS NOT NULL AND conclusion != 'CANCELLED'
+       GROUP BY repo, check_name, event`
     );
     this.stmtInsertGroupFailure = this.db.prepare(
       'INSERT OR IGNORE INTO group_failures (repo, check_name, group_sha, observed_at) VALUES (?,?,?,?)'
@@ -1378,6 +1395,28 @@ export class HistoryStore {
     const rows = this.stmtSelectDurationsSince.all(since) as Record<string, unknown>[];
     return rows.map((r) => ({ repo: r.repo as string, name: r.check_name as string,
       event: r.event as string, at: r.at as string, durationSecs: r.duration_secs as number }));
+  }
+
+  /** Per-(check, event) success aggregate since `since`, grouped by repo. Feeds
+   *  the demotion-candidate detector (estimator/demotion-candidates.ts). Runs are
+   *  DISTINCT (sha, attempt) with CANCELLED excluded; `failingRuns` counts
+   *  FAILING_CONCLUSIONS; `sumDurationSecs` is the cost basis. */
+  successStatsByRepo(since: string): Map<string, SuccessStat[]> {
+    const rows = this.stmtSelectSuccessStatsSince.all(since) as Record<string, unknown>[];
+    const out = new Map<string, SuccessStat[]>();
+    for (const r of rows) {
+      const repo = r.repo as string;
+      const list = out.get(repo) ?? [];
+      list.push({
+        name: r.name as string,
+        event: r.event as string,
+        totalRuns: (r.total as number) ?? 0,
+        failingRuns: (r.failing as number) ?? 0,
+        sumDurationSecs: (r.sum_secs as number) ?? 0,
+      });
+      out.set(repo, list);
+    }
+    return out;
   }
 
   /** Enqueue→merge queue waits at/after `since` with full timestamps (bucketing happens in metrics). */

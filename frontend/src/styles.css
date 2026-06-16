@@ -873,3 +873,7 @@ section h2 { font-size: 14px; margin: 18px 0 8px; color: var(--muted); }
 
 /* Error state */
 .runner-fetch-error { color: var(--fail); font-size: 13px; }
+
+/* Demotion candidates panel */
+.metric-num { font-variant-numeric: tabular-nums; text-align: right; white-space: nowrap; }
+.demotion-arrow { color: var(--accent); font-weight: 600; white-space: nowrap; }

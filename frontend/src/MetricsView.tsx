@@ -372,6 +372,7 @@ export function MetricsView({ now, focusCostNonce }: {
     calByRepo.set(c.repo, [...(calByRepo.get(c.repo) ?? []), c]);
   }
   const flakeRepos = payload.flakiness.filter((f) => f.checks.length);
+  const demotionRepos = (payload.demotionCandidates ?? []).filter((d) => d.candidates.length);
   const killerRepos = payload.trainKillers.filter((t) => t.checks.length);
   const cpByRepo = new Map<string, typeof payload.criticalPath>();
   for (const cp of payload.criticalPath) {
@@ -1075,6 +1076,41 @@ export function MetricsView({ now, focusCostNonce }: {
             <p className="metric-note">
               flake = failed then passed on the same commit (re-run, no new push) —
               min 5 runs per job
+            </p>
+          </div>
+        ))}
+      </Panel>
+
+      <Panel id="metrics-demotion-candidates" title="Demotion candidates" section="reliability"
+        empty={demotionRepos.length === 0}
+        emptyText="no almost-always-green checks with enough history">
+        {demotionRepos.map((d) => (
+          <div key={d.repo} className="metric-repo">
+            <h3>{d.repo}</h3>
+            <table className="metric-table">
+              <thead>
+                <tr>
+                  <th>check</th><th>runs on</th>
+                  <th title="success rate over distinct (sha, attempt) runs in the window">green</th>
+                  <th title="runner-minutes spent in the window — the cost basis for ranking">cost</th>
+                  <th>suggested</th>
+                </tr>
+              </thead>
+              <tbody>
+                {d.candidates.map((c) => (
+                  <tr key={`${c.name}/${c.event}`} data-testid={`demotion-${c.name}/${c.event}`}>
+                    <td className="metric-job-name">{c.name}</td>
+                    <td>{c.currentTier}</td>
+                    <td title={c.reason}>{fmtPct(c.successRatePct)} ({c.runsInWindow})</td>
+                    <td className="metric-num">{c.minutesInWindow.toLocaleString()} min</td>
+                    <td><span className="demotion-arrow">→ {c.suggestedTier}</span></td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+            <p className="metric-note">
+              ≥99% green over ≥50 distinct runs, ranked by runner-minutes spent.
+              Advisory — a green check may still guard against rare regressions; review before demoting.
             </p>
           </div>
         ))}
