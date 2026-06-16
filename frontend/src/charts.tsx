@@ -55,11 +55,31 @@ export function formatBucketTooltip(bucket: string, kind: BucketKind): string {
   return formatBucketLabel(bucket, 'day');
 }
 
-/** Start / middle / end x-axis ticks, deduped for short series. */
+/** Local "Mon D" for an hour bucket — matches the local time shown by
+ *  formatBucketLabel, so the axis date and time can't disagree. */
+function hourLocalDay(bucket: string): string {
+  return new Date(`${bucket}:00:00Z`).toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+}
+
+/** Start / middle / end x-axis ticks, deduped for short series. Day buckets are
+ *  already dated ("Jun 11"); hour buckets carry only the time, so we prefix the
+ *  DATE on the first tick and whenever the (local) day changes — otherwise a
+ *  multi-day window reads as bare times with no day context. */
 export function axisTicks(buckets: string[], kind: BucketKind): AxisTick[] {
   if (!buckets.length) return [];
   const idx = [...new Set([0, Math.floor((buckets.length - 1) / 2), buckets.length - 1])];
-  return idx.map((index) => ({ index, text: formatBucketLabel(buckets[index]!, kind) }));
+  if (kind === 'day') {
+    return idx.map((index) => ({ index, text: formatBucketLabel(buckets[index]!, 'day') }));
+  }
+  let prevDay: string | null = null;
+  return idx.map((index) => {
+    const bucket = buckets[index]!;
+    const day = hourLocalDay(bucket);
+    const time = formatBucketLabel(bucket, 'hour');
+    const text = day === prevDay ? time : `${day} ${time}`;
+    prevDay = day;
+    return { index, text };
+  });
 }
 
 interface Geom { x: (i: number) => number; y: (v: number) => number; h: number }
