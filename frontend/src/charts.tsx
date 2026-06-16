@@ -6,8 +6,9 @@
  * Readability (metrics-readability redesign):
  *  - charts render full panel width (viewBox + width:100%), 120–160 units tall
  *  - dashed horizontal gridlines at max / mid plus a baseline, each y-labeled
- *  - x-axis bucket labels at start / middle / end (HH:MM local for hour
- *    buckets, "Mon D" for day buckets)
+ *  - x-axis tick marks: MINOR at every bucket (hour boundary on hour charts, day
+ *    boundary on day charts), taller MAJOR + label at the coarser boundary (day
+ *    rollover for hour charts, month rollover for day charts) + first/last anchors
  *  - sparse-data guard: a series with <3 populated buckets renders a
  *    "collecting data — n samples so far" placeholder instead of floating dots
  */
@@ -25,7 +26,10 @@ export interface BandPoint { bucket: string; p50: number | null; p90: number | n
 
 export interface LineSeries { name: string; color: string; points: ChartPoint[] }
 
-export interface AxisTick { index: number; text: string }
+/** One x-axis tick: `major` = day boundary (hour charts) / month boundary (day
+ *  charts) + first/last anchor, carrying a `label`; minor = every other bucket
+ *  (an hour boundary on hour charts, a day boundary on day charts), unlabeled. */
+export interface TickMark { index: number; major: boolean; label: string | null }
 
 // Geometry is in viewBox units; the svg scales to the panel width (width:100%).
 const VB_W = 1000;
@@ -61,24 +65,26 @@ function hourLocalDay(bucket: string): string {
   return new Date(`${bucket}:00:00Z`).toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
 }
 
-/** Start / middle / end x-axis ticks, deduped for short series. Day buckets are
- *  already dated ("Jun 11"); hour buckets carry only the time, so we prefix the
- *  DATE on the first tick and whenever the (local) day changes — otherwise a
- *  multi-day window reads as bare times with no day context. */
-export function axisTicks(buckets: string[], kind: BucketKind): AxisTick[] {
-  if (!buckets.length) return [];
-  const idx = [...new Set([0, Math.floor((buckets.length - 1) / 2), buckets.length - 1])];
-  if (kind === 'day') {
-    return idx.map((index) => ({ index, text: formatBucketLabel(buckets[index]!, 'day') }));
-  }
-  let prevDay: string | null = null;
-  return idx.map((index) => {
-    const bucket = buckets[index]!;
-    const day = hourLocalDay(bucket);
-    const time = formatBucketLabel(bucket, 'hour');
-    const text = day === prevDay ? time : `${day} ${time}`;
-    prevDay = day;
-    return { index, text };
+/** Tick marks for a time axis: a MINOR tick at every bucket (an hour boundary on
+ *  hour charts, a day boundary on day charts) and a labeled MAJOR tick at the
+ *  next-coarser boundary — a local-day rollover for hour charts, a month rollover
+ *  for day charts — plus the first/last bucket as labeled anchors so the window's
+ *  start and end always read. */
+export function timeTicks(buckets: string[], kind: BucketKind): TickMark[] {
+  const n = buckets.length;
+  const monthKey = (b: string) =>
+    new Date(`${b}T00:00:00Z`).toLocaleDateString('en-US', { month: 'short', timeZone: 'UTC' });
+  return buckets.map((bucket, index) => {
+    const edge = index === 0 || index === n - 1;
+    if (kind === 'hour') {
+      // major at each local-midnight rollover (the day changes vs the prev bucket)
+      const day = hourLocalDay(bucket);
+      const major = index === 0 || day !== hourLocalDay(buckets[index - 1]!) || edge;
+      return { index, major, label: major ? day : null };
+    }
+    // day buckets: minor at every day, major at each month rollover
+    const major = index === 0 || monthKey(bucket) !== monthKey(buckets[index - 1]!) || edge;
+    return { index, major, label: major ? formatBucketLabel(bucket, 'day') : null };
   });
 }
 
@@ -128,9 +134,34 @@ function Placeholder({ n, compact }: { n: number; compact?: boolean }) {
   );
 }
 
-/** Dashed gridlines at max + mid, a solid baseline at 0, all y-labeled. */
-function GridAndAxes({ geom, yMax, format, ticks, count }: {
-  geom: Geom; yMax: number; format: (v: number) => string; ticks: AxisTick[]; count: number;
+/** Shared x-axis tick marks: a short MINOR line at every bucket (hour/day
+ *  boundary) and a taller MAJOR line + label at day/month boundaries. The marks
+ *  hang into the bottom padding below the plot baseline. */
+function xAxisMarks(ticks: TickMark[], geom: Geom, count: number) {
+  const baseY = geom.h - PAD_B;
+  return (
+    <g className="x-axis-ticks">
+      {ticks.map((t) => (
+        <line key={`tk${t.index}`} x1={geom.x(t.index)} x2={geom.x(t.index)}
+          y1={baseY} y2={baseY + (t.major ? 7 : 3)}
+          stroke={t.major ? 'var(--muted)' : 'var(--border)'}
+          strokeWidth={t.major ? 1 : 0.75}
+          data-tick={t.major ? 'major' : 'minor'} />
+      ))}
+      {ticks.filter((t) => t.label != null).map((t) => (
+        <text key={`xl${t.index}`} x={geom.x(t.index)} y={geom.h - 6}
+          textAnchor={t.index === 0 ? 'start' : t.index === count - 1 ? 'end' : 'middle'}
+          fontSize={FONT} fill="var(--muted)">{t.label}</text>
+      ))}
+    </g>
+  );
+}
+
+/** Dashed gridlines at max + mid, a solid baseline at 0, all y-labeled, plus the
+ *  major/minor time tick marks along the x-axis. */
+function GridAndAxes({ geom, yMax, format, buckets, kind, count }: {
+  geom: Geom; yMax: number; format: (v: number) => string;
+  buckets: string[]; kind: BucketKind; count: number;
 }) {
   const yLabel = (v: number, solid = false) => (
     <g key={`y${v}`}>
@@ -145,11 +176,7 @@ function GridAndAxes({ geom, yMax, format, ticks, count }: {
       {yLabel(yMax)}
       {yLabel(yMax / 2)}
       {yLabel(0, true)}
-      {ticks.map((t) => (
-        <text key={`x${t.index}`} x={geom.x(t.index)} y={geom.h - 6}
-          textAnchor={t.index === 0 ? 'start' : t.index === count - 1 ? 'end' : 'middle'}
-          fontSize={FONT} fill="var(--muted)">{t.text}</text>
-      ))}
+      {xAxisMarks(timeTicks(buckets, kind), geom, count)}
     </g>
   );
 }
@@ -221,7 +248,7 @@ export function AreaSeries({ points, kind, height = 150, color = 'var(--accent)'
     <svg className="chart-svg" width="100%" viewBox={`0 0 ${VB_W} ${height}`}
       role="img" aria-label={label}>
       <GridAndAxes geom={geom} yMax={yMax} format={format}
-        ticks={axisTicks(points.map((p) => p.bucket), kind)} count={points.length} />
+        buckets={points.map((p) => p.bucket)} kind={kind} count={points.length} />
       {segments(values).map((seg, si) => {
         if (seg.values.length === 1) return null; // the dot from lineShapes suffices
         const top = seg.values.map((v, j) => `${geom.x(seg.start + j)},${geom.y(v)}`).join(' ');
@@ -281,7 +308,7 @@ export function BandSeries({ points, kind, height = 150, color = 'var(--accent)'
       viewBox={`0 0 ${W} ${H}`} role="img" aria-label={label}>
       {!compact && (
         <GridAndAxes geom={geom} yMax={yMax} format={format}
-          ticks={axisTicks(points.map((p) => p.bucket), kind)} count={points.length} />
+          buckets={points.map((p) => p.bucket)} kind={kind} count={points.length} />
       )}
       {bandRuns.map((idxs, bi) => {
         const top = idxs.map((i) => `${geom.x(i)},${geom.y(points[i]!.p90!)}`).join(' ');
@@ -340,7 +367,6 @@ export function SignedLine({ points, kind, height = 150, color = 'var(--accent)'
         fill="var(--muted)">{format(v)}</text>
     </g>
   );
-  const ticks = axisTicks(points.map((p) => p.bucket), kind);
   return (
     <div className="chart-frame">
       <svg className="chart-svg" width="100%" viewBox={`0 0 ${VB_W} ${height}`}
@@ -348,11 +374,7 @@ export function SignedLine({ points, kind, height = 150, color = 'var(--accent)'
         {yMax > 0 && gridline(yMax)}
         {yMin < 0 && gridline(yMin)}
         {gridline(0, true)}
-        {ticks.map((t) => (
-          <text key={`x${t.index}`} x={geom.x(t.index)} y={geom.h - 6}
-            textAnchor={t.index === 0 ? 'start' : t.index === points.length - 1 ? 'end' : 'middle'}
-            fontSize={FONT} fill="var(--muted)">{t.text}</text>
-        ))}
+        {xAxisMarks(timeTicks(points.map((p) => p.bucket), kind), geom, points.length)}
         {lineShapes(values, geom, color, 's')}
         {tooltipTargets(points.map((p) => p.bucket), geom, kind, (i) =>
           points[i]!.value == null ? null
@@ -434,7 +456,7 @@ export function MultiLine({ series, kind, height = 150, format = fmt, label, mar
       <svg className="chart-svg" width="100%" viewBox={`0 0 ${VB_W} ${height}`}
         role="img" aria-label={label}>
         <GridAndAxes geom={geom} yMax={yMax} format={format}
-          ticks={axisTicks(buckets, kind)} count={count} />
+          buckets={buckets} kind={kind} count={count} />
         {series.map((s, si) => lineShapes(s.points.map((p) => p.value), geom, s.color, `s${si}`))}
         {markerShapes(markers, buckets, geom)}
         {tooltipTargets(buckets, geom, kind, (i) => {

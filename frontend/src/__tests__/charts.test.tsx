@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { render } from '@testing-library/react';
 import {
   AreaSeries, BandSeries, MultiLine, SignedLine, ScatterPlot,
-  axisTicks, formatBucketLabel, formatBucketTooltip,
+  timeTicks, formatBucketLabel, formatBucketTooltip,
   type ChartPoint, type BandPoint,
 } from '../charts';
 
@@ -37,46 +37,46 @@ describe('formatBucketTooltip', () => {
   });
 });
 
-describe('axisTicks', () => {
-  it('emits start / middle / end ticks', () => {
-    const ticks = axisTicks(['2026-06-07', '2026-06-08', '2026-06-09', '2026-06-10', '2026-06-11'], 'day');
-    expect(ticks.map((t) => t.index)).toEqual([0, 2, 4]);
-    expect(ticks.map((t) => t.text)).toEqual(['Jun 7', 'Jun 9', 'Jun 11']);
-  });
-
-  it('dedupes indices for short series', () => {
-    expect(axisTicks(['2026-06-11'], 'day').map((t) => t.index)).toEqual([0]);
-    expect(axisTicks(['2026-06-10', '2026-06-11'], 'day').map((t) => t.index)).toEqual([0, 1]);
-    expect(axisTicks([], 'day')).toEqual([]);
-  });
-
-  // The x-axis must carry the DATE, not just the time, for hour buckets — otherwise
-  // a multi-day window reads as bare "14:00 / 02:00 / 18:00" with no day context.
+describe('timeTicks (major @ day/month, minor @ hour/day)', () => {
   const localDay = (b: string) =>
     new Date(`${b}:00:00Z`).toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
 
-  it('labels the date on every hour tick across a multi-day window', () => {
-    // 24h-apart instants are on distinct local days in any timezone
-    const ticks = axisTicks(['2026-06-11T02', '2026-06-12T02', '2026-06-13T02'], 'hour');
-    for (const t of ticks) expect(t.text).toMatch(/^[A-Z][a-z]{2} \d{1,2} \d{2}:\d{2}$/);
+  it('emits one tick per bucket (a minor tick at every bucket boundary)', () => {
+    const ticks = timeTicks(['2026-06-11T00', '2026-06-11T01', '2026-06-11T02'], 'hour');
+    expect(ticks.map((t) => t.index)).toEqual([0, 1, 2]);
   });
 
-  it('hour ticks always date the first tick and re-date only on a day change (TZ-robust)', () => {
-    const buckets = ['2026-06-11T10', '2026-06-11T12', '2026-06-11T14'];
-    const ticks = axisTicks(buckets, 'hour');
-    // first tick always carries its (local) date
-    expect(ticks[0]!.text.startsWith(localDay(buckets[ticks[0]!.index]!))).toBe(true);
-    // every other tick is date-prefixed iff its local day differs from the previous tick's
-    for (let i = 1; i < ticks.length; i++) {
-      const prevDay = localDay(buckets[ticks[i - 1]!.index]!);
-      const curDay = localDay(buckets[ticks[i]!.index]!);
-      expect(ticks[i]!.text.startsWith(curDay)).toBe(curDay !== prevDay);
+  it('empty buckets → no ticks', () => {
+    expect(timeTicks([], 'hour')).toEqual([]);
+  });
+
+  it('hour: edges + day-rollovers are major+labeled, interior same-day are minor+unlabeled (TZ-robust)', () => {
+    const buckets = ['2026-06-11T10', '2026-06-11T11', '2026-06-11T12', '2026-06-11T13'];
+    const ticks = timeTicks(buckets, 'hour');
+    for (let i = 0; i < ticks.length; i++) {
+      const edge = i === 0 || i === ticks.length - 1;
+      const dayChanged = i > 0 && localDay(buckets[i]!) !== localDay(buckets[i - 1]!);
+      expect(ticks[i]!.major).toBe(edge || dayChanged);
+      expect(ticks[i]!.label != null).toBe(ticks[i]!.major);          // labels only on majors
+      if (ticks[i]!.major) expect(ticks[i]!.label).toBe(localDay(buckets[i]!)); // major label = the day
     }
   });
 
-  it('day buckets are unchanged (already dated)', () => {
-    expect(axisTicks(['2026-06-07', '2026-06-09', '2026-06-11'], 'day').map((t) => t.text))
-      .toEqual(['Jun 7', 'Jun 9', 'Jun 11']);
+  it('hour: a multi-day window has interior MAJOR ticks at day boundaries AND minor ticks between (TZ-robust)', () => {
+    // 26 consecutive UTC hours always cross ≥1 local midnight in any timezone
+    const buckets = Array.from({ length: 26 }, (_, h) =>
+      new Date(Date.UTC(2026, 5, 11, h)).toISOString().slice(0, 13));
+    const ticks = timeTicks(buckets, 'hour');
+    const interiorMajors = ticks.filter((t, i) => t.major && i !== 0 && i !== ticks.length - 1);
+    expect(interiorMajors.length).toBeGreaterThanOrEqual(1); // ≥1 day-boundary major
+    expect(ticks.some((t) => !t.major)).toBe(true);          // minor (hour) ticks between
+  });
+
+  it('day: minor at every day, major+labeled at the month rollover and edges', () => {
+    const ticks = timeTicks(['2026-06-29', '2026-06-30', '2026-07-01', '2026-07-02'], 'day');
+    expect(ticks.map((t) => t.major)).toEqual([true, false, true, true]); // edge, minor, month-rollover, edge
+    expect(ticks[2]!.label).toBe('Jul 1');
+    expect(ticks[1]!.label).toBeNull();
   });
 });
 
@@ -99,15 +99,23 @@ describe('AreaSeries', () => {
     expect(texts).toContain('0');  // baseline
   });
 
-  it('labels the x axis at start / middle / end with dated bucket labels', () => {
-    const points = pts([1, 2, 3, 4, 5]);
+  it('renders minor (hour) + major (day) x-axis tick MARKS, labels on majors only', () => {
+    // span 30 hours so the window crosses a local-day boundary in any timezone →
+    // both minor (hour) and major (day) ticks are present
+    const points: ChartPoint[] = Array.from({ length: 30 }, (_, h) => ({
+      bucket: new Date(Date.UTC(2026, 5, 11, h)).toISOString().slice(0, 13), value: h + 1,
+    }));
     const { container } = render(<AreaSeries points={points} kind="hour" />);
-    const texts = [...container.querySelectorAll('text')].map((t) => t.textContent);
-    // the axis renders the axisTicks output (date-prefixed for hour buckets), not
-    // bare times — assert each rendered tick label is present
-    for (const t of axisTicks(points.map((p) => p.bucket), 'hour')) {
-      expect(texts).toContain(t.text);
-    }
+    const minors = container.querySelectorAll('line[data-tick="minor"]');
+    const majors = container.querySelectorAll('line[data-tick="major"]');
+    expect(minors.length).toBeGreaterThan(0);   // hour-boundary minor marks
+    expect(majors.length).toBeGreaterThanOrEqual(2); // ≥ first/last anchors + a day boundary
+    // major marks hang lower (taller) than minor marks
+    const len = (el: Element) => Number(el.getAttribute('y2')) - Number(el.getAttribute('y1'));
+    expect(len(majors[0]!)).toBeGreaterThan(len(minors[0]!));
+    // every minor tick is unlabeled; at least one major carries a "Mon D" label
+    const labels = [...container.querySelectorAll('text')].map((t) => t.textContent ?? '');
+    expect(labels.some((t) => /^[A-Z][a-z]{2} \d{1,2}$/.test(t))).toBe(true);
   });
 
   it('breaks line and area at null gaps instead of bridging', () => {
