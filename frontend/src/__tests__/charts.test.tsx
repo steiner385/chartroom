@@ -49,6 +49,35 @@ describe('axisTicks', () => {
     expect(axisTicks(['2026-06-10', '2026-06-11'], 'day').map((t) => t.index)).toEqual([0, 1]);
     expect(axisTicks([], 'day')).toEqual([]);
   });
+
+  // The x-axis must carry the DATE, not just the time, for hour buckets — otherwise
+  // a multi-day window reads as bare "14:00 / 02:00 / 18:00" with no day context.
+  const localDay = (b: string) =>
+    new Date(`${b}:00:00Z`).toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+
+  it('labels the date on every hour tick across a multi-day window', () => {
+    // 24h-apart instants are on distinct local days in any timezone
+    const ticks = axisTicks(['2026-06-11T02', '2026-06-12T02', '2026-06-13T02'], 'hour');
+    for (const t of ticks) expect(t.text).toMatch(/^[A-Z][a-z]{2} \d{1,2} \d{2}:\d{2}$/);
+  });
+
+  it('hour ticks always date the first tick and re-date only on a day change (TZ-robust)', () => {
+    const buckets = ['2026-06-11T10', '2026-06-11T12', '2026-06-11T14'];
+    const ticks = axisTicks(buckets, 'hour');
+    // first tick always carries its (local) date
+    expect(ticks[0]!.text.startsWith(localDay(buckets[ticks[0]!.index]!))).toBe(true);
+    // every other tick is date-prefixed iff its local day differs from the previous tick's
+    for (let i = 1; i < ticks.length; i++) {
+      const prevDay = localDay(buckets[ticks[i - 1]!.index]!);
+      const curDay = localDay(buckets[ticks[i]!.index]!);
+      expect(ticks[i]!.text.startsWith(curDay)).toBe(curDay !== prevDay);
+    }
+  });
+
+  it('day buckets are unchanged (already dated)', () => {
+    expect(axisTicks(['2026-06-07', '2026-06-09', '2026-06-11'], 'day').map((t) => t.text))
+      .toEqual(['Jun 7', 'Jun 9', 'Jun 11']);
+  });
 });
 
 describe('AreaSeries', () => {
@@ -70,12 +99,14 @@ describe('AreaSeries', () => {
     expect(texts).toContain('0');  // baseline
   });
 
-  it('labels the x axis at start / middle / end with bucket labels', () => {
+  it('labels the x axis at start / middle / end with dated bucket labels', () => {
     const points = pts([1, 2, 3, 4, 5]);
     const { container } = render(<AreaSeries points={points} kind="hour" />);
     const texts = [...container.querySelectorAll('text')].map((t) => t.textContent);
-    for (const i of [0, 2, 4]) {
-      expect(texts).toContain(formatBucketLabel(points[i]!.bucket, 'hour'));
+    // the axis renders the axisTicks output (date-prefixed for hour buckets), not
+    // bare times — assert each rendered tick label is present
+    for (const t of axisTicks(points.map((p) => p.bucket), 'hour')) {
+      expect(texts).toContain(t.text);
     }
   });
 
