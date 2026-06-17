@@ -11,10 +11,27 @@ import { observedKey, type ObservedCell } from './observed';
 import { cellState, type Cell, type CellIntent } from './cell';
 import { deriveDrift, type DriftConfig, DRIFT_DEFAULTS } from './drift';
 
+/** Per-check actionability metadata — what the surface needs to drill in, judge
+ *  legality of a move, and generate a correct workflow edit / Claude Code prompt.
+ *  (The cell grid carries only booleans; this carries the provenance + triggers
+ *  the server already knows but used to drop.) */
+export interface CheckMeta {
+  check: string;
+  /** Distinct GHA event kinds the check's workflow declares (pull_request, merge_group, …). */
+  triggers: string[];
+  /** Where the check is defined — the file+job an action must edit. */
+  provenance: { file: string; jobId: string }[];
+  confidence: 'high' | 'low';
+  /** True when the check is an unconditional required gate on the merge queue —
+   *  moving/removing it would break branch protection (hard safety invariant). */
+  isRequiredMergeGate: boolean;
+}
+
 export interface DerivedModel {
   tiers: TierDef[];
   checks: string[];
   cells: Cell[];
+  checkMeta: CheckMeta[];
 }
 
 export function assembleDerivedModel(
@@ -43,8 +60,21 @@ export function assembleDerivedModel(
     }
   }
   const conditionalCallers = new Set(gating.conditionalCallerJobs);
+  const gatingCallers = new Set(gating.gatingCallerJobs);
 
   const checks = [...byCheck.keys()].sort();
+
+  // per-check actionability metadata (triggers / provenance / confidence / gate-safety)
+  const checkMeta: CheckMeta[] = checks.map((check) => {
+    const nodes = byCheck.get(check)!;
+    const triggers = [...new Set(nodes.flatMap((n) => n.triggers.events.map((e) => e.kind)))];
+    const provMap = new Map<string, { file: string; jobId: string }>();
+    for (const n of nodes) for (const p of n.provenance) provMap.set(`${p.file}#${p.jobId}`, { file: p.file, jobId: p.jobId });
+    const confidence = nodes.some((n) => n.confidence === 'low') ? 'low' : 'high';
+    const gatesMergeGroup = gatesAt.get(check)?.has('merge_group') ?? false;
+    const unconditional = nodes.some((n) => gatingCallers.has(n.callerJobId) && !conditionalCallers.has(n.callerJobId));
+    return { check, triggers, provenance: [...provMap.values()], confidence, isRequiredMergeGate: gatesMergeGroup && unconditional };
+  });
 
   // For checkRunsElsewhere: a check is "active" if it has an observed cell
   // with runs >= cfg.minRuns at ANY tier, so a single stray run does not
@@ -74,5 +104,5 @@ export function assembleDerivedModel(
       });
     }
   }
-  return { tiers, checks, cells };
+  return { tiers, checks, cells, checkMeta };
 }

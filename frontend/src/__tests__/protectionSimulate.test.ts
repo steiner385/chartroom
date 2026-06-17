@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { simulateMove, perRunMinutes, tierRunScale } from '../protectionSimulate';
+import { simulateMove, perRunMinutes, tierRunScale, legalFromTiers, legalToTargets } from '../protectionSimulate';
 import type { DerivedModel } from '../ProtectionMap';
 
 const obs = (runs: number, minutes: number) => ({ ran: runs > 0, runs, realFailures: 0, failRatePct: 0, flakeRatePct: 0, minutes });
@@ -61,5 +61,64 @@ describe('simulateMove', () => {
     expect(r.gatesLost).toEqual(['queue']);
     expect(r.gatesGained).toEqual(['pr']); // e2e doesn't gate at PR today → would add one
     expect(r.note).toMatch(/adds 1,?000 min \(est\.\)/);
+  });
+});
+
+const T4 = [
+  { id: 'pr', label: 'PR', event: 'pull_request' },
+  { id: 'queue', label: 'Queue', event: 'merge_group' },
+  { id: 'main', label: 'Main', event: 'push' },
+  { id: 'nightly', label: 'Nightly', event: 'schedule' },
+];
+const cell = (check: string, tierId: string, runs: boolean, gates: boolean, o: ReturnType<typeof obs> | null, state: string) =>
+  ({ check, tierId, intent: { runs, gates, conditional: false }, observed: o, drift: false, state }) as DerivedModel['cells'][number];
+const META_MODEL: DerivedModel = {
+  tiers: T4,
+  checks: ['gate-check', 'pr-only'],
+  cells: [
+    cell('gate-check', 'pr', true, false, obs(100, 200), 'advisory'),
+    cell('gate-check', 'queue', true, true, obs(50, 300), 'gate'),
+    cell('gate-check', 'main', false, false, null, 'absent'),
+    cell('gate-check', 'nightly', false, false, null, 'absent'),
+    cell('pr-only', 'pr', true, false, obs(100, 100), 'advisory'),
+    cell('pr-only', 'queue', false, false, null, 'absent'),
+    cell('pr-only', 'main', false, false, null, 'absent'),
+    cell('pr-only', 'nightly', false, false, null, 'absent'),
+  ],
+  checkMeta: [
+    { check: 'gate-check', triggers: ['pull_request', 'merge_group'], provenance: [{ file: 'ci.yml', jobId: 'gate' }], confidence: 'high', isRequiredMergeGate: true },
+    { check: 'pr-only', triggers: ['pull_request'], provenance: [{ file: 'fast.yml', jobId: 'pronly' }], confidence: 'high', isRequiredMergeGate: false },
+  ],
+};
+
+describe('simulateMove legality (safety invariant + constrained moves)', () => {
+  it('refuses to move a required merge gate OFF the queue', () => {
+    const r = simulateMove(META_MODEL, { check: 'gate-check', fromTierId: 'queue', toTierId: 'main' });
+    expect(r.legal).toBe(false);
+    expect(r.reason).toMatch(/required merge-queue gate/);
+    expect(r.note).toMatch(/not possible/);
+  });
+  it('refuses to REMOVE a required merge gate from the queue', () => {
+    expect(simulateMove(META_MODEL, { check: 'gate-check', fromTierId: 'queue', toTierId: null }).legal).toBe(false);
+  });
+  it('refuses a move to a tier whose event the workflow does not declare', () => {
+    const r = simulateMove(META_MODEL, { check: 'pr-only', fromTierId: 'pr', toTierId: 'main' });
+    expect(r.legal).toBe(false);
+    expect(r.reason).toMatch(/no push trigger/);
+  });
+  it('allows demoting between declared events and labels the direction', () => {
+    const r = simulateMove(META_MODEL, { check: 'gate-check', fromTierId: 'pr', toTierId: 'queue' });
+    expect(r.legal).toBe(true);
+    expect(r.direction).toBe('demote');
+  });
+  it('legalFromTiers = only tiers where the check runs', () => {
+    expect(legalFromTiers(META_MODEL, 'pr-only').map((t) => t.id)).toEqual(['pr']);
+    expect(legalFromTiers(META_MODEL, 'gate-check').map((t) => t.id)).toEqual(['pr', 'queue']);
+  });
+  it('legalToTargets excludes undeclared events and blocks a required-gate queue', () => {
+    // pr-only declares only pull_request → from PR, no tier target is legal, only remove
+    expect(legalToTargets(META_MODEL, 'pr-only', 'pr').map((t) => t.label)).toEqual(['— remove —']);
+    // gate-check sitting on the queue is a required gate → no legal targets at all
+    expect(legalToTargets(META_MODEL, 'gate-check', 'queue')).toEqual([]);
   });
 });

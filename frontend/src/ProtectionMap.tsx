@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
-import { simulateMove } from './protectionSimulate';
+import { simulateMove, legalFromTiers, legalToTargets } from './protectionSimulate';
+import { buildClaudePrompt } from './protectionPrompt';
 
 // ---- DerivedModel mirror (server/pipeline-model/derived) --------------------
 
@@ -16,7 +17,14 @@ interface Cell {
   drift: boolean;
   state: CellState;
 }
-export interface DerivedModel { tiers: TierDef[]; checks: string[]; cells: Cell[] }
+export interface CheckMeta {
+  check: string;
+  triggers: string[];
+  provenance: { file: string; jobId: string }[];
+  confidence: 'high' | 'low';
+  isRequiredMergeGate: boolean;
+}
+export interface DerivedModel { tiers: TierDef[]; checks: string[]; cells: Cell[]; checkMeta?: CheckMeta[] }
 
 // gate (mandatory) ▸ conditional (runs-when-touched) ▸ advisory ▸ absent
 const STATE_RANK: Record<CellState, number> = { gate: 3, conditional: 2, advisory: 1, absent: 0 };
@@ -94,6 +102,8 @@ export function ProtectionMap() {
   const [metrics, setMetrics] = useState<MetricsSlice | null>(null);
   const [overlay, setOverlay] = useState<Overlay>('none');
   const [sim, setSim] = useState<{ check: string; from: string; to: string } | null>(null);
+  const [drilled, setDrilled] = useState<{ check: string; goal: Goal; detail: string } | null>(null);
+  const [copied, setCopied] = useState(false);
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
   const [expandedGoals, setExpandedGoals] = useState<Set<Goal>>(new Set());
   const [showAbsent, setShowAbsent] = useState(false);
@@ -243,6 +253,17 @@ export function ProtectionMap() {
 
   const toggleGroup = (n: string) => setCollapsed((s) => { const x = new Set(s); if (x.has(n)) x.delete(n); else x.add(n); return x; });
   const toggleGoal = (g: Goal) => setExpandedGoals((s) => { const x = new Set(s); if (x.has(g)) x.delete(g); else x.add(g); return x; });
+  // open the drill-down drawer for a check, seeding the simulator with the
+  // recommended (legal) move so the user lands on the suggested action.
+  const openDrill = (check: string, goal: Goal, detail: string) => {
+    if (!model) return;
+    const fromOpts = legalFromTiers(model, check);
+    const from = fromOpts[0]?.id ?? model.tiers[0]?.id ?? '';
+    const toOpts = legalToTargets(model, check, from);
+    const to = toOpts.find((o) => o.tierId !== null)?.tierId ?? '__remove__';
+    setSim({ check, from, to });
+    setDrilled({ check, goal, detail });
+  };
 
   return (
     <div className="protection-map">
@@ -303,8 +324,11 @@ export function ProtectionMap() {
                     <ul>
                       {shown.map((f, i) => (
                         <li key={`${f.check}-${i}`} className="pm-finding" data-goal={goal}>
-                          <span className="pm-finding-check" title={f.check}>{displayName(f.check)}</span>
-                          <span className="pm-finding-detail">{f.detail}</span>
+                          <button type="button" className="pm-finding-btn" onClick={() => openDrill(f.check, goal, f.detail)}
+                            aria-label={`Details for ${displayName(f.check)}`}>
+                            <span className="pm-finding-check" title={f.check}>{displayName(f.check)}</span>
+                            <span className="pm-finding-detail">{f.detail}</span>
+                          </button>
                         </li>
                       ))}
                     </ul>
@@ -389,37 +413,83 @@ export function ProtectionMap() {
             </div>
           </div>
 
-          {/* ── Simulator ─────────────────────────────────────────────── */}
-          {(() => {
-            const s = sim ?? { check: model.checks[0] ?? '', from: model.tiers[0]?.id ?? '', to: '__remove__' };
-            const res = s.check ? simulateMove(model, { check: s.check, fromTierId: s.from, toTierId: s.to === '__remove__' ? null : s.to }) : null;
-            const upd = (patch: Partial<typeof s>) => setSim({ ...s, ...patch });
+          {/* ── Drill-down drawer: evidence + constrained simulator + action ── */}
+          {drilled && (() => {
+            const dcheck = drilled.check;
+            const meta = model.checkMeta?.find((m) => m.check === dcheck);
+            const s = sim && sim.check === dcheck ? sim : { check: dcheck, from: legalFromTiers(model, dcheck)[0]?.id ?? model.tiers[0]?.id ?? '', to: '__remove__' };
+            const fromOpts = legalFromTiers(model, dcheck);
+            const toOpts = legalToTargets(model, dcheck, s.from);
+            const res = simulateMove(model, { check: dcheck, fromTierId: s.from, toTierId: s.to === '__remove__' ? null : s.to });
+            const setFrom = (from: string) => {
+              const next = legalToTargets(model, dcheck, from);
+              const keep = next.some((o) => (o.tierId ?? '__remove__') === s.to);
+              setSim({ check: dcheck, from, to: keep ? s.to : (next.find((o) => o.tierId !== null)?.tierId ?? '__remove__') });
+            };
+            const onCopy = () => {
+              const text = buildClaudePrompt(repo ?? '', model, { goal: drilled.goal, check: dcheck, detail: drilled.detail, suggestedTierId: s.to === '__remove__' ? null : s.to });
+              void navigator.clipboard?.writeText?.(text);
+              setCopied(true); window.setTimeout(() => setCopied(false), 1500);
+            };
             return (
-              <details className="pm-sim" data-testid="pm-sim">
-                <summary>Simulator — what if I move a check?</summary>
-                <div className="pm-sim-controls">
-                  <label>check
-                    <select data-testid="pm-sim-check" value={s.check} onChange={(e) => upd({ check: e.target.value })}>
-                      {model.checks.map((c) => <option key={c} value={c}>{displayName(c)}</option>)}
-                    </select>
-                  </label>
-                  <label>from
-                    <select data-testid="pm-sim-from" value={s.from} onChange={(e) => upd({ from: e.target.value })}>
-                      {model.tiers.map((t) => <option key={t.id} value={t.id}>{t.label}</option>)}
-                    </select>
-                  </label>
-                  <label>to
-                    <select data-testid="pm-sim-to" value={s.to} onChange={(e) => upd({ to: e.target.value })}>
-                      <option value="__remove__">— remove —</option>
-                      {model.tiers.map((t) => <option key={t.id} value={t.id}>{t.label}</option>)}
-                    </select>
-                  </label>
+              <aside className="pm-drawer" data-testid="pm-drawer" role="dialog" aria-label={`Action for ${displayName(dcheck)}`}>
+                <div className="pm-drawer-head">
+                  <span className={`pm-drawer-goal pm-fgroup-${drilled.goal}`}>{GOAL_ICON[drilled.goal]} {GOAL_LABEL[drilled.goal]}</span>
+                  <strong className="pm-drawer-check" title={dcheck}>{displayName(dcheck)}</strong>
+                  <button type="button" className="pm-drawer-x" aria-label="Close" onClick={() => setDrilled(null)}>✕</button>
                 </div>
-                {res && (
-                  <p className={`pm-sim-result ${res.costDeltaMinutes < 0 ? 'good' : res.costDeltaMinutes > 0 ? 'bad' : ''}`}
-                    data-testid="pm-sim-result" data-cost-delta={res.costDeltaMinutes}>{res.note}</p>
-                )}
-              </details>
+                <p className="pm-drawer-prov">
+                  {meta?.provenance?.length ? `defined in ${meta.provenance.map((p) => `${p.file} › ${p.jobId}`).join(', ')}` : 'workflow source unknown'}
+                  {meta?.isRequiredMergeGate && <span className="pm-drawer-gate"> · required merge gate</span>}
+                  {meta?.confidence === 'low' && <span className="pm-drawer-low"> · low parse confidence</span>}
+                </p>
+                <p className="pm-drawer-why">{drilled.detail}</p>
+
+                <table className="pm-evidence" data-testid="pm-evidence">
+                  <thead><tr><th>tier</th><th>state</th><th>runs</th><th>fail%</th><th>min</th></tr></thead>
+                  <tbody>
+                    {model.tiers.map((t) => {
+                      const c = byCell.get(cellKey(dcheck, t.id));
+                      const o = c?.observed;
+                      const st = c?.state ?? 'absent';
+                      return (
+                        <tr key={t.id} className={c?.drift ? 'pm-ev-drift' : ''}>
+                          <td>{t.label}</td>
+                          <td className={`pm-${st}`}>{STATE_GLYPH[st]} {STATE_WORD[st]}{c?.drift ? ' ⚠' : ''}</td>
+                          <td>{o ? o.runs.toLocaleString() : '—'}</td>
+                          <td>{o && o.runs ? `${o.failRatePct}%` : '—'}</td>
+                          <td>{o ? fmtMin(o.minutes) : '—'}</td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+
+                <div className="pm-drawer-sim" data-testid="pm-sim">
+                  <div className="pm-sim-label">What-if</div>
+                  <div className="pm-sim-controls">
+                    <label>move from
+                      <select data-testid="pm-sim-from" value={s.from} onChange={(e) => setFrom(e.target.value)}>
+                        {fromOpts.map((t) => <option key={t.id} value={t.id}>{t.label}</option>)}
+                      </select>
+                    </label>
+                    <label>to
+                      <select data-testid="pm-sim-to" value={s.to} onChange={(e) => setSim({ check: dcheck, from: s.from, to: e.target.value })} disabled={toOpts.length === 0}>
+                        {toOpts.length === 0 && <option value="">— no legal move —</option>}
+                        {toOpts.map((o) => <option key={o.tierId ?? '__remove__'} value={o.tierId ?? '__remove__'}>{o.label}</option>)}
+                      </select>
+                    </label>
+                  </div>
+                  <p className={`pm-sim-result ${!res.legal ? 'bad' : res.costDeltaMinutes < 0 ? 'good' : res.costDeltaMinutes > 0 ? 'bad' : ''}`}
+                    data-testid="pm-sim-result" data-cost-delta={res.costDeltaMinutes} data-legal={res.legal ? '1' : '0'}>{res.note}</p>
+                </div>
+
+                <div className="pm-drawer-actions">
+                  <button type="button" className="pm-action-primary" data-testid="pm-copy-prompt" onClick={onCopy}>
+                    {copied ? '✓ Copied' : 'Copy Claude Code prompt'}
+                  </button>
+                </div>
+              </aside>
             );
           })()}
         </>
