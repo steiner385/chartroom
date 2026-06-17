@@ -177,6 +177,18 @@ describe('workspace-router (integration, contracts/api.md)', () => {
     expect(res.body.missingFromModel).toContain('totally-required-check');
   });
 
+  it('POST /plan composites a multi-move simulation (N2)', async () => {
+    const res = await request(app()).post('/api/workspace/plan')
+      .send({ repo: 'o/r', moves: [{ check: 'e2e', fromTierId: 'pr', toTierId: 'queue' }] });
+    expect(res.status).toBe(200);
+    expect(res.body).toHaveProperty('combinedCostDeltaMinutes');
+    expect(res.body).toHaveProperty('legal');
+  });
+
+  it('POST /plan 400s without moves', async () => {
+    expect((await request(app()).post('/api/workspace/plan').send({ repo: 'o/r' })).status).toBe(400);
+  });
+
   it('POST /quarantine refuses a required merge gate (FR-038) and dry-runs a non-gate', async () => {
     const QCI = `name: CI
 on: { pull_request: {}, merge_group: {} }

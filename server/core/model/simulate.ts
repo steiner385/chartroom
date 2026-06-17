@@ -4,7 +4,7 @@
 // the union required-gate safety set. Pure — (model, change[, liveRequired]) in,
 // projection + verdict out.
 import type { DerivedModel } from '../../pipeline-model/derived';
-import { validateTierChange, type LegalityVerdict } from './legality';
+import { validateTierChange, requiredGateChecks, type LegalityVerdict } from './legality';
 
 export type MoveDirection = 'demote' | 'promote' | 'remove' | 'none';
 export interface TierMove { check: string; fromTierId: string; toTierId: string | null }
@@ -67,4 +67,40 @@ export function simulateTierMove(model: DerivedModel, move: TierMove, liveRequir
   const note = verdict.legal ? `${cost}${estimated ? ' (est.)' : ''}${cov}` : `not possible — ${verdict.detail ?? verdict.reason}`;
 
   return { check: move.check, fromTierId: move.fromTierId, toTierId: move.toTierId, costDeltaMinutes, gatesLost, gatesGained, estimated, direction, legal: verdict.legal, reason: verdict.reason, note };
+}
+
+export interface PlanResult {
+  results: SimResult[];
+  combinedCostDeltaMinutes: number;
+  legal: boolean;
+  reason?: string;
+}
+
+/**
+ * Multi-change planning (spec 001, N2/FR-042). Composite legality is NOT the AND
+ * of per-move verdicts: two moves that each leave coverage can JOINTLY strand a
+ * required check. We validate each move, then re-check the COMBINED post-plan
+ * coverage of every required gate against the merged effect.
+ */
+export function simulatePlan(model: DerivedModel, moves: readonly TierMove[], liveRequired?: readonly string[]): PlanResult {
+  const results = moves.map((m) => simulateTierMove(model, m, liveRequired));
+  const combinedCostDeltaMinutes = results.reduce((s, r) => s + r.costDeltaMinutes, 0);
+
+  const firstIllegal = results.find((r) => !r.legal);
+  if (firstIllegal) return { results, combinedCostDeltaMinutes, legal: false, reason: `${firstIllegal.check}: ${firstIllegal.reason ?? 'illegal'}` };
+
+  // build the post-plan "runs" set: start from the model, apply every move
+  const runs = new Set<string>();
+  for (const c of model.cells) if (c.intent.runs) runs.add(`${c.check}@${c.tierId}`);
+  for (const m of moves) {
+    runs.delete(`${m.check}@${m.fromTierId}`);
+    if (m.toTierId) runs.add(`${m.check}@${m.toTierId}`);
+  }
+  // every required gate must still run somewhere after the WHOLE plan
+  const required = requiredGateChecks(model, liveRequired);
+  for (const check of required) {
+    const stillRuns = [...runs].some((k) => k.startsWith(`${check}@`));
+    if (!stillRuns) return { results, combinedCostDeltaMinutes, legal: false, reason: `the combined plan strands required gate "${check}" (runs nowhere after all moves)` };
+  }
+  return { results, combinedCostDeltaMinutes, legal: true };
 }

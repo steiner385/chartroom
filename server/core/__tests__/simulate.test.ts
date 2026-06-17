@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { simulateTierMove, perRunMinutes } from '../model/simulate';
+import { simulateTierMove, simulatePlan, perRunMinutes } from '../model/simulate';
 import type { DerivedModel } from '../../pipeline-model/derived';
 
 const obs = (runs: number, minutes: number) => ({ ran: runs > 0, runs, realFailures: 0, failRatePct: 0, flakeRatePct: 0, minutes });
@@ -58,5 +58,40 @@ describe('simulateTierMove (server-side, FR-011/FR-012)', () => {
     const r = simulateTierMove(MODEL, { check: 'lint', fromTierId: 'pr', toTierId: 'main' });
     expect(r.estimated).toBe(true);
     expect(r.direction).toBe('demote');
+  });
+});
+
+describe('simulatePlan (N2/FR-042 — composite legality)', () => {
+  it('sums cost and is legal when moves are jointly safe', () => {
+    const p = simulatePlan(MODEL, [{ check: 'lint', fromTierId: 'pr', toTierId: null }]);
+    expect(p.legal).toBe(true);
+    expect(p.combinedCostDeltaMinutes).toBe(-600);
+  });
+
+  it('rejects the plan if any single move is illegal (required gate)', () => {
+    const p = simulatePlan(MODEL, [{ check: 'build', fromTierId: 'queue', toTierId: null }]);
+    expect(p.legal).toBe(false);
+    expect(p.reason).toMatch(/build/);
+  });
+
+  it('catches an EMERGENT strand: two individually-legal moves that jointly remove a required check everywhere', () => {
+    // a model where required check `dup` runs at BOTH pr and queue (gate at queue)
+    const m = {
+      tiers: MODEL.tiers,
+      checks: ['dup'],
+      cells: [
+        cell('dup', 'pr', true, false, obs(50, 100), 'advisory'),
+        cell('dup', 'queue', true, false, obs(50, 100), 'advisory'), // NOT the merge gate here
+        cell('dup', 'main', false, false, null, 'absent'),
+      ],
+      checkMeta: [{ check: 'dup', triggers: [], provenance: [{ file: 'ci.yml', jobId: 'dup' }], confidence: 'high', isRequiredMergeGate: true }],
+    } as typeof MODEL;
+    // each move alone leaves dup running at the other tier (legal); together → nowhere
+    const p = simulatePlan(m, [
+      { check: 'dup', fromTierId: 'pr', toTierId: null },
+      { check: 'dup', fromTierId: 'queue', toTierId: null },
+    ]);
+    expect(p.legal).toBe(false);
+    expect(p.reason).toMatch(/strands required gate "dup"/);
   });
 });

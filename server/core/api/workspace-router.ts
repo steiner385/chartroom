@@ -5,7 +5,7 @@
 // write is a DRAFT PR.
 import { Router, type Request, type Response } from 'express';
 import { ModelDeriver } from '../model/derive';
-import { simulateTierMove, type TierMove } from '../model/simulate';
+import { simulateTierMove, simulatePlan, type TierMove } from '../model/simulate';
 import { buildPrompt, type PromptInput } from '../actions/prompt';
 import { prepareDraftEdit, prepareQuarantineEdit, openDraftPr, type PrClient, type TierAssignIntent } from '../actions/draftPr';
 import { auditWorkflowSecurity } from '../model/security';
@@ -110,6 +110,18 @@ export function createWorkspaceRouter(deps: WorkspaceRouterDeps): Router {
     const repo = repoOf(req, res); if (!repo) return;
     const ledger = deps.outcomes ? await deps.outcomes(repo) : [];
     res.json({ repo, outcomes: ledger.map(attributeOutcome), accuracy: summarizeAccuracy(ledger) });
+  });
+
+  // POST /plan — { repo, moves[] } → composite simulation (N2/FR-042). Composite
+  // legality is the merged effect, not the AND of per-move verdicts.
+  r.post('/plan', async (req, res) => {
+    const repo = repoOf(req, res); if (!repo) return;
+    const moves = req.body?.moves as TierMove[] | undefined;
+    if (!Array.isArray(moves) || moves.length === 0) return res.status(400).json({ error: 'moves[] required' });
+    const pinned = await deps.deriver.deriveAtHead(repo);
+    if (!pinned) return res.status(404).json({ error: 'no derivable model' });
+    const live = deps.liveRequired ? await deps.liveRequired(repo) : undefined;
+    res.json({ repo, sourceSha: pinned.sourceSha, ...simulatePlan(pinned.model, moves, live) });
   });
 
   // POST /quarantine — { repo, check, jobId, dryRun } → review-gated flake quarantine
