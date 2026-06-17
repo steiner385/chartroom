@@ -36,11 +36,11 @@ describe('WorkspaceApp (Increment 1 MVP composition)', () => {
     expect(screen.getByText('○ reconnecting')).toBeInTheDocument();
   });
 
-  it('an unbuilt section falls back to the legacy bridge with a classic-dashboard link', () => {
+  it('renders the Tune section content — all five sections are now built (no legacy bridge)', () => {
     mockHook.mockReturnValue({ state: STATE, connected: true });
     render(<WorkspaceApp />);
     fireEvent.click(screen.getByText('Tune & Investigate'));
-    const link = screen.getByRole('link', { name: /open classic dashboard/i });
-    expect(link).toHaveAttribute('href', '/#metrics'); // tune → metrics tab (still bridged)
+    expect(screen.getByRole('heading', { name: /Tune & Investigate/ })).toBeInTheDocument();
+    expect(screen.queryByRole('link', { name: /open classic dashboard/i })).not.toBeInTheDocument();
   });
 });

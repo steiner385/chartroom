@@ -12,6 +12,7 @@ import { HealthView } from '../sections/health/HealthView';
 import { DiagnoseView } from '../sections/diagnose/DiagnoseView';
 import { OptimizeView } from '../sections/optimize/OptimizeView';
 import { ModelView } from '../sections/model/ModelView';
+import { TuneView } from '../sections/tune/TuneView';
 import { makeWorkspaceApi } from './workspaceApi';
 import { SelfHealthDot } from './SelfHealthDot';
 import { ForecastBanner } from './ForecastBanner';
@@ -68,6 +69,7 @@ export function WorkspaceApp() {
         diagnose: <DiagnoseView state={state} focusedRepo={focused} />,
         model: <ModelView repo={focused} api={api} />,
         optimize: <OptimizeView repo={focused} api={api} />,
+        tune: <TuneView repo={focused} api={api} />,
       }}
       legacyBridge={(id) => <LegacyBridge id={id} />}
     />

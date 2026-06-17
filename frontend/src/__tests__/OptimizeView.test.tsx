@@ -30,6 +30,10 @@ function fakeApi(over: Partial<WorkspaceApi> = {}): WorkspaceApi {
     self: vi.fn(async () => ({ ingestionFreshnessSecs: 0, derivationCache: { hits: 0, misses: 0, hitRate: 0, size: 0 }, apiRateLimit: null, status: 'ok' as const, reasons: [] })),
     ruleset: vi.fn(async () => ({ readable: true, derivedRequired: [], liveRequired: [], missingFromModel: [], extraInModel: [], inSync: true })),
     forecast: vi.fn(async () => ({ available: false })),
+    changelog: vi.fn(async () => ({ changelog: [], audit: [] })),
+    outcomes: vi.fn(async () => ({ outcomes: [], accuracy: { count: 0, meanCostAccuracy: 0, directionHitRate: 0, recommenderUsable: false } })),
+    budgets: vi.fn(async () => ({ gauges: [], alerts: [] })),
+    policy: vi.fn(async () => ({ rules: [], violations: [] })),
     ...over,
   };
 }

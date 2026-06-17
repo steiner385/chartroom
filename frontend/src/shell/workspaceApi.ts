@@ -16,6 +16,10 @@ export interface RulesetDto {
   readable: boolean; derivedRequired: string[]; liveRequired: string[];
   missingFromModel: string[]; extraInModel: string[]; inSync: boolean;
 }
+export interface ChangelogDto { changelog: { at: string; kind: string; summary: string; actor: string }[]; audit: { at: string; action: string; repo: string; target?: string; result?: string; actor: string }[] }
+export interface OutcomesDto { outcomes: { prNumber: number; check: string; costAccuracy: number; directionCorrect: boolean; confidence: string; caveat: string }[]; accuracy: { count: number; meanCostAccuracy: number; directionHitRate: number; recommenderUsable: boolean } }
+export interface BudgetsDto { gauges: { kind: string; threshold: number; current: number; unit?: string; fractionUsed: number; state: 'ok' | 'warn' | 'breach' }[]; alerts: BudgetsDto['gauges'] }
+export interface PolicyDto { rules: { id: string; kind: string }[]; violations: { ruleId: string; kind: string; check: string; detail: string }[] }
 export interface ForecastDto {
   available: boolean; reason?: string; unit?: string; thresholdValue?: number;
   slopePerDay?: number; projectedAt?: number | null; daysToThreshold?: number | null;
@@ -54,6 +58,10 @@ export function makeWorkspaceApi(fetchImpl: Fetch = fetch, base = '/api/workspac
     self: () => fetchImpl(`${base}/self`).then(json<ToolHealthDto>),
     ruleset: (repo: string) => fetchImpl(`${base}/ruleset?${q(repo)}`).then(json<RulesetDto>),
     forecast: (repo: string) => fetchImpl(`${base}/forecast?${q(repo)}`).then(json<ForecastDto>),
+    changelog: (repo: string) => fetchImpl(`${base}/changelog?${q(repo)}`).then(json<ChangelogDto>),
+    outcomes: (repo: string) => fetchImpl(`${base}/outcomes?${q(repo)}`).then(json<OutcomesDto>),
+    budgets: () => fetchImpl(`${base}/budgets`).then(json<BudgetsDto>),
+    policy: (repo: string) => fetchImpl(`${base}/policy?${q(repo)}`).then(json<PolicyDto>),
   };
 }
 export type WorkspaceApi = ReturnType<typeof makeWorkspaceApi>;
