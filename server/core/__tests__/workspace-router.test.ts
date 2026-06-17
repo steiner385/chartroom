@@ -87,6 +87,31 @@ describe('workspace-router (integration, contracts/api.md)', () => {
     expect(res.status).toBe(409);
   });
 
+  it('GET /ruleset degrades to readable:false when no ruleset reader is wired (no silent mismatch)', async () => {
+    const res = await request(app()).get('/api/workspace/ruleset?repo=o/r');
+    expect(res.status).toBe(200);
+    expect(res.body.readable).toBe(false);
+    expect(res.body.inSync).toBe(false);
+  });
+
+  it('GET /ruleset reconciles against an injected live ruleset (Group I1)', async () => {
+    const deps: ModelDeriveDeps = {
+      resolveHeadSha: vi.fn(async () => 'sha-1'),
+      fetchWorkflowAtSha: vi.fn(async (_r, n) => (n === 'ci.yml' ? CI : null)),
+      successStatsByRepo: () => new Map<string, SuccessStat[]>(),
+      flakeStatsByRepo: () => new Map<string, FlakeStat[]>(), since: '2026-01-01T00:00:00Z',
+    };
+    const deriver = new ModelDeriver(deps);
+    const prClient: PrClient = { fetchWorkflowAtSha: deps.fetchWorkflowAtSha as PrClient['fetchWorkflowAtSha'], openDraftPr: vi.fn() as unknown as PrClient['openDraftPr'] };
+    // the live ruleset requires a check the static model doesn't flag → missingFromModel
+    const a = express(); a.use(express.json());
+    a.use('/api/workspace', createWorkspaceRouter({ deriver, prClient, liveRuleset: async () => ['totally-required-check'] }));
+    const res = await request(a).get('/api/workspace/ruleset?repo=o/r');
+    expect(res.status).toBe(200);
+    expect(res.body.readable).toBe(true);
+    expect(res.body.missingFromModel).toContain('totally-required-check');
+  });
+
   it('GET /self reports tool health incl. derivation-cache stats (Group O)', async () => {
     const res = await request(app()).get('/api/workspace/self');
     expect(res.status).toBe(200);

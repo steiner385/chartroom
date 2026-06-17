@@ -10,12 +10,16 @@ import { buildPrompt, type PromptInput } from '../actions/prompt';
 import { prepareDraftEdit, openDraftPr, type PrClient, type TierAssignIntent } from '../actions/draftPr';
 import { auditWorkflowSecurity } from '../model/security';
 import { buildSelfHealth, type ApiRateLimit } from '../model/selfHealth';
+import { reconcileRuleset } from '../model/ruleset';
 
 export interface WorkspaceRouterDeps {
   deriver: ModelDeriver;
   prClient: PrClient;
   /** live-ruleset required checks for a repo (FR-035a union binding); [] if unreadable. */
   liveRequired?: (repo: string) => Promise<readonly string[]>;
+  /** live branch-protection ruleset read (Group I1) — required checks, or null when
+   *  unreadable (missing administration:read scope / API error). */
+  liveRuleset?: (repo: string) => Promise<readonly string[] | null>;
   /** self-observability inputs (Group O): ingestion freshness + API rate-limit budget. */
   selfHealth?: () => { ingestionFreshnessSecs: number | null; apiRateLimit: ApiRateLimit | null };
 }
@@ -56,6 +60,17 @@ export function createWorkspaceRouter(deps: WorkspaceRouterDeps): Router {
     const pinned = await deps.deriver.deriveAtHead(repo);
     if (!pinned) return res.status(404).json({ error: 'no derivable model' });
     res.json({ prompt: buildPrompt(repo, pinned.model, finding) });
+  });
+
+  // GET /ruleset?repo= — reconcile derived required gates vs the live branch-
+  // protection ruleset (Group I1 / FR-035 / SC-014). Degrades honestly when the
+  // ruleset is unreadable (readable:false), never a false "in sync".
+  r.get('/ruleset', async (req, res) => {
+    const repo = repoOf(req, res); if (!repo) return;
+    const pinned = await deps.deriver.deriveAtHead(repo);
+    if (!pinned) return res.status(404).json({ error: 'no derivable model' });
+    const live = deps.liveRuleset ? await deps.liveRuleset(repo) : null;
+    res.json({ repo, sourceSha: pinned.sourceSha, ...reconcileRuleset(pinned.model, live) });
   });
 
   // GET /self — the tool's own health (Group O / FR-043). Always available; no repo.
