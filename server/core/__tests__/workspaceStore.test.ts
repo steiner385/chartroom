@@ -46,6 +46,13 @@ describe('WorkspaceStore (durable persistence — in-memory SQLite)', () => {
     expect(s.getPolicies('o/r')).toEqual([]);
   });
 
+  it('persists + reads budget thresholds scope-keyed (Group J2/J3)', () => {
+    expect(s.getBudgets()).toEqual([]); // default 'fleet' scope, none set
+    s.putBudgets('fleet', [{ kind: 'minutes', threshold: 50000, unit: 'min' }, { kind: 'cost', threshold: 100, unit: 'USD' }]);
+    expect(s.getBudgets('fleet')).toHaveLength(2);
+    expect(s.getBudgets('fleet')[0]).toMatchObject({ kind: 'minutes', threshold: 50000 });
+  });
+
   it('survives a reopen (real on-disk durability)', () => {
     const path = `${process.env.CLAUDE_JOB_DIR ?? '/tmp'}/tmp/ws-store-${Math.floor(Math.random() * 1e9)}.db`;
     const a = new WorkspaceStore(path);

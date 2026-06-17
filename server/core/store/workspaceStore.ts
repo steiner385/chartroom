@@ -8,6 +8,7 @@ import Database from 'better-sqlite3';
 import type { AppliedChange } from '../analytics/outcomes';
 import type { AuditRow } from '../analytics/changelog';
 import type { PolicyRule } from '../analytics/policy';
+import type { Budget } from '../analytics/budgets';
 
 export class WorkspaceStore {
   private db: Database.Database;
@@ -28,6 +29,7 @@ export class WorkspaceStore {
       );
       CREATE INDEX IF NOT EXISTS idx_audit_repo_at ON action_audit (repo, at DESC);
       CREATE TABLE IF NOT EXISTS workspace_policies (repo TEXT PRIMARY KEY, rules_json TEXT NOT NULL);
+      CREATE TABLE IF NOT EXISTS workspace_budgets (scope TEXT PRIMARY KEY, budgets_json TEXT NOT NULL);
     `);
   }
 
@@ -68,6 +70,16 @@ export class WorkspaceStore {
   putPolicies(repo: string, rules: PolicyRule[]): void {
     this.db.prepare('INSERT INTO workspace_policies (repo, rules_json) VALUES (?,?) ON CONFLICT(repo) DO UPDATE SET rules_json=excluded.rules_json')
       .run(repo, JSON.stringify(rules));
+  }
+
+  // --- Group J2/J3: budget thresholds (scope-keyed; 'fleet' is the default) ---
+  getBudgets(scope = 'fleet'): Budget[] {
+    const row = this.db.prepare('SELECT budgets_json FROM workspace_budgets WHERE scope=?').get(scope) as { budgets_json: string } | undefined;
+    return row ? JSON.parse(row.budgets_json) as Budget[] : [];
+  }
+  putBudgets(scope: string, budgets: Budget[]): void {
+    this.db.prepare('INSERT INTO workspace_budgets (scope, budgets_json) VALUES (?,?) ON CONFLICT(scope) DO UPDATE SET budgets_json=excluded.budgets_json')
+      .run(scope, JSON.stringify(budgets));
   }
 
   close(): void { this.db.close(); }

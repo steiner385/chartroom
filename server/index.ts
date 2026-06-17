@@ -345,6 +345,14 @@ async function main() {
           auditLog: async (repo) => wsStore.auditLog(repo),
           policyStore: { get: async (repo) => wsStore.getPolicies(repo), put: async (repo, rules) => wsStore.putPolicies(repo, rules) },
           recordAction: (row) => wsStore.recordAction(row), // write path: opened actions → audit log
+          // Group J2/J3 budgets: thresholds from the store, current spend from the
+          // fleet cost-actuals over the trailing 30d. No budgets stored → empty.
+          budgets: async () => {
+            const budgets = wsStore.getBudgets('fleet');
+            const sinceDate = new Date(Date.now() - 30 * 86_400_000).toISOString().slice(0, 10);
+            const cost = history.costActualsSince(sinceDate).filter((r) => r.scope === 'fleet').reduce((s, r) => s + r.dollars, 0);
+            return { budgets, current: { cost } };
+          },
         });
       })()
     : undefined;
