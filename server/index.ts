@@ -18,6 +18,8 @@ import { DigestScheduler, composeDigest, gatherDigestInput, queueHealthFromState
 import { backfillRepo } from './backfill';
 import { computeMetrics } from './metrics';
 import { computeProtectionMap } from './protection-map';
+import { createWorkspaceRouter } from './core/api/workspace-router';
+import { workspaceDepsFromClient } from './core/api/wire';
 import { createApp } from './api';
 import { loadWebhookSecret } from './webhooks';
 import { dataDir, staticDir, configPath } from './paths';
@@ -278,9 +280,42 @@ async function main() {
     return model;
   };
 
+  // Unified-workspace IDE/model loop (spec 001) — wired behind a default-off flag
+  // (strangler-fig). A facade routes the per-owner GithubClient by repo so the
+  // workspace deps see one client surface. Flag off → router undefined → the app
+  // is byte-for-byte unchanged.
+  const workspaceRouter = process.env.WORKSPACE_IDE === '1'
+    ? (() => {
+        const clientForRepo = (owner: string) => {
+          const c = router.clientFor(owner);
+          if (!c) throw new Error(`no installation covers ${owner}`);
+          return c;
+        };
+        const routed = {
+          restGet: <T,>(path: string): Promise<T> => {
+            const owner = path.match(/^\/repos\/([^/]+)\//)?.[1] ?? config.owners[0] ?? '';
+            return clientForRepo(owner).restGet<T>(path);
+          },
+          graphql: <T,>(query: string, vars: Record<string, unknown>): Promise<T> => {
+            const branch = vars.branch as { repositoryNameWithOwner?: string } | undefined;
+            const owner = (vars.owner as string | undefined)
+              ?? branch?.repositoryNameWithOwner?.split('/')[0] ?? config.owners[0] ?? '';
+            return clientForRepo(owner).graphql<T>(query, vars);
+          },
+        };
+        const deps = workspaceDepsFromClient(routed, {
+          successStatsByRepo: (s) => history.successStatsByRepo(s),
+          flakeStatsByRepo: (s) => history.flakeStatsByRepo(s),
+          conditionalCallerJobs: ['pr-affected-tests', 'integration-tests'],
+        });
+        return createWorkspaceRouter(deps);
+      })()
+    : undefined;
+
   const app = createApp({
     getState: () => poller.getState(),
     bus: poller,
+    workspaceRouter,
     staticDir: process.env.NODE_ENV === 'production' ? staticDir() : undefined,
     config: {
       get: () => config,
