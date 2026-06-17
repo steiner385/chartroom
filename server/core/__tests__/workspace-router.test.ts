@@ -211,6 +211,41 @@ describe('workspace-router (integration, contracts/api.md)', () => {
     expect((await request(app()).post('/api/workspace/plan').send({ repo: 'o/r' })).status).toBe(400);
   });
 
+  it('records an opened draft-PR into the audit log (write path, L2)', async () => {
+    const deps: ModelDeriveDeps = {
+      resolveHeadSha: vi.fn(async () => 'sha-1'), fetchWorkflowAtSha: vi.fn(async (_r, n) => (n === 'ci.yml' ? CI : null)),
+      successStatsByRepo: () => new Map<string, SuccessStat[]>(), flakeStatsByRepo: () => new Map<string, FlakeStat[]>(), since: '2026-01-01T00:00:00Z',
+    };
+    const recorded: { action: string; target?: string; result?: string }[] = [];
+    const a = express(); a.use(express.json());
+    a.use('/api/workspace', createWorkspaceRouter({
+      deriver: new ModelDeriver(deps),
+      prClient: { fetchWorkflowAtSha: deps.fetchWorkflowAtSha as PrClient['fetchWorkflowAtSha'], openDraftPr: vi.fn(async () => ({ number: 77, url: 'u' })) as unknown as PrClient['openDraftPr'] },
+      recordAction: (row) => recorded.push(row),
+    }));
+    await request(a).post('/api/workspace/draft-pr').send({ repo: 'o/r', dryRun: false, intent: { kind: 'tier', check: 'e2e', jobId: 'e2e', fromTierId: 'pr', targetEvent: 'merge_group' } });
+    expect(recorded).toHaveLength(1);
+    expect(recorded[0]).toMatchObject({ action: 'draft-pr', target: 'e2e', result: 'opened #77' });
+  });
+
+  it('does NOT record an action on a dry-run (preview only)', async () => {
+    const deps: ModelDeriveDeps = {
+      resolveHeadSha: vi.fn(async () => 'sha-1'), fetchWorkflowAtSha: vi.fn(async (_r, n) => (n === 'ci.yml' ? CI : null)),
+      successStatsByRepo: () => new Map<string, SuccessStat[]>(), flakeStatsByRepo: () => new Map<string, FlakeStat[]>(), since: '2026-01-01T00:00:00Z',
+    };
+    const recorded: unknown[] = [];
+    const a = express(); a.use(express.json());
+    a.use('/api/workspace', createWorkspaceRouter({
+      deriver: new ModelDeriver(deps),
+      prClient: { fetchWorkflowAtSha: deps.fetchWorkflowAtSha as PrClient['fetchWorkflowAtSha'], openDraftPr: vi.fn() as unknown as PrClient['openDraftPr'] },
+      recordAction: (row) => recorded.push(row),
+    }));
+    const res = await request(a).post('/api/workspace/draft-pr')
+      .send({ repo: 'o/r', dryRun: true, intent: { kind: 'tier', check: 'e2e', jobId: 'e2e', fromTierId: 'pr', targetEvent: 'merge_group' } });
+    expect(res.body.dryRun).toBe(true);
+    expect(recorded).toHaveLength(0);
+  });
+
   it('POST /quarantine refuses a required merge gate (FR-038) and dry-runs a non-gate', async () => {
     const QCI = `name: CI
 on: { pull_request: {}, merge_group: {} }

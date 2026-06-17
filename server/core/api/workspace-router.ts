@@ -39,6 +39,8 @@ export interface WorkspaceRouterDeps {
   policyStore?: { get: (repo: string) => Promise<PolicyRule[]>; put?: (repo: string, rules: PolicyRule[]) => Promise<void> };
   /** budgets/quota gauges (Group J2/J3): configured budgets + current values. */
   budgets?: () => Promise<{ budgets: Budget[]; current: Partial<Record<BudgetKind, number>> }>;
+  /** write path (Group L2): record an action the tool actually opened into the audit log. */
+  recordAction?: (row: AuditRow) => void;
 }
 
 function repoOf(req: Request, res: Response): string | null {
@@ -161,7 +163,10 @@ export function createWorkspaceRouter(deps: WorkspaceRouterDeps): Router {
     if (!prep.ok) return res.status(409).json({ error: prep.reason });
     if (req.body?.dryRun !== false) return res.json({ dryRun: true, diff: prep.prepared.diff, baseSha: prep.prepared.baseSha });
     const out = await openDraftPr(deps.deriver, deps.prClient, prep.prepared, check);
-    if (out.opened) return res.json({ opened: true, number: out.number, url: out.url });
+    if (out.opened) {
+      deps.recordAction?.({ at: new Date().toISOString(), repo, action: 'quarantine', target: check, result: `opened #${out.number}` });
+      return res.json({ opened: true, number: out.number, url: out.url });
+    }
     if (out.stale) return res.status(409).json({ error: 'HEAD drifted — re-derive and re-confirm', headSha: out.headSha });
     return res.status(502).json({ error: out.reason });
   });
@@ -206,7 +211,10 @@ export function createWorkspaceRouter(deps: WorkspaceRouterDeps): Router {
     if (!prep.ok) return res.status(409).json({ error: prep.reason });
     if (req.body?.dryRun !== false) return res.json({ dryRun: true, diff: prep.prepared.diff, baseSha: prep.prepared.baseSha });
     const out = await openDraftPr(deps.deriver, deps.prClient, prep.prepared, intent.check);
-    if (out.opened) return res.json({ opened: true, number: out.number, url: out.url });
+    if (out.opened) {
+      deps.recordAction?.({ at: new Date().toISOString(), repo, action: 'draft-pr', target: intent.check, result: `opened #${out.number}` });
+      return res.json({ opened: true, number: out.number, url: out.url });
+    }
     if (out.stale) return res.status(409).json({ error: 'HEAD drifted — re-derive and re-confirm', headSha: out.headSha });
     return res.status(502).json({ error: out.reason });
   });

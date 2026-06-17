@@ -326,6 +326,7 @@ async function main() {
           outcomes: async (repo) => wsStore.appliedChanges(repo),
           auditLog: async (repo) => wsStore.auditLog(repo),
           policyStore: { get: async (repo) => wsStore.getPolicies(repo), put: async (repo, rules) => wsStore.putPolicies(repo, rules) },
+          recordAction: (row) => wsStore.recordAction(row), // write path: opened actions → audit log
         });
       })()
     : undefined;
