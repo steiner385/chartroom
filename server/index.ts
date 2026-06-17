@@ -308,7 +308,18 @@ async function main() {
           flakeStatsByRepo: (s) => history.flakeStatsByRepo(s),
           conditionalCallerJobs: ['pr-affected-tests', 'integration-tests'],
         });
-        return createWorkspaceRouter(deps);
+        return createWorkspaceRouter({
+          ...deps,
+          // Group O self-observability from REAL sources: ingestion freshness from
+          // the poller's last frame, API budget from the client-router (GraphQL cap
+          // is 5000/hr — the client tracks `remaining`, not the limit).
+          selfHealth: () => {
+            const st = poller.getState();
+            const freshSecs = st?.generatedAt ? Math.max(0, Math.round((Date.now() - Date.parse(st.generatedAt)) / 1000)) : null;
+            const remaining = router.minRemaining();
+            return { ingestionFreshnessSecs: freshSecs, apiRateLimit: remaining != null ? { remaining, limit: 5000 } : null };
+          },
+        });
       })()
     : undefined;
 
