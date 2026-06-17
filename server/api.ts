@@ -160,6 +160,10 @@ export function createApp(opts: {
   webhooks?: WebhookApi;
   /** GET /api/metrics — computed per request (one local SQLite pass, no caching). */
   metrics?: (window: MetricsWindow, bucket: MetricsBucket) => MetricsPayload;
+  /** GET /api/protection-map?repo=owner/name — the CI/CD Designer's DerivedModel
+   *  (check × tier matrix) for a repo. Resolves null when the repo has no
+   *  derivable ci.yml. Wired in index.ts (fetches workflows + reads history). */
+  protectionMap?: (repo: string) => Promise<unknown>;
   /** GET /api/repos — discovered repos with their excluded flags (settings toggles). */
   repos?: () => { repo: string; excluded: boolean }[];
   /** POST /api/cost/actuals — operator-imported daily spend (cost explorer
@@ -243,6 +247,24 @@ export function createApp(opts: {
     app.get('/api/metrics', (req, res) => {
       const { window, bucket } = resolveMetricsQuery(req.query);
       res.json(metrics(window, bucket));
+    });
+  }
+
+  if (opts.protectionMap) {
+    const protectionMap = opts.protectionMap;
+    app.get('/api/protection-map', async (req, res) => {
+      const repo = typeof req.query.repo === 'string' ? req.query.repo.trim() : '';
+      if (!repo || !repo.includes('/')) {
+        res.status(400).json({ error: 'expected ?repo=owner/name' });
+        return;
+      }
+      try {
+        const model = await protectionMap(repo);
+        if (model == null) { res.status(404).json({ error: `no derivable ci.yml for ${repo}` }); return; }
+        res.json(model);
+      } catch (e) {
+        res.status(502).json({ error: e instanceof Error ? e.message : String(e) });
+      }
     });
   }
 
