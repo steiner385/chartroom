@@ -5,6 +5,7 @@
 // DashboardState (Tier-1).
 import type { DashboardState, LaneStatus } from '../../types';
 import { HealthHeader } from '../../HealthHeader';
+import { fleetLeaderboard } from './leaderboard';
 
 export type RepoVerdict = 'down' | 'attention' | 'healthy';
 export interface RepoRollup { repo: string; prCount: number; verdict: RepoVerdict; reason: string }
@@ -37,6 +38,7 @@ export interface HealthViewProps {
 
 export function HealthView({ state, connected, onJumpToLane, onFocusRepo }: HealthViewProps) {
   const fleet = fleetRollup(state);
+  const leaderboard = fleetLeaderboard(state).filter((r) => r.flakyChecks > 0).slice(0, 5);
   return (
     <div className="health-view">
       {!connected && (
@@ -61,6 +63,19 @@ export function HealthView({ state, connected, onJumpToLane, onFocusRepo }: Heal
           {fleet.length === 0 && <li className="fleet-row empty">No pipelines watched.</li>}
         </ul>
       </section>
+      {leaderboard.length > 0 && (
+        <section className="fleet-leaderboard" aria-label="Flakiest pipelines">
+          <h3 className="fleet-leaderboard-title">Flakiest pipelines</h3>
+          <ol>
+            {leaderboard.map((r) => (
+              <li key={r.repo} className="leaderboard-row" onClick={() => onFocusRepo?.(r.repo)}>
+                <span className="leaderboard-repo">{r.repo}</span>
+                <span className="leaderboard-flaky">{r.flakyChecks} flaky check{r.flakyChecks === 1 ? '' : 's'}</span>
+              </li>
+            ))}
+          </ol>
+        </section>
+      )}
     </div>
   );
 }
