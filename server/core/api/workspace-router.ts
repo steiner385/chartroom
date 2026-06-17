@@ -12,6 +12,7 @@ import { auditWorkflowSecurity } from '../model/security';
 import { buildSelfHealth, type ApiRateLimit } from '../model/selfHealth';
 import { reconcileRuleset } from '../model/ruleset';
 import { forecastTrend, type Point } from '../analytics/forecast';
+import { buildChangelog, buildAuditLog, type ChangelogRow, type AuditRow } from '../analytics/changelog';
 
 export interface WorkspaceRouterDeps {
   deriver: ModelDeriver;
@@ -25,6 +26,10 @@ export interface WorkspaceRouterDeps {
   selfHealth?: () => { ingestionFreshnessSecs: number | null; apiRateLimit: ApiRateLimit | null };
   /** cost/minutes daily series + optional budget threshold for forecasting (Group J1). */
   costForecast?: (repo: string) => Promise<{ points: Point[]; thresholdValue?: number; unit?: string }>;
+  /** CI config-change rows for the changelog (Group L1). */
+  changelog?: (repo: string) => Promise<ChangelogRow[]>;
+  /** the tool's own action-audit rows (Group L2). */
+  auditLog?: (repo: string) => Promise<AuditRow[]>;
 }
 
 function repoOf(req: Request, res: Response): string | null {
@@ -84,6 +89,15 @@ export function createWorkspaceRouter(deps: WorkspaceRouterDeps): Router {
     if (!deps.costForecast) return res.json({ repo, available: false, reason: 'no cost series imported' });
     const { points, thresholdValue, unit } = await deps.costForecast(repo);
     res.json({ repo, available: true, unit: unit ?? 'minutes', thresholdValue, ...forecastTrend(points, { thresholdValue }) });
+  });
+
+  // GET /changelog?repo= — CI config-change timeline + the tool's action audit
+  // (Group L / FR-039). Degrades to empty arrays when no provider is wired.
+  r.get('/changelog', async (req, res) => {
+    const repo = repoOf(req, res); if (!repo) return;
+    const changes = deps.changelog ? await deps.changelog(repo) : [];
+    const audit = deps.auditLog ? await deps.auditLog(repo) : [];
+    res.json({ repo, changelog: buildChangelog(changes), audit: buildAuditLog(audit) });
   });
 
   // GET /self — the tool's own health (Group O / FR-043). Always available; no repo.

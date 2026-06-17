@@ -87,6 +87,29 @@ describe('workspace-router (integration, contracts/api.md)', () => {
     expect(res.status).toBe(409);
   });
 
+  it('GET /changelog returns config timeline + action audit from injected providers (Group L)', async () => {
+    const deps: ModelDeriveDeps = {
+      resolveHeadSha: vi.fn(async () => 'sha-1'), fetchWorkflowAtSha: vi.fn(async (_r, n) => (n === 'ci.yml' ? CI : null)),
+      successStatsByRepo: () => new Map<string, SuccessStat[]>(), flakeStatsByRepo: () => new Map<string, FlakeStat[]>(), since: '2026-01-01T00:00:00Z',
+    };
+    const a = express(); a.use(express.json());
+    a.use('/api/workspace', createWorkspaceRouter({
+      deriver: new ModelDeriver(deps),
+      prClient: { fetchWorkflowAtSha: deps.fetchWorkflowAtSha as PrClient['fetchWorkflowAtSha'], openDraftPr: vi.fn() as unknown as PrClient['openDraftPr'] },
+      changelog: async () => [{ at: '2026-06-10T00:00:00Z', kind: 'config', summary: 'retention 7→30d', actor: 'tony' }],
+      auditLog: async () => [{ at: '2026-06-11T00:00:00Z', action: 'draft-pr', repo: 'o/r', target: 'e2e', result: 'opened #5' }],
+    }));
+    const res = await request(a).get('/api/workspace/changelog?repo=o/r');
+    expect(res.status).toBe(200);
+    expect(res.body.changelog[0].summary).toBe('retention 7→30d');
+    expect(res.body.audit[0]).toMatchObject({ action: 'draft-pr', actor: 'workspace' });
+  });
+
+  it('GET /changelog degrades to empty arrays with no providers', async () => {
+    const res = await request(app()).get('/api/workspace/changelog?repo=o/r');
+    expect(res.body).toMatchObject({ changelog: [], audit: [] });
+  });
+
   it('GET /forecast degrades to available:false when no cost series is wired', async () => {
     const res = await request(app()).get('/api/workspace/forecast?repo=o/r');
     expect(res.status).toBe(200);
