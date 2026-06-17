@@ -20,6 +20,7 @@ import { computeMetrics } from './metrics';
 import { computeProtectionMap } from './protection-map';
 import { createWorkspaceRouter } from './core/api/workspace-router';
 import { workspaceDepsFromClient } from './core/api/wire';
+import { WorkspaceStore } from './core/store/workspaceStore';
 import { createApp } from './api';
 import { loadWebhookSecret } from './webhooks';
 import { dataDir, staticDir, configPath } from './paths';
@@ -308,6 +309,9 @@ async function main() {
           flakeStatsByRepo: (s) => history.flakeStatsByRepo(s),
           conditionalCallerJobs: ['pr-affected-tests', 'integration-tests'],
         });
+        // Durable workspace store (Groups H/L2/I2) — real persistence outliving the
+        // rolling telemetry retention. Wires outcomes/audit/policy from real data.
+        const wsStore = new WorkspaceStore(join(dataDir(), 'workspace.db'));
         return createWorkspaceRouter({
           ...deps,
           // Group O self-observability from REAL sources: ingestion freshness from
@@ -319,6 +323,9 @@ async function main() {
             const remaining = router.minRemaining();
             return { ingestionFreshnessSecs: freshSecs, apiRateLimit: remaining != null ? { remaining, limit: 5000 } : null };
           },
+          outcomes: async (repo) => wsStore.appliedChanges(repo),
+          auditLog: async (repo) => wsStore.auditLog(repo),
+          policyStore: { get: async (repo) => wsStore.getPolicies(repo), put: async (repo, rules) => wsStore.putPolicies(repo, rules) },
         });
       })()
     : undefined;
