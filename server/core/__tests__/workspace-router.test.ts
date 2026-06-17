@@ -248,6 +248,28 @@ jobs:
     expect(ok.body.diff).toMatch(/continue-on-error/);
   });
 
+  it('GET /budgets returns gauges + alert-worthy subset (Group J2/J3)', async () => {
+    const deps: ModelDeriveDeps = {
+      resolveHeadSha: vi.fn(async () => 'sha-1'), fetchWorkflowAtSha: vi.fn(async (_r, n) => (n === 'ci.yml' ? CI : null)),
+      successStatsByRepo: () => new Map<string, SuccessStat[]>(), flakeStatsByRepo: () => new Map<string, FlakeStat[]>(), since: '2026-01-01T00:00:00Z',
+    };
+    const a = express(); a.use(express.json());
+    a.use('/api/workspace', createWorkspaceRouter({
+      deriver: new ModelDeriver(deps),
+      prClient: { fetchWorkflowAtSha: deps.fetchWorkflowAtSha as PrClient['fetchWorkflowAtSha'], openDraftPr: vi.fn() as unknown as PrClient['openDraftPr'] },
+      budgets: async () => ({ budgets: [{ kind: 'minutes', threshold: 50000 }], current: { minutes: 60000 } }),
+    }));
+    const res = await request(a).get('/api/workspace/budgets');
+    expect(res.status).toBe(200);
+    expect(res.body.gauges[0].state).toBe('breach');
+    expect(res.body.alerts).toHaveLength(1);
+  });
+
+  it('GET /budgets degrades to empty with no budgets configured', async () => {
+    const res = await request(app()).get('/api/workspace/budgets');
+    expect(res.body).toMatchObject({ gauges: [], alerts: [] });
+  });
+
   it('GET /self reports tool health incl. derivation-cache stats (Group O)', async () => {
     const res = await request(app()).get('/api/workspace/self');
     expect(res.status).toBe(200);

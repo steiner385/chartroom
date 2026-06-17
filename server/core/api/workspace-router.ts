@@ -15,6 +15,7 @@ import { forecastTrend, type Point } from '../analytics/forecast';
 import { buildChangelog, buildAuditLog, type ChangelogRow, type AuditRow } from '../analytics/changelog';
 import { attributeOutcome, summarizeAccuracy, type AppliedChange } from '../analytics/outcomes';
 import { evaluatePolicies, type PolicyRule } from '../analytics/policy';
+import { evaluateBudgets, alertsFrom, type Budget, type BudgetKind } from '../analytics/budgets';
 
 export interface WorkspaceRouterDeps {
   deriver: ModelDeriver;
@@ -36,6 +37,8 @@ export interface WorkspaceRouterDeps {
   outcomes?: (repo: string) => Promise<AppliedChange[]>;
   /** declarative-policy store (Group I2): read authored rules + persist edits. */
   policyStore?: { get: (repo: string) => Promise<PolicyRule[]>; put?: (repo: string, rules: PolicyRule[]) => Promise<void> };
+  /** budgets/quota gauges (Group J2/J3): configured budgets + current values. */
+  budgets?: () => Promise<{ budgets: Budget[]; current: Partial<Record<BudgetKind, number>> }>;
 }
 
 function repoOf(req: Request, res: Response): string | null {
@@ -161,6 +164,15 @@ export function createWorkspaceRouter(deps: WorkspaceRouterDeps): Router {
     if (out.opened) return res.json({ opened: true, number: out.number, url: out.url });
     if (out.stale) return res.status(409).json({ error: 'HEAD drifted — re-derive and re-confirm', headSha: out.headSha });
     return res.status(502).json({ error: out.reason });
+  });
+
+  // GET /budgets — quota/budget gauges + the alert-worthy subset (Group J2/J3).
+  // Cross-cutting (no repo); degrades to empty when no budgets are configured.
+  r.get('/budgets', async (_req, res) => {
+    if (!deps.budgets) return res.json({ gauges: [], alerts: [] });
+    const { budgets, current } = await deps.budgets();
+    const gauges = evaluateBudgets(current, budgets);
+    res.json({ gauges, alerts: alertsFrom(gauges) });
   });
 
   // GET /self — the tool's own health (Group O / FR-043). Always available; no repo.
