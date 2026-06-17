@@ -323,6 +323,13 @@ async function main() {
             const remaining = router.minRemaining();
             return { ingestionFreshnessSecs: freshSecs, apiRateLimit: remaining != null ? { remaining, limit: 5000 } : null };
           },
+          // Group L1 changelog from REAL data: the history config_changes timeline.
+          changelog: async (repo) => {
+            const since = new Date(Date.now() - 30 * 86_400_000).toISOString();
+            return history.configChangesSince(since)
+              .filter((c) => c.repo === repo)
+              .map((c) => ({ at: c.at, kind: 'config', summary: `${c.field}: ${c.oldValue ?? '∅'} → ${c.newValue ?? '∅'}`, actor: 'poller' }));
+          },
           outcomes: async (repo) => wsStore.appliedChanges(repo),
           auditLog: async (repo) => wsStore.auditLog(repo),
           policyStore: { get: async (repo) => wsStore.getPolicies(repo), put: async (repo, rules) => wsStore.putPolicies(repo, rules) },
