@@ -9,3 +9,4 @@ docs/superpowers/
 
 # runtime audit log (runner routing)
 logs/
+.superpowers/
