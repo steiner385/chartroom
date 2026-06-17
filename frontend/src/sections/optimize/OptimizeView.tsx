@@ -25,6 +25,7 @@ export function OptimizeView({ repo, api }: OptimizeViewProps) {
   const [selected, setSelected] = useState<string | null>(null);
   const [sim, setSim] = useState<SimResultDto | null>(null);
   const [diff, setDiff] = useState<string | null>(null);
+  const [prompt, setPrompt] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [quarantine, setQuarantine] = useState<{ check: string; diff?: string; error?: string } | null>(null);
   const [planChecks, setPlanChecks] = useState<Set<string>>(new Set());
@@ -32,14 +33,14 @@ export function OptimizeView({ repo, api }: OptimizeViewProps) {
 
   useEffect(() => {
     if (!repo) return;
-    setModel(null); setError(null); setSelected(null); setSim(null); setDiff(null);
+    setModel(null); setError(null); setSelected(null); setSim(null); setDiff(null); setPrompt(null);
     api.getPipeline(repo).then((r) => setModel(r.model)).catch((e: Error) => setError(e.message));
   }, [repo, api]);
 
   const from = useMemo(() => (model && selected ? homeTier(model, selected) : null), [model, selected]);
 
   async function simulate(check: string) {
-    setSelected(check); setSim(null); setDiff(null);
+    setSelected(check); setSim(null); setDiff(null); setPrompt(null);
     const tier = model ? homeTier(model, check) : null;
     if (!repo || !tier) return;
     setBusy(true);
@@ -53,6 +54,20 @@ export function OptimizeView({ repo, api }: OptimizeViewProps) {
     setBusy(true);
     try { setDiff((await api.draftPrDryRun(repo, { kind: 'tier', check: selected, jobId: job, fromTierId: from, targetEvent: 'merge_group' })).diff); }
     catch (e) { setError((e as Error).message); }
+    finally { setBusy(false); }
+  }
+
+  // "Author one" path (FR-013/016): hand the demote to Claude Code as a prompt.
+  // The server sources provenance + the simulated delta; we display the text
+  // (always copy-able) and best-effort write it to the clipboard.
+  async function copyPrompt() {
+    if (!repo || !selected || !from) return;
+    setBusy(true);
+    try {
+      const { prompt: text } = await api.prompt(repo, { goal: 'cost', check: selected, detail: sim?.note ?? '', fromTierId: from, toTierId: null });
+      setPrompt(text);
+      try { await navigator.clipboard?.writeText(text); } catch { /* clipboard unavailable — text is still shown to copy manually */ }
+    } catch (e) { setError((e as Error).message); }
     finally { setBusy(false); }
   }
 
@@ -122,9 +137,13 @@ export function OptimizeView({ repo, api }: OptimizeViewProps) {
         <section className="optimize-sim" aria-label={`Simulation for ${selected}`}>
           <p className={sim.legal ? 'sim-note legal' : 'sim-note illegal'} role="status">{sim.note}</p>
           {sim.legal
-            ? <button type="button" disabled={busy} onClick={preview}>Preview draft PR</button>
+            ? <div className="optimize-actions">
+                <button type="button" disabled={busy} onClick={preview}>Preview draft PR</button>
+                <button type="button" disabled={busy} onClick={copyPrompt}>Copy Claude Code prompt</button>
+              </div>
             : <p className="sim-blocked">This change is blocked: {sim.reason}.</p>}
           {diff && <pre className="optimize-diff" aria-label="draft PR diff">{diff}</pre>}
+          {prompt && <pre className="optimize-prompt" aria-label="claude code prompt">{prompt}</pre>}
         </section>
       )}
     </div>

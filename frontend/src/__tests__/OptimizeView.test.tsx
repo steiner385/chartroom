@@ -62,6 +62,24 @@ describe('OptimizeView (US4 — drives /api/workspace loop)', () => {
     expect(await screen.findByLabelText('draft PR diff')).toHaveTextContent('e2e → merge_group');
   });
 
+  it('a legal demote offers a Claude Code prompt that surfaces the generated text (FR-013/016)', async () => {
+    const api = fakeApi({ prompt: vi.fn(async () => ({ prompt: 'In o/r, demote the CI check "e2e"…' })) });
+    render(<OptimizeView repo="o/r" api={api} />);
+    fireEvent.click((await screen.findAllByText('Simulate demote'))[0]); // e2e (legal)
+    await screen.findByText(/saves 5,000 min/);
+    fireEvent.click(screen.getByText('Copy Claude Code prompt'));
+    expect(await screen.findByLabelText('claude code prompt')).toHaveTextContent('In o/r, demote the CI check');
+    expect(api.prompt).toHaveBeenCalledWith('o/r', expect.objectContaining({ goal: 'cost', check: 'e2e', fromTierId: 'pr' }));
+  });
+
+  it('does not offer a Claude Code prompt for a blocked required-gate demote', async () => {
+    render(<OptimizeView repo="o/r" api={fakeApi()} />);
+    const buttons = await screen.findAllByText('Simulate demote');
+    fireEvent.click(buttons[1]); // build (required gate)
+    await screen.findByText(/not possible — required merge gate/);
+    expect(screen.queryByText('Copy Claude Code prompt')).not.toBeInTheDocument();
+  });
+
   it('a required-gate demote is shown as blocked (no preview button)', async () => {
     render(<OptimizeView repo="o/r" api={fakeApi()} />);
     const buttons = await screen.findAllByText('Simulate demote');
