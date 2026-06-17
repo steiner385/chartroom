@@ -17,6 +17,7 @@ import { Notifier, NOTIFICATION_EVENT_TYPES, maskWebhookUrl } from './notifier';
 import { DigestScheduler, composeDigest, gatherDigestInput, queueHealthFromState } from './digest';
 import { backfillRepo } from './backfill';
 import { computeMetrics } from './metrics';
+import { computeProtectionMap } from './protection-map';
 import { createApp } from './api';
 import { loadWebhookSecret } from './webhooks';
 import { dataDir, staticDir, configPath } from './paths';
@@ -248,6 +249,35 @@ async function main() {
   // an unhandled rejection here.
   poller.on('update', () => { void routing.tick(); });
 
+  // Protection-map (CI/CD Designer): derive the DerivedModel per repo, TTL-cached
+  // (workflows change rarely; the fetch is ~16 contents calls). KinDash's
+  // conditional-required callers (skipped == pass) are config (engine/config seam).
+  const protectionMapCache = new Map<string, { at: number; model: unknown }>();
+  const PROTECTION_MAP_TTL_MS = 5 * 60_000;
+  const protectionMapFor = async (repo: string): Promise<unknown> => {
+    const nowMs = Date.now();
+    const cached = protectionMapCache.get(repo);
+    if (cached && nowMs - cached.at < PROTECTION_MAP_TTL_MS) return cached.model;
+    const owner = repo.split('/')[0] ?? '';
+    const client = router.clientFor(owner);
+    if (!client) throw new Error(`no installation covers ${owner}`);
+    const fetchWorkflow = async (r: string, name: string): Promise<string | null> => {
+      try {
+        const j = await client.restGet<{ content?: string }>(`/repos/${r}/contents/.github/workflows/${name}`);
+        return j.content ? Buffer.from(j.content, 'base64').toString('utf8') : null;
+      } catch { return null; }
+    };
+    const since = new Date(nowMs - 30 * 86_400_000).toISOString();
+    const model = await computeProtectionMap(repo, since, {
+      fetchWorkflow,
+      successStatsByRepo: (s) => history.successStatsByRepo(s),
+      flakeStatsByRepo: (s) => history.flakeStatsByRepo(s),
+      conditionalCallerJobs: ['pr-affected-tests', 'integration-tests'],
+    });
+    protectionMapCache.set(repo, { at: nowMs, model });
+    return model;
+  };
+
   const app = createApp({
     getState: () => poller.getState(),
     bus: poller,
@@ -274,6 +304,7 @@ async function main() {
       (repo, sha) => poller.prNumberForSha(repo, sha), config.costAutoRate,
       (repo) => poller.settingsFor(repo).requiredCheckPrefixes ?? []),
     repos: () => poller.repoToggleList(),
+    protectionMap: protectionMapFor,
     // cost actuals import (cost explorer phase 2) — rows land in SQLite and
     // surface through the metrics costActuals section
     costActuals: {
