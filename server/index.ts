@@ -328,7 +328,10 @@ async function main() {
             const lastFrame = liveSnapshot.updatedAt();
             const freshSecs = lastFrame ? Math.max(0, Math.round((Date.now() - lastFrame) / 1000)) : null;
             const remaining = router.minRemaining();
-            return { ingestionFreshnessSecs: freshSecs, apiRateLimit: remaining != null ? { remaining, limit: 5000 } : null };
+            // the client tracks `remaining` but not the limit; GraphQL's floor is
+            // 5000/hr but a higher-tier token can exceed it (live smoke saw 9459) —
+            // never report limit < remaining.
+            return { ingestionFreshnessSecs: freshSecs, apiRateLimit: remaining != null ? { remaining, limit: Math.max(remaining, 5000) } : null };
           },
           // Group J1 forecast from REAL data: the fleet daily cost-actuals series
           // (operator-imported; fleet-scoped, so repo is advisory). No configured
