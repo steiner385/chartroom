@@ -28,9 +28,9 @@ describe('ProtectionMap (live integration vs running dashboard)', () => {
     // the matrix must actually appear (this is what was blank in the bug)
     await screen.findByTestId('pm-grid', {}, { timeout: 12_000 });
     expect(screen.getAllByTestId(/^pm-cell-/).length).toBeGreaterThan(0);
-    // and the peer surfaces
+    // and the peer surfaces (the simulator now lives in the per-finding drawer)
     expect(screen.getByTestId('pm-findings')).toBeInTheDocument();
-    expect(screen.getByTestId('pm-sim')).toBeInTheDocument();
+    expect(screen.getByTestId('pm-contract')).toBeInTheDocument();
     expect(screen.getByTestId('pm-overlay-cost')).toBeInTheDocument();
   }, 20_000);
 });

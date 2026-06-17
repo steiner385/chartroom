@@ -103,16 +103,29 @@ describe('ProtectionMap', () => {
     expect(screen.getByTestId('pm-cell-build: production-pr').getAttribute('style') ?? '').not.toMatch(/background/);
   });
 
-  it('simulates a tier move and shows the projected cost/coverage delta', async () => {
+  it('clicking a finding opens the drill-down drawer with evidence + a constrained simulator', async () => {
     mockFetch(MODEL);
     render(<ProtectionMap />);
-    await screen.findByTestId('pm-grid');
-    // default check is build: production; move it away from Queue (1000 observed min, a gate)
+    const rail = await screen.findByTestId('pm-findings');
+    fireEvent.click(within(rail).getAllByText('build: production')[0]); // drift finding
+    await screen.findByTestId('pm-drawer');
+    expect(screen.getByTestId('pm-evidence')).toBeInTheDocument();
     fireEvent.change(screen.getByTestId('pm-sim-from'), { target: { value: 'queue' } });
+    fireEvent.change(screen.getByTestId('pm-sim-to'), { target: { value: '__remove__' } });
     const result = screen.getByTestId('pm-sim-result');
     expect(result.getAttribute('data-cost-delta')).toBe('-1000');
     expect(result.textContent).toMatch(/saves 1,?000 min/);
-    expect(result.textContent).toMatch(/loses gate at queue/);
+  });
+
+  it('the drawer offers a Copy Claude Code prompt action with feedback', async () => {
+    mockFetch(MODEL);
+    render(<ProtectionMap />);
+    const rail = await screen.findByTestId('pm-findings');
+    fireEvent.click(within(rail).getAllByText('build: production')[0]);
+    const copy = await screen.findByTestId('pm-copy-prompt');
+    expect(copy.textContent).toMatch(/Copy Claude Code prompt/);
+    fireEvent.click(copy);
+    expect(copy.textContent).toMatch(/Copied/);
   });
 
   it('shows an error when the map cannot be derived', async () => {

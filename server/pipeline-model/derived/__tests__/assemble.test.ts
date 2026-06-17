@@ -13,7 +13,7 @@ const graph: StaticGraph = {
   callerNeeds: { 'static-checks': [], build: ['static-checks'], ci: ['build'] },
   checks: [
     // build: production runs on PR + Queue, gates both
-    { checkName: 'build: production', callerJobId: 'build', triggers: ev('pull_request', 'merge_group'), provenance: [], confidence: 'high' },
+    { checkName: 'build: production', callerJobId: 'build', triggers: ev('pull_request', 'merge_group'), provenance: [{ file: 'build.yml', jobId: 'build' }], confidence: 'high' },
     // a queue-only gate
     { checkName: 'static-checks / test: unit', callerJobId: 'static-checks', triggers: ev('merge_group'), provenance: [], confidence: 'high' },
     // an advisory PR-only check (low confidence → conditional)
@@ -35,6 +35,15 @@ describe('assembleDerivedModel', () => {
   ]);
   const model = assembleDerivedModel(graph, gating, observed, KINDASH_TIERS);
   const cell = (check: string, tierId: string) => model.cells.find((c) => c.check === check && c.tierId === tierId)!;
+
+  it('exposes per-check meta: triggers, provenance, confidence, merge-gate safety', () => {
+    const meta = (c: string) => model.checkMeta.find((m) => m.check === c)!;
+    expect(meta('build: production').triggers.sort()).toEqual(['merge_group', 'pull_request']);
+    expect(meta('build: production').provenance).toEqual([{ file: 'build.yml', jobId: 'build' }]);
+    expect(meta('build: production').isRequiredMergeGate).toBe(true); // gates merge_group, unconditional caller
+    expect(meta('a11y: axe').confidence).toBe('low');
+    expect(meta('a11y: axe').isRequiredMergeGate).toBe(false); // PR-only, never gates the queue
+  });
 
   it('has one cell per (check, tier)', () => {
     expect(model.checks.length).toBe(3);
