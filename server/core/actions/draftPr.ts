@@ -8,8 +8,8 @@
 // Network (PR creation) is injected so the whole flow is unit-testable; no direct
 // apply ever (draft only).
 import type { ModelDeriver } from '../model/derive';
-import { validateTierChange } from '../model/legality';
-import { renderTierAssign } from '../edit/render';
+import { validateTierChange, requiredGateChecks } from '../model/legality';
+import { renderTierAssign, renderQuarantine } from '../edit/render';
 
 /** A G2 tier-assign authoring intent. (Other dimensions add their own variants.) */
 export interface TierAssignIntent { kind: 'tier'; check: string; jobId: string; fromTierId: string; targetEvent: string }
@@ -47,6 +47,30 @@ export async function prepareDraftEdit(
   const edit = renderTierAssign(yaml, intent.jobId, intent.targetEvent);
   if (!edit.ok) return { ok: false, reason: edit.reason };
 
+  return { ok: true, prepared: { repo, baseSha: pinned.sourceSha, filePath: `.github/workflows/${file}`, jobId: intent.jobId, newText: edit.newText, diff: edit.diff } };
+}
+
+/**
+ * Phase 1 for a flake-quarantine (K2/FR-038): derive @HEAD, REFUSE if the check is
+ * a required merge gate (union static+ruleset), then render the continue-on-error
+ * edit. Quarantining a required gate would silently drop merge protection — never
+ * allowed, even via this path.
+ */
+export async function prepareQuarantineEdit(
+  deriver: ModelDeriver, client: PrClient, repo: string, intent: { check: string; jobId: string }, liveRequired?: readonly string[],
+): Promise<PrepareResult> {
+  const pinned = await deriver.deriveAtHead(repo);
+  if (!pinned) return { ok: false, reason: 'no derivable model at HEAD' };
+  if (requiredGateChecks(pinned.model, liveRequired).has(intent.check)) {
+    return { ok: false, reason: `"${intent.check}" is a required merge gate — cannot quarantine it (would drop merge protection)` };
+  }
+  const meta = pinned.model.checkMeta?.find((m) => m.check === intent.check);
+  const file = meta?.provenance?.[0]?.file;
+  if (!file) return { ok: false, reason: `cannot locate the workflow file for "${intent.check}"` };
+  const yaml = await client.fetchWorkflowAtSha(repo, file, pinned.sourceSha);
+  if (yaml == null) return { ok: false, reason: `workflow ${file} not found at ${pinned.sourceSha.slice(0, 7)}` };
+  const edit = renderQuarantine(yaml, intent.jobId);
+  if (!edit.ok) return { ok: false, reason: edit.reason };
   return { ok: true, prepared: { repo, baseSha: pinned.sourceSha, filePath: `.github/workflows/${file}`, jobId: intent.jobId, newText: edit.newText, diff: edit.diff } };
 }
 

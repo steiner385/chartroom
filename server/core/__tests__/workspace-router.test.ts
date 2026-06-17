@@ -177,6 +177,43 @@ describe('workspace-router (integration, contracts/api.md)', () => {
     expect(res.body.missingFromModel).toContain('totally-required-check');
   });
 
+  it('POST /quarantine refuses a required merge gate (FR-038) and dry-runs a non-gate', async () => {
+    const QCI = `name: CI
+on: { pull_request: {}, merge_group: {} }
+jobs:
+  e2e:
+    runs-on: ubuntu-latest
+    steps:
+      - run: pnpm e2e
+  lint:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - run: pnpm lint
+  ci:
+    name: ci
+    needs: [e2e]
+    runs-on: ubuntu-latest
+`;
+    const deps: ModelDeriveDeps = {
+      resolveHeadSha: vi.fn(async () => 'sha-1'), fetchWorkflowAtSha: vi.fn(async (_r, n) => (n === 'ci.yml' ? QCI : null)),
+      successStatsByRepo: () => new Map<string, SuccessStat[]>(), flakeStatsByRepo: () => new Map<string, FlakeStat[]>(), since: '2026-01-01T00:00:00Z',
+    };
+    const a = express(); a.use(express.json());
+    a.use('/api/workspace', createWorkspaceRouter({
+      deriver: new ModelDeriver(deps),
+      prClient: { fetchWorkflowAtSha: deps.fetchWorkflowAtSha as PrClient['fetchWorkflowAtSha'], openDraftPr: vi.fn() as unknown as PrClient['openDraftPr'] },
+    }));
+    // e2e is the required merge gate → refused
+    const bad = await request(a).post('/api/workspace/quarantine').send({ repo: 'o/r', check: 'e2e', jobId: 'e2e', dryRun: true });
+    expect(bad.status).toBe(409);
+    expect(bad.body.error).toMatch(/required merge gate/);
+    // lint is PR-only advisory → quarantine dry-run returns a diff
+    const ok = await request(a).post('/api/workspace/quarantine').send({ repo: 'o/r', check: 'lint', jobId: 'lint', dryRun: true });
+    expect(ok.status).toBe(200);
+    expect(ok.body.diff).toMatch(/continue-on-error/);
+  });
+
   it('GET /self reports tool health incl. derivation-cache stats (Group O)', async () => {
     const res = await request(app()).get('/api/workspace/self');
     expect(res.status).toBe(200);

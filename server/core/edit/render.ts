@@ -53,3 +53,39 @@ export function renderTierAssign(yamlText: string, jobId: string, event: string)
   ].join('\n');
   return { ok: true, newText, addedLine, diff };
 }
+
+/**
+ * Quarantine a flaky job (K2): add `continue-on-error: true` so its failures stop
+ * breaking the build. CALLER MUST refuse this for a required merge gate (FR-038) —
+ * this renderer only does the textual edit. Refuses existing continue-on-error /
+ * missing job.
+ */
+export function renderQuarantine(yamlText: string, jobId: string): EditResult {
+  const lines = yamlText.split('\n');
+  const esc = jobId.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const jobRe = new RegExp(`^(\\s+)${esc}:\\s*(#.*)?$`);
+  let jobLine = -1, jobIndent = '';
+  for (let i = 0; i < lines.length; i++) {
+    const m = lines[i].match(jobRe);
+    if (m) { jobLine = i; jobIndent = m[1]; break; }
+  }
+  if (jobLine < 0) return { ok: false, reason: `could not locate job "${jobId}" in the workflow` };
+
+  let end = lines.length;
+  for (let i = jobLine + 1; i < lines.length; i++) {
+    if (lines[i].trim() === '') continue;
+    const ind = lines[i].match(/^(\s*)/)![1].length;
+    if (ind <= jobIndent.length) { end = i; break; }
+  }
+  const block = lines.slice(jobLine + 1, end);
+  const firstProp = block.find((l) => l.trim() !== '');
+  if (!firstProp) return { ok: false, reason: `job "${jobId}" has no body to edit` };
+  const propIndent = firstProp.match(/^(\s*)/)![1];
+  if (block.some((l) => l.match(/^(\s*)/)![1] === propIndent && /^continue-on-error\s*:/.test(l.trim()))) {
+    return { ok: false, reason: `job "${jobId}" already sets continue-on-error — edit by hand` };
+  }
+  const addedLine = `${propIndent}continue-on-error: true  # quarantined (flaky) — remove when fixed`;
+  const newText = [...lines.slice(0, jobLine + 1), addedLine, ...lines.slice(jobLine + 1)].join('\n');
+  const diff = [`@@ job ${jobId} — quarantine (flaky) @@`, ` ${lines[jobLine]}`, `+${addedLine}`, ...block.slice(0, 2).map((l) => ` ${l}`)].join('\n');
+  return { ok: true, newText, addedLine, diff };
+}

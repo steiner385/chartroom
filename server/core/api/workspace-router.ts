@@ -7,7 +7,7 @@ import { Router, type Request, type Response } from 'express';
 import { ModelDeriver } from '../model/derive';
 import { simulateTierMove, type TierMove } from '../model/simulate';
 import { buildPrompt, type PromptInput } from '../actions/prompt';
-import { prepareDraftEdit, openDraftPr, type PrClient, type TierAssignIntent } from '../actions/draftPr';
+import { prepareDraftEdit, prepareQuarantineEdit, openDraftPr, type PrClient, type TierAssignIntent } from '../actions/draftPr';
 import { auditWorkflowSecurity } from '../model/security';
 import { buildSelfHealth, type ApiRateLimit } from '../model/selfHealth';
 import { reconcileRuleset } from '../model/ruleset';
@@ -110,6 +110,23 @@ export function createWorkspaceRouter(deps: WorkspaceRouterDeps): Router {
     const repo = repoOf(req, res); if (!repo) return;
     const ledger = deps.outcomes ? await deps.outcomes(repo) : [];
     res.json({ repo, outcomes: ledger.map(attributeOutcome), accuracy: summarizeAccuracy(ledger) });
+  });
+
+  // POST /quarantine — { repo, check, jobId, dryRun } → review-gated flake quarantine
+  // (Group K2 / FR-038). Refuses a required merge gate; same SHA-pin + optimistic-
+  // concurrency + draft-only path as draft-pr. Inherits the action invariants.
+  r.post('/quarantine', async (req, res) => {
+    const repo = repoOf(req, res); if (!repo) return;
+    const { check, jobId } = req.body ?? {};
+    if (!check || !jobId) return res.status(400).json({ error: '{ check, jobId } required' });
+    const live = deps.liveRequired ? await deps.liveRequired(repo) : undefined;
+    const prep = await prepareQuarantineEdit(deps.deriver, deps.prClient, repo, { check, jobId }, live);
+    if (!prep.ok) return res.status(409).json({ error: prep.reason });
+    if (req.body?.dryRun !== false) return res.json({ dryRun: true, diff: prep.prepared.diff, baseSha: prep.prepared.baseSha });
+    const out = await openDraftPr(deps.deriver, deps.prClient, prep.prepared, check);
+    if (out.opened) return res.json({ opened: true, number: out.number, url: out.url });
+    if (out.stale) return res.status(409).json({ error: 'HEAD drifted — re-derive and re-confirm', headSha: out.headSha });
+    return res.status(502).json({ error: out.reason });
   });
 
   // GET /self — the tool's own health (Group O / FR-043). Always available; no repo.

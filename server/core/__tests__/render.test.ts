@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { parse } from 'yaml';
-import { renderTierAssign } from '../edit/render';
+import { renderTierAssign, renderQuarantine } from '../edit/render';
 
 const WF = `name: CI
 on:
@@ -60,5 +60,29 @@ describe('renderTierAssign (G2 edit-renderer)', () => {
     expect(after.jobs.guarded).toEqual(before.jobs.guarded);
     expect(after.on).toEqual(before.on);
     expect(after.name).toBe(before.name);
+  });
+});
+
+describe('renderQuarantine (K2 edit-renderer)', () => {
+  it('adds continue-on-error: true to a flaky job (valid YAML round-trip)', () => {
+    const r = renderQuarantine(WF, 'lint');
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    const after = parse(r.newText);
+    expect(after.jobs.lint['continue-on-error']).toBe(true);
+    expect(after.jobs.guarded).toEqual(parse(WF).jobs.guarded); // other job untouched
+    expect(r.diff).toMatch(/quarantine \(flaky\)/);
+  });
+
+  it('refuses a job that already has continue-on-error', () => {
+    const wf = WF + '      continue-on-error: true\n';
+    const withCoe = `on: push\njobs:\n  a:\n    continue-on-error: false\n    runs-on: x\n    steps: []\n`;
+    const r = renderQuarantine(withCoe, 'a');
+    expect(r.ok).toBe(false);
+    void wf;
+  });
+
+  it('refuses a missing job', () => {
+    expect(renderQuarantine(WF, 'nope').ok).toBe(false);
   });
 });
