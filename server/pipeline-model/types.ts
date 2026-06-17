@@ -56,3 +56,12 @@ export interface StaticGraph {
   /** caller (rollup-file) jobId → its needs (for the gating closure). */
   callerNeeds: Record<string, string[]>;
 }
+
+export interface GatingResult {
+  /** Caller jobs that unconditionally gate (in the rollup needs-closure). */
+  gatingCallerJobs: string[];
+  /** Caller jobs that gate only when they run (skipped == pass). */
+  conditionalCallerJobs: string[];
+  /** Per-gating-check, the events at which it actually gates. */
+  gates: { checkName: string; events: string[] }[];
+}
