@@ -21,7 +21,12 @@ describe('KinDash DerivedModel (assembly integration)', () => {
     for (const n of reusableRefs(ci)) { const t = wf(n); if (t) files[n] = t; }
 
     const graph = deriveStaticGraph(files);
-    const gating = gatingClosure(graph, 'ci');
+    // KinDash's known conditionally-required callers: skipped==pass.
+    // pr-affected-tests runs only the affected test slice on PRs;
+    // integration-tests runs only when the diff touches backend.
+    const gating = gatingClosure(graph, 'ci', {
+      conditionalCallerJobs: ['pr-affected-tests', 'integration-tests'],
+    });
     // No history needed for the static half — inject empty stat maps.
     const model = derivedModelForRepo({
       repo: 'cairnea/KinDash', since: '1970-01-01T00:00:00Z', graph, gating,
@@ -43,5 +48,11 @@ describe('KinDash DerivedModel (assembly integration)', () => {
     }
     // With empty history, no cell can have observed facts.
     expect(model.cells.every((c) => c.observed === null)).toBe(true);
+
+    // At least one cell must be 'conditional' — the checks from pr-affected-tests
+    // and integration-tests are conditionally-required (skipped==pass) and must
+    // surface as conditional rather than gate/advisory.
+    const conditionalCells = model.cells.filter((c) => c.state === 'conditional');
+    expect(conditionalCells.length).toBeGreaterThan(0);
   });
 });
