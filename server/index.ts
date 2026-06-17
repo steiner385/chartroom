@@ -323,6 +323,17 @@ async function main() {
             const remaining = router.minRemaining();
             return { ingestionFreshnessSecs: freshSecs, apiRateLimit: remaining != null ? { remaining, limit: 5000 } : null };
           },
+          // Group J1 forecast from REAL data: the fleet daily cost-actuals series
+          // (operator-imported; fleet-scoped, so repo is advisory). No configured
+          // budget threshold yet → trend-only (daysToThreshold null).
+          costForecast: async () => {
+            const sinceDate = new Date(Date.now() - 90 * 86_400_000).toISOString().slice(0, 10);
+            const rows = history.costActualsSince(sinceDate).filter((r) => r.scope === 'fleet');
+            if (rows.length === 0) return { points: [], unit: 'USD' };
+            const firstMs = Date.parse(rows[0].date);
+            const points = rows.map((r) => ({ day: Math.round((Date.parse(r.date) - firstMs) / 86_400_000), value: r.dollars }));
+            return { points, unit: 'USD' };
+          },
           // Group L1 changelog from REAL data: the history config_changes timeline.
           changelog: async (repo) => {
             const since = new Date(Date.now() - 30 * 86_400_000).toISOString();
