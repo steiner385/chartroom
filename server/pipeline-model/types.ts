@@ -14,3 +14,19 @@ export type TriggerEvent =
 export interface TriggerSpec {
   events: TriggerEvent[];
 }
+
+/** One job exactly as written in a single workflow file, before any expansion. */
+export interface RawJob {
+  /** The job key under `jobs:`. */
+  id: string;
+  /** The `name:` field, or null. */
+  name: string | null;
+  /** `needs:` normalized to an array (string form → single element). */
+  needs: string[];
+  /** Raw `if:` expression string, or null. */
+  if: string | null;
+  /** Reusable-workflow path from `uses:` (e.g. `./.github/workflows/_x.yml`), or null. */
+  uses: string | null;
+  /** `strategy.matrix` dimensions (dim → values), or null. Raw values kept verbatim. */
+  matrix: Record<string, unknown[]> | null;
+}
