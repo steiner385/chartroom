@@ -33,16 +33,16 @@ describe('WorkspaceShell', () => {
 
   it('falls back to the legacy bridge for an unbuilt section', () => {
     render(<WorkspaceShell header={null} content={{ health: <div>HEALTH</div> }} legacyBridge={bridge} />);
-    fireEvent.click(screen.getByText('Model'));
-    expect(screen.getByTestId('legacy')).toHaveTextContent('legacy:model');
+    fireEvent.click(screen.getByText('Model & Edit'));
+    expect(screen.getByTestId('legacy')).toHaveTextContent('legacy:model-edit');
   });
 
   it('switching sections updates content, hash, and aria-current', () => {
-    render(<WorkspaceShell header={null} content={{ health: <div>HEALTH</div>, optimize: <div>OPT</div> }} legacyBridge={bridge} />);
-    fireEvent.click(screen.getByText('Optimize'));
+    render(<WorkspaceShell header={null} content={{ health: <div>HEALTH</div>, 'model-edit': <div>OPT</div> }} legacyBridge={bridge} />);
+    fireEvent.click(screen.getByText('Model & Edit'));
     expect(screen.getByText('OPT')).toBeInTheDocument();
-    expect(location.hash).toBe('#optimize');
-    expect(screen.getByText('Optimize')).toHaveAttribute('aria-current', 'page');
+    expect(location.hash).toBe('#model-edit');
+    expect(screen.getByText('Model & Edit')).toHaveAttribute('aria-current', 'page');
     expect(screen.getByText('Health')).not.toHaveAttribute('aria-current');
   });
 

@@ -160,6 +160,10 @@ button.model-chip { cursor: pointer; }
 .shard-toggle { background: none; border: none; color: inherit; font: inherit; cursor: pointer; padding: 0; text-align: left; }
 .shard-count { opacity: 0.6; font-size: 11px; }
 .shard-member > th { padding-left: 20px; opacity: 0.85; }
+.model-edit-modes { display: flex; gap: 4px; border-bottom: 1px solid var(--border); margin-bottom: 12px; }
+.model-edit-tab { background: none; border: none; border-bottom: 2px solid transparent; color: var(--text); opacity: 0.6; font: inherit; font-size: 14px; padding: 8px 14px; cursor: pointer; }
+.model-edit-tab:hover { opacity: 0.85; }
+.model-edit-tab.active { opacity: 1; border-bottom-color: var(--accent, #6af); font-weight: 600; }
 /* roadmap 2.2 — clickable rows are real buttons; reset to look like the row */
 .fleet-row-btn, .leaderboard-row-btn, .diagnose-pr-btn {
   display: flex; align-items: center; gap: 8px; width: 100%; text-align: left;

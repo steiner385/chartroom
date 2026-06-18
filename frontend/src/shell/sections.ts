@@ -3,7 +3,7 @@
 // on-demand contract from the persona review). Pure — hash routing is testable
 // without the DOM.
 
-export type SectionId = 'health' | 'pipeline' | 'diagnose' | 'model' | 'optimize' | 'build' | 'insights';
+export type SectionId = 'health' | 'pipeline' | 'diagnose' | 'model-edit' | 'insights';
 
 export interface SectionDef {
   id: SectionId;
@@ -17,15 +17,16 @@ export interface SectionDef {
 export const SECTIONS: readonly SectionDef[] = [
   { id: 'health',   label: 'Health',              mode: 'monitor',   blurb: 'Is delivery healthy right now?' },
   { id: 'pipeline', label: 'Pipeline',            mode: 'monitor',   blurb: 'Every open PR and where it is in the pipeline.' },
-  { id: 'diagnose', label: 'Diagnose',            mode: 'drill',     blurb: 'Why is this PR stuck?' },
-  { id: 'model',    label: 'Model',               mode: 'read',      blurb: 'What gates a merge, and where is it drifting?' },
-  { id: 'optimize', label: 'Optimize',            mode: 'act',       blurb: 'Findings → simulate → edit → draft PR.' },
-  { id: 'build',    label: 'Build',               mode: 'act',       blurb: 'Shape the pipeline visually — compose changes, validate, draft PR.' },
-  { id: 'insights', label: 'Insights',            mode: 'read',      blurb: 'Cost, queue, runners, flake, lead time, budgets, outcomes — the full analytics.' },
+  { id: 'diagnose',   label: 'Diagnose',     mode: 'drill',   blurb: 'Why is this PR stuck?' },
+  { id: 'model-edit', label: 'Model & Edit', mode: 'act',     blurb: 'Inspect what gates a merge, find waste, and shape the pipeline.' },
+  { id: 'insights',   label: 'Insights',     mode: 'read',    blurb: 'Cost, queue, runners, flake, lead time, budgets, outcomes — the full analytics.' },
 ];
 
 /** Retired hashes that now redirect into a surviving section (WS3 IA consolidation). */
-const HASH_ALIASES: Record<string, SectionId> = { tune: 'insights', metrics: 'insights' };
+const HASH_ALIASES: Record<string, SectionId> = {
+  tune: 'insights', metrics: 'insights',
+  model: 'model-edit', optimize: 'model-edit', build: 'model-edit',
+};
 
 export const DEFAULT_SECTION: SectionId = 'health';
 
