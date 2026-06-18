@@ -28,3 +28,23 @@ describe('applyMutation (1:1 mutation → renderer dispatch)', () => {
     expect(r.ok).toBe(false);
   });
 });
+
+describe('applyMutation — model-dependent ops (1b)', () => {
+  const GUARDED = `on:\n  pull_request:\n  merge_group:\njobs:\n  dead:\n    runs-on: x\n    steps: []\n  heavy:\n    if: \${{ github.event_name == 'merge_group' }}\n    runs-on: x\n    steps: []\n  ci:\n    needs: [dead, heavy]\n    runs-on: x\n    steps: []\n`;
+
+  it('dispatches shift-left (removes the guard)', () => {
+    const r = applyMutation(GUARDED, { op: 'shift-left', jobId: 'heavy' });
+    expect(r.ok).toBe(true);
+    if (r.ok) expect(parse(r.newText).jobs.heavy.if).toBeUndefined();
+  });
+
+  it('dispatches remove (deletes the job + cleans needs)', () => {
+    const r = applyMutation(GUARDED, { op: 'remove', jobId: 'dead' });
+    expect(r.ok).toBe(true);
+    if (r.ok) {
+      const after = parse(r.newText);
+      expect(after.jobs.dead).toBeUndefined();
+      expect(after.jobs.ci.needs).toEqual(['heavy']);
+    }
+  });
+});
