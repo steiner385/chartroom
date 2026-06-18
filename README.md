@@ -724,6 +724,9 @@ webhook receiver**:
 ## Embedding pr-dashboard in a host app
 
 pr-dashboard ships a content-only React component alongside the standalone app.
+For the full host-integration handoff — routing/nested-router bridge, the proxy
+& backend contract, theming, SSR/React constraints, and a setup checklist — see
+[docs/embedding-host-guide.md](docs/embedding-host-guide.md).
 
 ```tsx
 import { PrDashboard } from 'pr-dashboard/embed';
