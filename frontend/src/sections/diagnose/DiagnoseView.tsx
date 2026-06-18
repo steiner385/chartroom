@@ -7,6 +7,7 @@ import type { DashboardState, PrView, CheckView } from '../../types';
 import { CheckGantt } from '../../CheckGantt';
 import { clusterFailures } from './clustering';
 import { queueIncidents } from './incidents';
+import { remediationProposals } from './remediation';
 
 const FAILED = new Set(['failure', 'cancelled', 'timed_out', 'action_required', 'stale']);
 
@@ -40,6 +41,7 @@ export function DiagnoseView({ state, focusedRepo }: DiagnoseViewProps) {
   const prs = useMemo(() => prsForDiagnose(state, focusedRepo), [state, focusedRepo]);
   const clusters = useMemo(() => clusterFailures(state, 3), [state]);
   const incidents = useMemo(() => queueIncidents(state), [state]);
+  const remediations = useMemo(() => remediationProposals(state), [state]);
   const [selectedKey, setSelectedKey] = useState<string | null>(null);
   const key = (p: PrView) => `${p.repo}#${p.number}`;
   const selected = prs.find((p) => key(p) === selectedKey) ?? prs[0] ?? null;
@@ -47,6 +49,19 @@ export function DiagnoseView({ state, focusedRepo }: DiagnoseViewProps) {
 
   return (
     <div className="diagnose-view">
+      {remediations.length > 0 && (
+        <section className="remediation-proposals" aria-label="Auto-remediation proposals">
+          <strong>🛠 Remediation proposals</strong> — flaky required gates blocking merges:
+          <ul role="list">
+            {remediations.map((p) => (
+              <li key={p.check} className="remediation-proposal">
+                <p className="remediation-rationale">{p.rationale}</p>
+                <p className="remediation-action">→ {p.action} <span className="remediation-where">Apply in Model &amp; Edit → Optimize → quarantine {p.check}.</span></p>
+              </li>
+            ))}
+          </ul>
+        </section>
+      )}
       {incidents.length > 0 && (
         <section className="queue-incidents" role="status" aria-label="Queue incidents">
           <strong>🚑 Queue stalled</strong> — guided recovery:

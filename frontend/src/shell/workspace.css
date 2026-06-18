@@ -93,9 +93,16 @@
 .health-liveness { background: var(--amber); color: #fff; padding: 6px 12px; border-radius: 8px; margin-bottom: 12px; font-size: 13px; }
 
 /* status banners */
-.forecast-banner, .failure-clusters, .queue-incidents, .model-ruleset, .model-drift, .model-security, .sim-note, .plan-note, .diagnose-blocker {
+.forecast-banner, .failure-clusters, .queue-incidents, .remediation-proposals, .model-ruleset, .model-drift, .model-security, .sim-note, .plan-note, .diagnose-blocker {
   font-size: 13px; line-height: 1.45; border-radius: 10px; padding: 10px 12px;
 }
+.remediation-proposals { background: color-mix(in srgb, var(--amber) 12%, var(--surface)); border: 1px solid var(--amber); margin-bottom: 12px; }
+.remediation-proposals ul { margin: 6px 0 0 0; padding: 0; list-style: none; }
+.remediation-proposal { margin-top: 8px; padding-top: 8px; border-top: 1px dashed color-mix(in srgb, var(--amber) 40%, transparent); }
+.remediation-proposal:first-child { border-top: none; padding-top: 0; }
+.remediation-rationale { margin: 0; }
+.remediation-action { margin: 4px 0 0; font-weight: 600; }
+.remediation-where { font-weight: 400; color: var(--muted); }
 .forecast-banner { background: color-mix(in srgb, var(--amber) 14%, var(--surface)); border: 1px solid var(--amber); margin-bottom: 12px; }
 .failure-clusters, .queue-incidents { background: color-mix(in srgb, var(--fail) 10%, var(--surface)); border: 1px solid var(--fail); margin-bottom: 12px; }
 .queue-incidents ol { margin: 6px 0 0 18px; padding: 0; }

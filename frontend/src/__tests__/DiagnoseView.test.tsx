@@ -74,6 +74,23 @@ describe('DiagnoseView', () => {
     expect(screen.getByText(/no open prs/i)).toBeInTheDocument();
   });
 
+  it('surfaces an auto-remediation proposal for a flaky required gate (roadmap 5.5)', () => {
+    const flaky = state([
+      pr('o/a', 1, [check('flaky-e2e', { conclusion: 'failure', likelyFlake: true })]),
+      pr('o/a', 2, [check('flaky-e2e', { conclusion: 'failure', likelyFlake: true })]),
+    ]);
+    render(<DiagnoseView state={flaky} />);
+    const card = screen.getByRole('region', { name: /auto-remediation proposals/i });
+    expect(card).toHaveTextContent(/flaky-e2e/);
+    expect(card).toHaveTextContent(/2\/2/);
+    expect(card).toHaveTextContent(/Quarantine 48h/);
+  });
+
+  it('shows NO remediation card when there is nothing to remediate', () => {
+    render(<DiagnoseView state={s} />); // build fails on one PR, not flaky
+    expect(screen.queryByRole('region', { name: /auto-remediation proposals/i })).not.toBeInTheDocument();
+  });
+
   it('PR-list rows are keyboard-operable buttons (roadmap 2.2 a11y)', () => {
     render(<DiagnoseView state={s} />);
     const rows = screen.getAllByRole('button').filter((b) => /#\d+/.test(b.textContent ?? ''));
