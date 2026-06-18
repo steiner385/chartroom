@@ -415,7 +415,13 @@ export interface MetricsPayload {
    *  without an observed median. flakeRatePct cross-references the flake radar. */
   trainKillers: { repo: string; batchSize: number; medianGroupRunSecs: number | null;
     checks: { name: string; ejects: number; estCostTrainHours: number | null;
-      flakeRatePct: number | null }[] }[];
+      flakeRatePct: number | null;
+      /** Per-reason eject tally (roadmap 4.4b). */
+      reasonCounts: Record<'timeout' | 'test-fail' | 'infra' | 'unknown', number>;
+      /** Reason to lead with (most ejects; ties → most actionable); null if none. */
+      dominantReason: 'timeout' | 'test-fail' | 'infra' | 'unknown' | null;
+      /** Lead remedy for `dominantReason`; null when no ejects. */
+      remedy: string | null }[] }[];
   /** Critical path (issue #42): static expected longest chain per repo×event
    *  (node weight = median wait + median duration); offPath = 10 lowest-slack
    *  jobs. Window-independent (last-N medians) — label it as such. */

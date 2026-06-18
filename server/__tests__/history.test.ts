@@ -995,7 +995,20 @@ describe('group failures (issue #38)', () => {
     h.recordGroupFailure(REPO2, 'e2e', 'new', '2026-06-10T10:00:00Z');
     const rows = h.groupFailuresSince('2026-06-01T00:00:00Z');
     expect(rows).toEqual([{ repo: REPO2, checkName: 'e2e', groupSha: 'new',
-      at: '2026-06-10T10:00:00Z' }]);
+      at: '2026-06-10T10:00:00Z', conclusion: null }]);
+  });
+
+  it('persists and returns the failing conclusion (roadmap 4.4b reason taxonomy)', () => {
+    h.recordGroupFailure(REPO2, 'e2e', 'g1', '2026-06-10T10:00:00Z', 'TIMED_OUT');
+    h.recordGroupFailure(REPO2, 'unit', 'g1', '2026-06-10T10:01:00Z', 'FAILURE');
+    const rows = h.groupFailuresSince('2026-06-01T00:00:00Z');
+    expect(rows.find((r) => r.checkName === 'e2e')?.conclusion).toBe('TIMED_OUT');
+    expect(rows.find((r) => r.checkName === 'unit')?.conclusion).toBe('FAILURE');
+  });
+
+  it('defaults conclusion to null when the caller omits it (back-compat)', () => {
+    h.recordGroupFailure(REPO2, 'e2e', 'g2', '2026-06-10T10:00:00Z');
+    expect(h.groupFailuresSince('2026-06-01T00:00:00Z')[0]?.conclusion).toBeNull();
   });
 });
 

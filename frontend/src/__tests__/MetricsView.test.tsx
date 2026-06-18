@@ -137,8 +137,10 @@ const PAYLOAD: MetricsPayload = {
   ],
   trainKillers: [
     { repo: 'acme/widgets', batchSize: 6, medianGroupRunSecs: 1800, checks: [
-      { name: 'merge-group e2e', ejects: 7, estCostTrainHours: 21, flakeRatePct: 90 },
-      { name: 'db-migrations', ejects: 2, estCostTrainHours: 6, flakeRatePct: null },
+      { name: 'merge-group e2e', ejects: 7, estCostTrainHours: 21, flakeRatePct: 90,
+        reasonCounts: { timeout: 5, 'test-fail': 1, infra: 1, unknown: 0 }, dominantReason: 'timeout', remedy: 'rerun (raise the timeout if it’s chronic)' },
+      { name: 'db-migrations', ejects: 2, estCostTrainHours: 6, flakeRatePct: null,
+        reasonCounts: { timeout: 0, 'test-fail': 2, infra: 0, unknown: 0 }, dominantReason: 'test-fail', remedy: 'fix the failing check' },
     ] },
   ],
   criticalPath: [
@@ -649,6 +651,8 @@ describe('MetricsView — train killers panel (issue #38)', () => {
     expect(within(killer).getByText('7')).toBeInTheDocument();      // ejects
     expect(within(killer).getByText('21.0')).toBeInTheDocument();   // train-hours
     expect(within(killer).getByText(/90%/)).toBeInTheDocument();    // flake cross-ref
+    expect(within(killer).getByText('timeout')).toBeInTheDocument();        // reason tag (4.4b)
+    expect(within(killer).getByText(/rerun/)).toBeInTheDocument();          // lead remedy
   });
 
   it("highlights 'killer AND flaky' rows amber (tk-flaky); flake-unknown rows show – and stay plain", async () => {

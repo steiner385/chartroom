@@ -1255,6 +1255,7 @@ export function MetricsView({ now, focusCostNonce }: {
                   <th title={defTitle(DEFS.trainEjects)}>trains ejected</th>
                   <th title={defTitle(DEFS.ejectCost)}>est. cost (train-hours)</th>
                   <th title={defTitle(DEFS.flakeRate)}>flake rate</th>
+                  <th title="Why the trains ejected, classified from the failing check's conclusion (roadmap 4.4b) — with the lead remedy">reason → remedy</th>
                 </tr>
               </thead>
               <tbody>
@@ -1267,6 +1268,11 @@ export function MetricsView({ now, focusCostNonce }: {
                       <td>{c.estCostTrainHours != null ? c.estCostTrainHours.toFixed(1) : '–'}</td>
                       <td>{c.flakeRatePct != null
                         ? `${fmtPct(c.flakeRatePct)}${flaky ? ' ⚐ flaky' : ''}` : '–'}</td>
+                      <td className="tk-reason" title={c.remedy ?? undefined}>
+                        {c.dominantReason
+                          ? <><span className={`tk-reason-tag tk-reason-${c.dominantReason}`}>{c.dominantReason}</span>{c.remedy ? <span className="tk-remedy"> → {c.remedy}</span> : null}</>
+                          : '–'}
+                      </td>
                     </tr>
                   );
                 })}

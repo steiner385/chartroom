@@ -14,6 +14,7 @@ import {
 } from './estimator/workflow-lint';
 import { computeDemotionCandidates, type DemotionCandidate } from './estimator/demotion-candidates';
 import { computePromotionCandidates, type PromotionCandidate } from './estimator/promotion-candidates';
+import { classifyEject, dominantReason, remedyForReason, type EjectReason } from './estimator/eject-reason';
 
 /**
  * Metrics tab payload (metrics-readability revision). This interface is the
@@ -130,7 +131,13 @@ export interface MetricsPayload {
    *  (max rate across events, ≥ FLAKE_MIN_RUNS); null when unknown. */
   trainKillers: { repo: string; batchSize: number; medianGroupRunSecs: number | null;
     checks: { name: string; ejects: number; estCostTrainHours: number | null;
-      flakeRatePct: number | null }[] }[];
+      flakeRatePct: number | null;
+      /** Per-reason eject tally (roadmap 4.4b): timeout/test-fail/infra/unknown. */
+      reasonCounts: Record<EjectReason, number>;
+      /** The reason to lead with (most ejects; ties → most actionable); null if none. */
+      dominantReason: EjectReason | null;
+      /** The lead remedy for `dominantReason` (rerun vs fix); null when no ejects. */
+      remedy: string | null }[] }[];
   /** Critical path (issue #42): per repo×event (pull_request / merge_group),
    *  the STATIC expected longest chain through the derived needs DAG where
    *  node weight = median pickup wait + median duration. `offPath` lists the
@@ -924,13 +931,23 @@ export function computeMetrics(history: HistoryStore, window: MetricsWindow,
       const batchSize = batchSizeFor(repo);
       const medianGroupRunSecs = history.medianGroupRun(repo);
       const checks = [...groupBy(rows, (r) => r.checkName)]
-        .map(([name, ejections]) => ({
-          name,
-          ejects: ejections.length, // one row per (group sha, check) — UNIQUE-deduped at write
-          estCostTrainHours: medianGroupRunSecs != null
-            ? (ejections.length * medianGroupRunSecs * batchSize) / 3600 : null,
-          flakeRatePct: flakeRateByRepoName.get(`${repo}${SEP}${name}`) ?? null,
-        }))
+        .map(([name, ejections]) => {
+          // Reason taxonomy (roadmap 4.4b): classify each eject by its conclusion,
+          // tally per reason, and lead with the dominant reason's remedy.
+          const reasonCounts: Record<EjectReason, number> = { timeout: 0, 'test-fail': 0, infra: 0, unknown: 0 };
+          for (const e of ejections) reasonCounts[classifyEject(e.conclusion).reason]++;
+          const lead = dominantReason(reasonCounts);
+          return {
+            name,
+            ejects: ejections.length, // one row per (group sha, check) — UNIQUE-deduped at write
+            estCostTrainHours: medianGroupRunSecs != null
+              ? (ejections.length * medianGroupRunSecs * batchSize) / 3600 : null,
+            flakeRatePct: flakeRateByRepoName.get(`${repo}${SEP}${name}`) ?? null,
+            reasonCounts,
+            dominantReason: lead,
+            remedy: lead ? remedyForReason(lead) : null,
+          };
+        })
         .sort((a, b) => b.ejects - a.ejects || a.name.localeCompare(b.name));
       return { repo, batchSize, medianGroupRunSecs, checks };
     });

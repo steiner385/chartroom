@@ -74,6 +74,9 @@ export interface FlakeStat {
 /** One recorded merge-group culprit: (repo, group sha, check) — issue #38. */
 export interface GroupFailureRow {
   repo: string; checkName: string; groupSha: string; at: string;
+  /** The failing check's GHA conclusion (FAILURE/TIMED_OUT/STARTUP_FAILURE), for
+   *  the eject-reason taxonomy. Null on rows recorded before the column existed. */
+  conclusion: string | null;
 }
 
 /** One completed merge_group check (queue-efficiency panel, #23). */
@@ -274,6 +277,7 @@ export class HistoryStore {
       CREATE TABLE IF NOT EXISTS group_failures (
         repo TEXT NOT NULL, check_name TEXT NOT NULL, group_sha TEXT NOT NULL,
         observed_at TEXT NOT NULL,
+        conclusion TEXT,
         UNIQUE(repo, group_sha, check_name)
       );
       CREATE INDEX IF NOT EXISTS idx_group_failures_observed ON group_failures(observed_at);
@@ -380,6 +384,11 @@ export class HistoryStore {
     // graph, unmatched name, reusable workflow without an outer label input,
     // or rows persisted before #45).
     addColumnIfMissing(this.db, 'runner_waits', 'pool TEXT');
+    // Migration (roadmap 4.4b): group_failures gains conclusion — the failing
+    // check's GHA conclusion, so the train-killer leaderboard can classify each
+    // eject's reason (timeout/test-fail/infra → remedy). NULL on rows recorded
+    // before the column existed; those count as 'unknown' reason.
+    addColumnIfMissing(this.db, 'group_failures', 'conclusion TEXT');
 
     // Prepare all statements after schema is guaranteed to exist.
     this.stmtInsertDuration = this.db.prepare(
@@ -575,10 +584,10 @@ export class HistoryStore {
        GROUP BY repo, check_name, event`
     );
     this.stmtInsertGroupFailure = this.db.prepare(
-      'INSERT OR IGNORE INTO group_failures (repo, check_name, group_sha, observed_at) VALUES (?,?,?,?)'
+      'INSERT OR IGNORE INTO group_failures (repo, check_name, group_sha, observed_at, conclusion) VALUES (?,?,?,?,?)'
     );
     this.stmtSelectGroupFailuresSince = this.db.prepare(
-      `SELECT repo, check_name, group_sha, observed_at AS at
+      `SELECT repo, check_name, group_sha, observed_at AS at, conclusion
        FROM group_failures WHERE observed_at >= ? ORDER BY repo, check_name, observed_at`
     );
     // Duration-regression scan (issue #41): one whole-DB pass enumerates the
@@ -959,9 +968,10 @@ export class HistoryStore {
 
   /** Record a merge-group culprit check (issue #38) — once per
    *  (repo, group sha, check); returns false on the dedupe path or bad input. */
-  recordGroupFailure(repo: string, checkName: string, groupSha: string, observedAt: string): boolean {
+  recordGroupFailure(repo: string, checkName: string, groupSha: string, observedAt: string,
+    conclusion: string | null = null): boolean {
     if (!checkName || !groupSha || !observedAt) return false;
-    const info = this.stmtInsertGroupFailure.run(repo, checkName, groupSha, observedAt);
+    const info = this.stmtInsertGroupFailure.run(repo, checkName, groupSha, observedAt, conclusion);
     return info.changes > 0;
   }
 
@@ -971,6 +981,7 @@ export class HistoryStore {
     return rows.map((r) => ({
       repo: r.repo as string, checkName: r.check_name as string,
       groupSha: r.group_sha as string, at: r.at as string,
+      conclusion: (r.conclusion as string | null) ?? null,
     }));
   }
 

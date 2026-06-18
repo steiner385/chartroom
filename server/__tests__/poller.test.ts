@@ -4293,6 +4293,16 @@ describe('ingestGroupFailures (issue #38)', () => {
       .toEqual(['failed', 'startup', 'timed-out']);
   });
 
+  it('persists each eject’s conclusion for the reason taxonomy (roadmap 4.4b)', () => {
+    ingestGroupFailures(history, 'acme/widgets', 'oid1', [
+      mg({ name: 'failed', conclusion: 'FAILURE' }),
+      mg({ name: 'timed-out', conclusion: 'TIMED_OUT' }),
+    ]);
+    const rows = history.groupFailuresSince('2026-06-01T00:00:00Z');
+    expect(rows.find((r) => r.checkName === 'failed')?.conclusion).toBe('FAILURE');
+    expect(rows.find((r) => r.checkName === 'timed-out')?.conclusion).toBe('TIMED_OUT');
+  });
+
   it('records once per (group sha, check) across repeated ingestion; new groups record again', () => {
     const checks = [mg({})];
     ingestGroupFailures(history, 'acme/widgets', 'oid1', checks);
@@ -4346,7 +4356,7 @@ describe('Poller queue cycle records group failures (issue #38)', () => {
     await p.queueOnce();
     const rows = history.groupFailuresSince('2026-06-01T00:00:00Z');
     expect(rows).toEqual([{ repo: 'acme/widgets', checkName: 'e2e', groupSha: GROUP_OID,
-      at: '2026-06-10T11:38:00Z' }]);
+      at: '2026-06-10T11:38:00Z', conclusion: 'FAILURE' }]);
     // group-failed notification detail names the culprit (issue #38)
     const events: NotificationEvent[] = [];
     const notifier = new Notifier({ config: () => ({ enabled: false, command: [], digest: { enabled: false, hourLocal: 8 },
