@@ -10,6 +10,7 @@ import { verifySignature, routeEvent, type WebhookRoute } from './webhooks';
 import { PermissionError, type MergeMethod, type ReadyMergeInput, type ReadyMergeResult } from './pr-actions';
 import type { DraftPrResult } from './demotion-action';
 import type { DemotionCandidate } from './estimator/demotion-candidates';
+import type { PromotionCandidate } from './estimator/promotion-candidates';
 import type { RoutingState } from './runner-routing';
 import type { RunnerPlan, RunnerJobKey } from './estimator/runner-plan';
 import { RUNNER_JOB_META } from './estimator/runner-plan';
@@ -176,6 +177,9 @@ export function createApp(opts: {
    *  demotion to a lower-frequency tier. Wired in index.ts to the per-owner
    *  GithubClient (needs contents: write). */
   demotionAction?: { draftPr: (input: { owner: string; repo: string; candidate: DemotionCandidate }) => Promise<DraftPrResult> };
+  /** POST /api/promotion/draft-pr — open a scaffold draft PR proposing a check's
+   *  shift-left to an earlier tier (#150.2). Same wiring as demotionAction. */
+  promotionAction?: { draftPr: (input: { owner: string; repo: string; candidate: PromotionCandidate }) => Promise<DraftPrResult> };
   /** Runner-routing capability (feature/runner-routing) — the controller's live
    *  state + computed plan, plus a write path for the browser-writable config
    *  subset. The endpoints that consume this are added by a later task; this
@@ -356,6 +360,37 @@ export function createApp(opts: {
       }
       try {
         const result = await demotion.draftPr({ owner, repo: name, candidate: c as unknown as DemotionCandidate });
+        res.json(result);
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : String(e);
+        const status = e instanceof PermissionError ? 403
+          : /no installation|default branch/i.test(msg) ? 409
+          : 502;
+        res.status(status).json({ error: msg });
+      }
+    });
+  }
+
+  if (opts.promotionAction) {
+    const promotion = opts.promotionAction;
+    // Same-origin guarded. Body: { repo: "owner/name", candidate: PromotionCandidate }.
+    app.post('/api/promotion/draft-pr', originGuard, async (req, res) => {
+      const body = (req.body ?? {}) as { repo?: unknown; candidate?: unknown };
+      const repo = typeof body.repo === 'string' ? body.repo.trim() : '';
+      const slash = repo.indexOf('/');
+      const owner = slash > 0 ? repo.slice(0, slash) : '';
+      const name = slash > 0 ? repo.slice(slash + 1) : '';
+      const c = body.candidate as Record<string, unknown> | undefined;
+      const validCandidate = !!c && typeof c.name === 'string' && typeof c.event === 'string'
+        && typeof c.currentTier === 'string' && typeof c.suggestedTier === 'string'
+        && typeof c.realFailures === 'number' && typeof c.runsInWindow === 'number'
+        && typeof c.minutesInWindow === 'number' && typeof c.failRatePct === 'number';
+      if (!owner || !name || name.includes('/') || !validCandidate) {
+        res.status(400).json({ error: 'expected { repo: "owner/name", candidate: PromotionCandidate }' });
+        return;
+      }
+      try {
+        const result = await promotion.draftPr({ owner, repo: name, candidate: c as unknown as PromotionCandidate });
         res.json(result);
       } catch (e) {
         const msg = e instanceof Error ? e.message : String(e);

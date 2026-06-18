@@ -273,6 +273,10 @@ function mockFetchOk(payload: MetricsPayload = PAYLOAD) {
       return { ok: true, status: 200,
         json: async () => ({ number: 99, url: 'https://github.com/o/r/pull/99', branch: 'chore/demote-x' }) } as Response;
     }
+    if (String(url).includes('/api/promotion/draft-pr')) {
+      return { ok: true, status: 200,
+        json: async () => ({ number: 88, url: 'https://github.com/o/r/pull/88', branch: 'chore/promote-x' }) } as Response;
+    }
     return fn(url);
   });
   return fn;
@@ -1359,5 +1363,14 @@ describe('MetricsView sub-tabs (page cleanup)', () => {
     fireEvent.click(btn);
     const link = await screen.findByText('draft PR ↗');
     expect(link).toHaveAttribute('href', 'https://github.com/o/r/pull/99');
+  });
+
+  it('the promotion Draft PR button posts and renders the resulting PR link (#150.2)', async () => {
+    mockFetchOk();
+    render(<MetricsView now={NOW} />);
+    const btn = await screen.findByTestId('promotion-draft-e2e/push');
+    fireEvent.click(btn);
+    const link = await screen.findByText('draft PR ↗');
+    expect(link).toHaveAttribute('href', 'https://github.com/o/r/pull/88');
   });
 });

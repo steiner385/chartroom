@@ -9,6 +9,7 @@ import { GithubClient } from './github';
 import { ClientRouter } from './client-router';
 import { readyAndAutoMerge } from './pr-actions';
 import { openDemotionDraftPr } from './demotion-action';
+import { openPromotionDraftPr } from './promotion-action';
 import { HistoryStore, FLAKE_MIN_RUNS } from './history';
 import { DeployWatcher } from './deploy-watcher';
 import { Poller, describeError } from './poller';
@@ -490,6 +491,15 @@ async function main() {
           return Promise.reject(new Error(`no installation covers ${input.owner}`));
         }
         return openDemotionDraftPr(client, input.owner, input.repo, input.candidate);
+      },
+    },
+    promotionAction: {
+      draftPr: (input) => {
+        const client = router.clientFor(input.owner);
+        if (!client) {
+          return Promise.reject(new Error(`no installation covers ${input.owner}`));
+        }
+        return openPromotionDraftPr(client, input.owner, input.repo, input.candidate);
       },
     },
     // Runner-routing capability (feature/runner-routing) — the controller's
