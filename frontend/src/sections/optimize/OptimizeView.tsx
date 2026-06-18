@@ -7,6 +7,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import type { WorkspaceApi, SimResultDto } from '../../shell/workspaceApi';
 import type { DerivedModelLike } from './types';
+import { PrefixesLever } from './PrefixesLever';
 import { demotionFindings } from './findings';
 
 /** first tier id where the check runs (its "home" tier to move from) */
@@ -118,6 +119,8 @@ export function OptimizeView({ repo, api }: OptimizeViewProps) {
           {calibration.recommenderUsable ? '' : ' — advisory until proven'}.
         </p>
       )}
+
+      <PrefixesLever repo={repo} api={api} />
 
       {findings.length > 0 && (
         <section className="optimize-findings" aria-label="Findings">

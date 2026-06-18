@@ -18,6 +18,8 @@ import { evaluatePolicies, type PolicyRule } from '../analytics/policy';
 import { evaluateBudgets, alertsFrom, type Budget, type BudgetKind } from '../analytics/budgets';
 import { projectCandidate, projectRawYaml } from '../model/candidate';
 import { applyCandidate, type MultiFileDraftInput } from '../actions/applyCandidate';
+import { mergePrefixesIntoConfig, mergeGroupCheckNames } from '../actions/prefixes-edit';
+import { suggestRequiredPrefixes } from '../../estimator/required-prefixes';
 
 export interface WorkspaceRouterDeps {
   deriver: ModelDeriver;
@@ -234,6 +236,30 @@ export function createWorkspaceRouter(deps: WorkspaceRouterDeps): Router {
   r.get('/quarantines', (req, res) => {
     const repo = repoOf(req, res); if (!repo) return;
     res.json({ repo, quarantines: deps.activeQuarantines?.(repo) ?? [] });
+  });
+
+  // POST /prefixes — the requiredCheckPrefixes lever's governed act (roadmap 4.5):
+  // suggest prefixes from the model's merge_group checks (or take explicit ones),
+  // read-merge into the repo's `.pr-dashboard.yml` preserving every other key, and
+  // either dry-run the new file or open a single-file draft PR. Same SHA-pin +
+  // draft-only invariants as the other write paths.
+  r.post('/prefixes', async (req, res) => {
+    const repo = repoOf(req, res); if (!repo) return;
+    const pinned = await deps.deriver.deriveAtHead(repo);
+    if (!pinned) return res.status(404).json({ error: 'no derivable model' });
+    const explicit: unknown = req.body?.prefixes;
+    const prefixes = Array.isArray(explicit) && explicit.every((p) => typeof p === 'string')
+      ? (explicit as string[]) : suggestRequiredPrefixes(mergeGroupCheckNames(pinned.model));
+    if (prefixes.length === 0) return res.status(409).json({ error: 'no merge_group checks to derive prefixes from' });
+    const current = deps.prClient.fetchFileAtSha
+      ? await deps.prClient.fetchFileAtSha(repo, '.pr-dashboard.yml', pinned.sourceSha) : null;
+    const newText = mergePrefixesIntoConfig(current, prefixes);
+    if (req.body?.dryRun !== false) return res.json({ dryRun: true, file: '.pr-dashboard.yml', prefixes, newText, baseSha: pinned.sourceSha });
+    const title = 'chore: set requiredCheckPrefixes (separate gate failures from advisory noise)';
+    const body = `Configures \`requiredCheckPrefixes\` so the merge queue can tell a real gate failure from advisory noise.\n\nPrefixes: ${prefixes.map((p) => `\`${p}\``).join(', ')}\n\n— opened by the CI/CD workspace prefixes lever.`;
+    const out = await deps.prClient.openDraftPr({ repo, baseSha: pinned.sourceSha, filePath: '.pr-dashboard.yml', newText, title, body });
+    deps.recordAction?.({ at: new Date().toISOString(), repo, action: 'set-prefixes', result: `opened #${out.number}` });
+    res.json({ opened: true, number: out.number, url: out.url, prefixes });
   });
 
   // GET /budgets — quota/budget gauges + the alert-worthy subset (Group J2/J3).

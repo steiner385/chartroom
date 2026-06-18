@@ -39,6 +39,8 @@ function fakeApi(over: Partial<WorkspaceApi> = {}): WorkspaceApi {
       return { dryRun: true as const, diff: '@@ e2e quarantine — continue-on-error @@', baseSha: 'abc' };
     }),
     quarantines: vi.fn(async (repo: string) => ({ repo, quarantines: [] })),
+    prefixesDryRun: vi.fn(async () => ({ dryRun: true as const, file: '.pr-dashboard.yml', prefixes: ['build'], newText: 'requiredCheckPrefixes:\n  - build\n', baseSha: 's' })),
+    prefixesOpen: vi.fn(async () => ({ opened: true as const, number: 1, url: 'u', prefixes: ['build'] })),
     plan: vi.fn(async (_r: string, moves: { check: string }[]) => ({
       combinedCostDeltaMinutes: -5000, legal: !moves.some((m) => m.check === 'build'),
       reason: moves.some((m) => m.check === 'build') ? 'build: required-gate' : undefined, results: [],

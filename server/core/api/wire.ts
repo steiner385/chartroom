@@ -46,6 +46,15 @@ async function fetchWorkflowAtSha(client: GitHubClientLike, repo: string, name: 
   } catch { return null; }
 }
 
+/** Fetch any repo file (root-relative path) pinned to a SHA — the prefixes lever's
+ *  `.pr-dashboard.yml` read-merge (roadmap 4.5). Null when the file is absent. */
+async function fetchFileAtSha(client: GitHubClientLike, repo: string, path: string, sha: string): Promise<string | null> {
+  try {
+    const j = await client.restGet<{ content?: string }>(`/repos/${repo}/contents/${path}?ref=${encodeURIComponent(sha)}`);
+    return j.content ? Buffer.from(j.content, 'base64').toString('utf8') : null;
+  } catch { return null; }
+}
+
 /** Open the workspace's draft PR (branch → verified-bot commit → draft PR). */
 async function openWorkspaceDraftPr(
   client: GitHubClientLike, uniq: () => string,
@@ -105,6 +114,7 @@ export function workspaceDepsFromClient(
   const prClient: PrClient = {
     fetchWorkflowAtSha: (repo, name, sha) => fetchWorkflowAtSha(client, repo, name, sha),
     openDraftPr: (i) => openWorkspaceDraftPr(client, uniq, i),
+    fetchFileAtSha: (repo, path, sha) => fetchFileAtSha(client, repo, path, sha),
   };
   return {
     deriver, prClient, liveRequired: opts.liveRequired,

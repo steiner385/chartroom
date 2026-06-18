@@ -24,6 +24,9 @@ export type PrepareResult = { ok: true; prepared: PreparedEdit } | { ok: false; 
 export interface PrClient {
   fetchWorkflowAtSha: (repo: string, name: string, sha: string) => Promise<string | null>;
   openDraftPr: (input: { repo: string; baseSha: string; filePath: string; newText: string; title: string; body: string }) => Promise<{ number: number; url: string }>;
+  /** Read any repo file (root-relative path) at a SHA — for the requiredCheckPrefixes
+   *  lever's `.pr-dashboard.yml` read-merge (roadmap 4.5). Null when absent. */
+  fetchFileAtSha?: (repo: string, path: string, sha: string) => Promise<string | null>;
 }
 
 /** Phase 1: derive @HEAD, validate on the fresh model, render the edit. */

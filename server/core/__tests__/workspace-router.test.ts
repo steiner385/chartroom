@@ -345,6 +345,72 @@ jobs:
     expect(registered).toHaveLength(0);
   });
 
+  it('POST /prefixes dry-runs the .pr-dashboard.yml merge, preserving other keys (roadmap 4.5 lever)', async () => {
+    const PCI = `name: CI
+on: { pull_request: {}, merge_group: {} }
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - run: pnpm build
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - run: pnpm lint
+`;
+    const deps: ModelDeriveDeps = {
+      resolveHeadSha: vi.fn(async () => 'sha-1'), fetchWorkflowAtSha: vi.fn(async (_r, n) => (n === 'ci.yml' ? PCI : null)),
+      successStatsByRepo: () => new Map<string, SuccessStat[]>(), flakeStatsByRepo: () => new Map<string, FlakeStat[]>(), since: '2026-01-01T00:00:00Z',
+    };
+    const a = express(); a.use(express.json());
+    a.use('/api/workspace', createWorkspaceRouter({
+      deriver: new ModelDeriver(deps),
+      prClient: {
+        fetchWorkflowAtSha: deps.fetchWorkflowAtSha as PrClient['fetchWorkflowAtSha'],
+        openDraftPr: vi.fn() as unknown as PrClient['openDraftPr'],
+        fetchFileAtSha: vi.fn(async () => 'batchSize: 6\n'), // existing .pr-dashboard.yml
+      },
+    }));
+    const res = await request(a).post('/api/workspace/prefixes').send({ repo: 'o/r', dryRun: true });
+    expect(res.status).toBe(200);
+    expect(res.body.dryRun).toBe(true);
+    expect(res.body.prefixes).toEqual(expect.arrayContaining(['build', 'lint']));
+    expect(res.body.newText).toMatch(/batchSize: 6/);          // preserved
+    expect(res.body.newText).toMatch(/requiredCheckPrefixes:/); // set
+  });
+
+  it('POST /prefixes with dryRun:false opens a single-file draft PR + records the action', async () => {
+    const PCI = `name: CI
+on: { pull_request: {}, merge_group: {} }
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - run: pnpm build
+`;
+    const deps: ModelDeriveDeps = {
+      resolveHeadSha: vi.fn(async () => 'sha-1'), fetchWorkflowAtSha: vi.fn(async (_r, n) => (n === 'ci.yml' ? PCI : null)),
+      successStatsByRepo: () => new Map<string, SuccessStat[]>(), flakeStatsByRepo: () => new Map<string, FlakeStat[]>(), since: '2026-01-01T00:00:00Z',
+    };
+    const recorded: { action: string }[] = [];
+    const openDraftPr = vi.fn(async () => ({ number: 91, url: 'u' }));
+    const a = express(); a.use(express.json());
+    a.use('/api/workspace', createWorkspaceRouter({
+      deriver: new ModelDeriver(deps),
+      prClient: {
+        fetchWorkflowAtSha: deps.fetchWorkflowAtSha as PrClient['fetchWorkflowAtSha'],
+        openDraftPr: openDraftPr as unknown as PrClient['openDraftPr'],
+        fetchFileAtSha: vi.fn(async () => null), // no existing file → fresh
+      },
+      recordAction: (row) => recorded.push(row),
+    }));
+    const res = await request(a).post('/api/workspace/prefixes').send({ repo: 'o/r', dryRun: false, prefixes: ['build', 'static-checks'] });
+    expect(res.status).toBe(200);
+    expect(res.body).toMatchObject({ opened: true, number: 91 });
+    expect(openDraftPr).toHaveBeenCalledWith(expect.objectContaining({ filePath: '.pr-dashboard.yml' }));
+    expect(recorded[0]).toMatchObject({ action: 'set-prefixes' });
+  });
+
   it('GET /budgets returns gauges + alert-worthy subset (Group J2/J3)', async () => {
     const deps: ModelDeriveDeps = {
       resolveHeadSha: vi.fn(async () => 'sha-1'), fetchWorkflowAtSha: vi.fn(async (_r, n) => (n === 'ci.yml' ? CI : null)),
