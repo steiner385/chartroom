@@ -70,4 +70,26 @@ describe('PipelineSwitcher', () => {
     fireEvent.click(screen.getByText('cairnea/infra'));
     expect(onFocus).toHaveBeenCalledWith('cairnea/infra');
   });
+
+  it('is keyboard-operable: ArrowDown highlights, Enter selects (roadmap 2.2)', () => {
+    const onFocus = vi.fn();
+    render(<PipelineSwitcher repos={REPOS} focused="cairnea/KinDash" onFocus={onFocus} />);
+    fireEvent.click(screen.getByRole('button'));
+    const input = screen.getByLabelText('Filter pipelines');
+    fireEvent.keyDown(input, { key: 'ArrowDown' }); // → first option active
+    fireEvent.keyDown(input, { key: 'ArrowDown' }); // → second option active
+    expect(input).toHaveAttribute('aria-activedescendant');
+    fireEvent.keyDown(input, { key: 'Enter' });
+    expect(onFocus).toHaveBeenCalledTimes(1);
+  });
+
+  it('Escape closes the popover without selecting', () => {
+    const onFocus = vi.fn();
+    render(<PipelineSwitcher repos={REPOS} focused="cairnea/KinDash" onFocus={onFocus} />);
+    fireEvent.click(screen.getByRole('button'));
+    expect(screen.getByLabelText('Filter pipelines')).toBeInTheDocument();
+    fireEvent.keyDown(screen.getByLabelText('Filter pipelines'), { key: 'Escape' });
+    expect(screen.queryByLabelText('Filter pipelines')).not.toBeInTheDocument();
+    expect(onFocus).not.toHaveBeenCalled();
+  });
 });

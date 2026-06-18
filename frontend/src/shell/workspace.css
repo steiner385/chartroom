@@ -41,7 +41,8 @@
 }
 .pipeline-switcher-popover ul { list-style: none; margin: 0; padding: 0; max-height: 50vh; overflow: auto; }
 .pipeline-option { padding: 9px 10px; border-radius: 7px; cursor: pointer; font-size: 13px; }
-.pipeline-option:hover { background: var(--bg); }
+.pipeline-option:hover, .pipeline-option.active { background: var(--bg); }
+.pipeline-option.active { outline: 2px solid var(--accent, #6af); outline-offset: -2px; }
 .pipeline-option.focused { color: var(--accent); font-weight: 600; }
 .pipeline-option.empty { color: var(--muted); cursor: default; }
 

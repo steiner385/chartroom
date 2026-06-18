@@ -3,7 +3,7 @@
 // persisted) — there is no hardcoded "primary". The focused repo's name is the
 // guardrail that any authoring action targets the intended pipeline, so it stays
 // pinned and visible. Pure presentation + a small persistence hook.
-import { useMemo, useState, useEffect } from 'react';
+import { useMemo, useState, useEffect, useRef, type KeyboardEvent } from 'react';
 
 const STORE_KEY = 'workspace.focusedPipeline';
 
@@ -49,10 +49,33 @@ export interface PipelineSwitcherProps {
 export function PipelineSwitcher({ repos, focused, onFocus }: PipelineSwitcherProps) {
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState('');
+  const [active, setActive] = useState(0); // highlighted option index (keyboard)
+  const rootRef = useRef<HTMLDivElement>(null);
   const matches = useMemo(() => filterRepos(repos, query, focused), [repos, query, focused]);
 
+  const close = () => { setOpen(false); setQuery(''); setActive(0); };
+  const pick = (r: string) => { onFocus(r); close(); };
+
+  // Reset the highlight whenever the candidate set changes.
+  useEffect(() => { setActive(0); }, [query, open]);
+
+  // Close on an outside click (roadmap 2.2).
+  useEffect(() => {
+    if (!open) return;
+    const onDown = (e: MouseEvent) => { if (rootRef.current && !rootRef.current.contains(e.target as Node)) close(); };
+    document.addEventListener('mousedown', onDown);
+    return () => document.removeEventListener('mousedown', onDown);
+  }, [open]);
+
+  const onKeyDown = (e: KeyboardEvent) => {
+    if (e.key === 'Escape') { e.preventDefault(); close(); return; }
+    if (e.key === 'ArrowDown') { e.preventDefault(); setActive((i) => Math.min(i + 1, matches.length - 1)); return; }
+    if (e.key === 'ArrowUp') { e.preventDefault(); setActive((i) => Math.max(i - 1, 0)); return; }
+    if (e.key === 'Enter') { e.preventDefault(); const r = matches[active]; if (r) pick(r); return; }
+  };
+
   return (
-    <div className="pipeline-switcher">
+    <div className="pipeline-switcher" ref={rootRef}>
       <button
         type="button"
         className="pipeline-switcher-current"
@@ -69,18 +92,24 @@ export function PipelineSwitcher({ repos, focused, onFocus }: PipelineSwitcherPr
             className="pipeline-switcher-filter"
             placeholder="Filter pipelines…"
             aria-label="Filter pipelines"
+            role="combobox"
+            aria-expanded="true"
+            aria-controls="pipeline-listbox"
+            aria-activedescendant={matches[active] ? `pl-opt-${active}` : undefined}
             autoFocus
             value={query}
             onChange={(e) => setQuery(e.target.value)}
+            onKeyDown={onKeyDown}
           />
-          <ul role="listbox" aria-label="Pipelines">
-            {matches.map((r) => (
+          <ul id="pipeline-listbox" role="listbox" aria-label="Pipelines">
+            {matches.map((r, i) => (
               <li
                 key={r}
+                id={`pl-opt-${i}`}
                 role="option"
                 aria-selected={r === focused}
-                className={r === focused ? 'pipeline-option focused' : 'pipeline-option'}
-                onClick={() => { onFocus(r); setOpen(false); setQuery(''); }}
+                className={`pipeline-option${r === focused ? ' focused' : ''}${i === active ? ' active' : ''}`}
+                onClick={() => pick(r)}
               >
                 {r}
               </li>
