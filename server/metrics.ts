@@ -15,6 +15,7 @@ import {
 import { computeDemotionCandidates, type DemotionCandidate } from './estimator/demotion-candidates';
 import { computePromotionCandidates, type PromotionCandidate } from './estimator/promotion-candidates';
 import { classifyEject, dominantReason, remedyForReason, type EjectReason } from './estimator/eject-reason';
+import { suggestRequiredPrefixes } from './estimator/required-prefixes';
 
 /**
  * Metrics tab payload (metrics-readability revision). This interface is the
@@ -1396,8 +1397,12 @@ export function computeMetrics(history: HistoryStore, window: MetricsWindow,
     });
 
   // Recommendations digest (tuning tool): collect the advice the panels above
-  // already computed into one ranked list.
-  const recommendations = deriveRecommendations({ batchAdvisor, queueEfficiency, lint });
+  // already computed into one ranked list. Suggested requiredCheckPrefixes
+  // (roadmap 4.5 lever) come from the observed merge_group check names per repo.
+  const prefixSuggestions = [...mgByRepo.entries()].map(([repo, rows]) => ({
+    repo, prefixes: suggestRequiredPrefixes([...new Set(rows.map((r) => r.checkName))]),
+  }));
+  const recommendations = deriveRecommendations({ batchAdvisor, queueEfficiency, lint, prefixSuggestions });
 
   // Config-change annotations (tuning tool): the in-window tuning-knob changes,
   // exclude-filtered. The client overlays them as chart markers.
