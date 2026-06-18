@@ -344,3 +344,25 @@ jobs:
     expect(openDraftPr).not.toHaveBeenCalled();
   });
 });
+
+describe('POST /candidate', () => {
+  it('projects a candidate for a timeout mutation', async () => {
+    const res = await request(app()).post('/api/workspace/candidate')
+      .send({ repo: 'o/r', mutations: [{ op: 'timeout', jobId: 'e2e', minutes: 10 }] });
+    expect(res.status).toBe(200);
+    expect(res.body.ok).toBe(true);
+    expect(res.body.validation.gatingRegressed).toBe(false);
+    expect(res.body.files[0].file).toBe('ci.yml');
+  });
+
+  it('400s on a missing/empty mutations array', async () => {
+    const res = await request(app()).post('/api/workspace/candidate').send({ repo: 'o/r', mutations: [] });
+    expect(res.status).toBe(400);
+  });
+
+  it('400s when mutations exceed the cap', async () => {
+    const many = Array.from({ length: 51 }, () => ({ op: 'timeout', jobId: 'e2e', minutes: 1 }));
+    const res = await request(app()).post('/api/workspace/candidate').send({ repo: 'o/r', mutations: many });
+    expect(res.status).toBe(400);
+  });
+});

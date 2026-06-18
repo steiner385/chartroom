@@ -16,6 +16,7 @@ import { buildChangelog, buildAuditLog, type ChangelogRow, type AuditRow } from 
 import { attributeOutcome, summarizeAccuracy, type AppliedChange } from '../analytics/outcomes';
 import { evaluatePolicies, type PolicyRule } from '../analytics/policy';
 import { evaluateBudgets, alertsFrom, type Budget, type BudgetKind } from '../analytics/budgets';
+import { projectCandidate } from '../model/candidate';
 
 export interface WorkspaceRouterDeps {
   deriver: ModelDeriver;
@@ -59,6 +60,22 @@ export function createWorkspaceRouter(deps: WorkspaceRouterDeps): Router {
     const pinned = await deps.deriver.deriveAtHead(repo);
     if (!pinned) return res.status(404).json({ error: 'no derivable model' });
     res.json({ repo, sourceSha: pinned.sourceSha, model: pinned.model });
+  });
+
+  // POST /candidate — { repo, baseSha?, mutations[] } → re-derived CandidateModel +
+  // validation (spec §3). POST-only (re-derives caller-suppliable mutations);
+  // read-only (no draft PR — the apply exit stays on /draft-pr). Caps the list.
+  r.post('/candidate', async (req, res) => {
+    const repo = repoOf(req, res); if (!repo) return;
+    const mutations = req.body?.mutations;
+    if (!Array.isArray(mutations) || mutations.length === 0) return res.status(400).json({ error: 'mutations[] required' });
+    if (mutations.length > 50) return res.status(400).json({ error: 'too many mutations (max 50)' });
+    const baseSha = typeof req.body?.baseSha === 'string' ? req.body.baseSha : undefined;
+    const baseline = baseSha ? await deps.deriver.deriveAtSha(repo, baseSha) : await deps.deriver.deriveAtHead(repo);
+    if (!baseline) return res.status(404).json({ error: 'no derivable model' });
+    const fetchAt = (file: string) => deps.prClient.fetchWorkflowAtSha(repo, file, baseline.sourceSha);
+    const result = await projectCandidate(deps.deriver, fetchAt, baseline, mutations);
+    res.json({ repo, ...result });
   });
 
   // POST /simulate — { repo, move } → projection + legality
