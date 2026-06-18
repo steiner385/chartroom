@@ -7,6 +7,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import type { WorkspaceApi, SimResultDto } from '../../shell/workspaceApi';
 import type { DerivedModelLike } from './types';
+import { demotionFindings } from './findings';
 
 /** first tier id where the check runs (its "home" tier to move from) */
 function homeTier(model: DerivedModelLike, check: string): string | null {
@@ -42,6 +43,7 @@ export function OptimizeView({ repo, api }: OptimizeViewProps) {
   }, [repo, api]);
 
   const from = useMemo(() => (model && selected ? homeTier(model, selected) : null), [model, selected]);
+  const findings = useMemo(() => (model ? demotionFindings(model).slice(0, 8) : []), [model]);
 
   async function simulate(check: string) {
     setSelected(check); setSim(null); setDiff(null); setPrompt(null);
@@ -107,6 +109,22 @@ export function OptimizeView({ repo, api }: OptimizeViewProps) {
       {!rulesetReadable && (
         <p className="optimize-caveat" role="status">⚠ Verdicts are <strong>static-only</strong> — the live branch-protection ruleset is unreadable (grant <code>administration:read</code>). Safety is checked against the inferred gate set, not the enforced one.</p>
       )}
+      {findings.length > 0 && (
+        <section className="optimize-findings" aria-label="Findings">
+          <h3>Findings — top demotion candidates</h3>
+          <ul role="list">
+            {findings.map((f) => (
+              <li key={f.check} className="optimize-finding">
+                <span className="finding-impact" aria-hidden="true">💰</span>
+                <span className="finding-check">{f.check}</span>
+                <span className="finding-why">{f.minutes.toLocaleString()} min/window · never failed — demote candidate</span>
+                <button type="button" disabled={busy} onClick={() => simulate(f.check)}>Simulate</button>
+              </li>
+            ))}
+          </ul>
+        </section>
+      )}
+
       <ul className="optimize-checks" role="list">
         {model.checks.map((c) => (
           <li key={c} className={c === selected ? 'optimize-check active' : 'optimize-check'}>

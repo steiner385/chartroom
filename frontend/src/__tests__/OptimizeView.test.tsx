@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
-import { render, screen, fireEvent, waitFor } from '@testing-library/react';
+import { render, screen, fireEvent, waitFor, within } from '@testing-library/react';
 import { OptimizeView } from '../sections/optimize/OptimizeView';
 import type { WorkspaceApi } from '../shell/workspaceApi';
 import type { DerivedModelLike } from '../sections/optimize/types';
@@ -132,6 +132,17 @@ describe('OptimizeView (US4 — drives /api/workspace loop)', () => {
     render(<OptimizeView repo="o/r" api={fakeApi()} />);
     await screen.findAllByText('Simulate demote');
     expect(screen.queryByText(/static-only/i)).not.toBeInTheDocument();
+  });
+
+  it('leads with ranked findings showing impact up front, one-click to simulate (roadmap 5.2)', async () => {
+    const api = fakeApi();
+    render(<OptimizeView repo="o/r" api={api} />);
+    const findings = await screen.findByLabelText('Findings');
+    // the always-green e2e (5,000 min, 0 real failures in the fixture) is a demotion candidate
+    expect(findings).toHaveTextContent(/e2e/);
+    expect(findings).toHaveTextContent(/5,000 min\/window · never failed/);
+    fireEvent.click(within(findings).getByRole('button', { name: 'Simulate' }));
+    expect(await screen.findByText(/saves 5,000 min/)).toBeInTheDocument();
   });
 
   it('surfaces a load error', async () => {
