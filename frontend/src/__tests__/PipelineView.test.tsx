@@ -46,6 +46,15 @@ describe('PipelineView (the PR pipeline view, ported into the workspace)', () =>
     expect(screen.getByRole('status')).toBeInTheDocument();
   });
 
+  it('surfaces "what merges next" from the queue (roadmap 4.4)', () => {
+    const st = state({ repos: [{ repo: 'acme/alpha', hasDeploy: false, prs: [pr('acme/alpha', 1, 'p')], queue: {
+      groups: [{ oid: 'a', prNumbers: [42], percent: 80, etaSeconds: 120, failed: false }],
+      waiting: [], unmergeable: [], queueBlocked: [], unmergeableCulprit: null, batchSize: 1,
+    } }] } as never);
+    render(<PipelineView state={st} focusedRepo={null} />);
+    expect(screen.getByText(/Merges next:/)).toHaveTextContent(/#42.*building 80%/);
+  });
+
   it('collapses the awaiting-prod herd into one expandable row, keeping running PRs visible', () => {
     const st = state({ repos: [{ repo: 'acme/alpha', hasDeploy: true, queue: null, prs: [
       pr('acme/alpha', 1, 'running pr', 'ci'),

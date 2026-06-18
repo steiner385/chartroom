@@ -149,6 +149,7 @@
 .pipeline-cohort { margin: 8px 0; }
 .cohort-toggle { width: 100%; text-align: left; background: var(--bg); border: 1px dashed var(--border); border-radius: 8px; padding: 8px 10px; cursor: pointer; color: var(--text); font-size: 13px; }
 .cohort-toggle:hover { border-style: solid; }
+.next-to-merge { font-size: 13px; margin: 4px 0 8px; padding: 6px 10px; border-radius: 8px; background: color-mix(in srgb, var(--accent, #6af) 8%, transparent); border: 1px solid color-mix(in srgb, var(--accent, #6af) 30%, transparent); }
 .model-summary { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin: 8px 0; }
 .model-chip { font-size: 12px; padding: 4px 10px; border-radius: 999px; border: 1px solid var(--border); background: var(--bg); color: var(--text); }
 button.model-chip { cursor: pointer; }

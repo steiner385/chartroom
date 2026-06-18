@@ -9,6 +9,13 @@ import { PrRow } from '../../PrRow';
 import { QueueTrain } from '../../QueueTrain';
 import { StatusStrip, bucketPr, type Bucket } from '../../StatusStrip';
 import { splitCohort } from './ordering';
+import { nextToMerge } from './queueFront';
+
+/** Compact ETA like "~5m" / "~1h"; null when unknown. */
+function eta(secs: number | null): string | null {
+  if (secs == null) return null;
+  return secs < 90 ? `~${Math.round(secs)}s` : secs < 5400 ? `~${Math.round(secs / 60)}m` : `~${Math.round(secs / 3600)}h`;
+}
 
 function isActive(pr: PrView): boolean {
   const { stage } = pr.stage;
@@ -66,6 +73,19 @@ export function PipelineView({ state, focusedRepo }: { state: DashboardState | n
               return (
                 <>
                   <QueueTrain queue={r.queue} />
+                  {(() => {
+                    const next = nextToMerge(r.queue);
+                    if (!next) return null;
+                    const prs = next.prNumbers.map((n) => `#${n}`).join(', ');
+                    const e = eta(next.etaSeconds);
+                    return (
+                      <p className="next-to-merge" role="status">
+                        ⏭ Merges next: <strong>{prs}</strong>{' '}
+                        {next.building ? `building${next.percent != null ? ` ${next.percent}%` : ''}` : 'front of queue'}
+                        {e ? ` · ${e}` : ''}
+                      </p>
+                    );
+                  })()}
                   {visiblePrs.length === 0 && hiddenCount === 0 && <p className="empty">no active PRs</p>}
                   {lead.map((pr) => row(pr, r))}
                   {cohort.length > 0 && (
