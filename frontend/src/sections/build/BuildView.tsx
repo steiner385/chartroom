@@ -7,6 +7,8 @@
 import { useEffect, useMemo, useState } from 'react';
 import type { WorkspaceApi, CandidateDto, CandidateMutationDto } from '../../shell/workspaceApi';
 import type { DerivedModelLike } from '../optimize/types';
+import { laneLayout } from './laneLayout';
+import { PipelineCanvas } from './PipelineCanvas';
 
 const DEFAULT_TIMEOUT = 15;
 
@@ -56,6 +58,8 @@ export function BuildView({ repo, api }: BuildViewProps) {
   const add = (m: CandidateMutationDto) => setStack((s) => [...s, m]);
   const removeAt = (i: number) => setStack((s) => s.filter((_, j) => j !== i));
 
+  const lanes = useMemo(() => (model ? laneLayout(model) : []), [model]);
+
   const verdict = useMemo(() => {
     if (!candidate) return null;
     if (!candidate.ok) return { kind: 'refused' as const, text: candidate.reason ?? 'cannot apply' };
@@ -72,6 +76,8 @@ export function BuildView({ repo, api }: BuildViewProps) {
     <div className="build-view">
       <h2>Build — {repo}</h2>
       <p className="build-blurb">Shape the pipeline by applying structured changes — the tool generates the YAML and validates it. No required gate can be silently dropped.</p>
+
+      <PipelineCanvas lanes={lanes} />
 
       <ul className="build-checks" role="list">
         {model.checks.map((c) => {
