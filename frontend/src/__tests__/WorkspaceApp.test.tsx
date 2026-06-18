@@ -6,6 +6,11 @@ import type { DashboardState } from '../types';
 const mockHook = vi.fn();
 vi.mock('../useDashboard', () => ({ useDashboard: () => mockHook() }));
 
+// Stub the heavy ported panels so we test the WIRING, not their internals.
+vi.mock('../MetricsView', () => ({ MetricsView: () => <div data-testid="metrics-view">METRICS</div> }));
+vi.mock('../SettingsPanel', () => ({ SettingsPanel: ({ open }: { open: boolean }) => (open ? <div role="dialog" aria-label="Settings">SETTINGS</div> : null) }));
+vi.mock('../LegendPanel', () => ({ LegendPanel: ({ open }: { open: boolean }) => (open ? <div role="dialog" aria-label="Legend">LEGEND</div> : null) }));
+
 import { WorkspaceApp } from '../shell/WorkspaceApp';
 
 const STATE = {
@@ -42,5 +47,30 @@ describe('WorkspaceApp (Increment 1 MVP composition)', () => {
     fireEvent.click(screen.getByText('Tune & Investigate'));
     expect(screen.getByRole('heading', { name: /Tune & Investigate/ })).toBeInTheDocument();
     expect(screen.queryByRole('link', { name: /open classic dashboard/i })).not.toBeInTheDocument();
+  });
+
+  it('surfaces the Metrics section (ported MetricsView)', () => {
+    mockHook.mockReturnValue({ state: STATE, connected: true });
+    render(<WorkspaceApp />);
+    fireEvent.click(screen.getByText('Metrics'));
+    expect(screen.getByTestId('metrics-view')).toBeInTheDocument();
+  });
+
+  it('the gear opens Settings and the ? opens the Legend', () => {
+    mockHook.mockReturnValue({ state: STATE, connected: true });
+    render(<WorkspaceApp />);
+    expect(screen.queryByRole('dialog', { name: 'Settings' })).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Settings' }));
+    expect(screen.getByRole('dialog', { name: 'Settings' })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Legend' }));
+    expect(screen.getByRole('dialog', { name: 'Legend' })).toBeInTheDocument();
+  });
+
+  it('shows the notifications bell when supported and toggles it', () => {
+    const toggleNotify = vi.fn();
+    mockHook.mockReturnValue({ state: STATE, connected: true, notifySupported: true, notifyEnabled: false, toggleNotify });
+    render(<WorkspaceApp />);
+    fireEvent.click(screen.getByRole('button', { name: /Browser notifications/i }));
+    expect(toggleNotify).toHaveBeenCalledTimes(1);
   });
 });
