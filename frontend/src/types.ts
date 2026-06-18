@@ -200,6 +200,10 @@ export interface NotificationEvent {
   title: string;
   type: NotificationKind;
   detail: string;
+  /** Server-rendered display strings — the single source of truth for what the
+   *  bell shows (server/notifier.ts renderNotification). The browser displays
+   *  these verbatim and never re-derives labels/subjects. */
+  rendered?: { title: string; body: string };
 }
 
 export interface NotificationsConfig {

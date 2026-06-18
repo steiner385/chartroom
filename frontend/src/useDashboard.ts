@@ -1,28 +1,13 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import type { DashboardState, NotificationEvent, NotificationEventType } from './types';
+import type { DashboardState, NotificationEvent } from './types';
 
 // ---- browser notifications (issue #19) ----
 // Opt-in Web Notifications for the named `notification` SSE frames. No service
 // worker is involved: the tab must be open (even backgrounded) to receive them.
+// Display text comes pre-rendered from the server (ev.rendered) so the bell, the
+// host-command sink, and the webhook never disagree — see server/notifier.ts.
 
 const LS_NOTIFY_KEY = 'prdash.notifications';
-
-const NOTIFY_LABELS: Record<NotificationEventType, string> = {
-  'ci-failed': 'CI failed',
-  'group-failed': 'merge-queue group failed',
-  'queue-blocked': 'queue blocked',
-  ready: 'ready to merge',
-  overdue: 'overdue',
-  'prod-live': 'live on prod',
-  'queue-stalled': 'merge queue STALLED',
-  'duration-regression': 'duration regression',
-  'runner-starvation': 'runner pool starving',
-  'budget-breach': 'budget breach',
-};
-
-/** Repo-level event types carry prNumber 0 — render the repo, never "repo#0". */
-const REPO_LEVEL_TYPES = new Set<NotificationEventType>(
-  ['queue-stalled', 'duration-regression', 'runner-starvation', 'budget-breach']);
 
 function notifySupported(): boolean {
   return typeof Notification !== 'undefined';
@@ -88,17 +73,14 @@ export function useDashboard(): DashboardHook {
       if (!notifySupported() || Notification.permission !== 'granted') return;
       try {
         const ev = JSON.parse(e.data as string) as NotificationEvent;
-        if (ev.type === 'digest') {
-          // pre-rendered daily summary (issue #51): subject in title, body in detail
-          new Notification(ev.title, { body: ev.detail, tag: 'digest' });
-          return;
-        }
-        // repo-level events carry prNumber 0 — never show "#0"
-        const subject = REPO_LEVEL_TYPES.has(ev.type) ? ev.repo : `${ev.repo}#${ev.prNumber}`;
-        new Notification(`${subject} ${NOTIFY_LABELS[ev.type] ?? ev.type}`, {
-          body: ev.detail ? `${ev.title} — ${ev.detail}` : ev.title,
+        // Display text is server-rendered (the single source of truth); the bell
+        // shows it verbatim and never re-derives labels/subjects. A frame without
+        // it (only from a pre-upgrade server) is skipped rather than re-rendered.
+        if (!ev.rendered) return;
+        new Notification(ev.rendered.title, {
+          body: ev.rendered.body,
           // tag collapses repeats of the same (PR, event) if the server restarts
-          tag: `${ev.repo}#${ev.prNumber}|${ev.type}`,
+          tag: ev.type === 'digest' ? 'digest' : `${ev.repo}#${ev.prNumber}|${ev.type}`,
         });
       } catch { /* malformed frame — ignore */ }
     });

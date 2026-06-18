@@ -100,6 +100,11 @@ export interface NotificationEvent {
   title: string;
   type: NotificationKind;
   detail: string;
+  /** Server-rendered display strings (renderNotification), attached when the event
+   *  is fired so EVERY display sink — host command and the browser bell over SSE —
+   *  shows the identical text. The single source of truth for notification display;
+   *  the browser must not re-derive labels/subjects (that drift is the bug). */
+  rendered?: { title: string; body: string };
 }
 
 /** One classify result for a tracked PR, with the previous result for context. */
@@ -349,8 +354,11 @@ export class Notifier extends EventEmitter {
     // type toggled off — no sink fires ('digest' is not an events key; it is
     // gated upstream by digest.enabled)
     if (ev.type !== 'digest' && this.deps.config().events[ev.type] === false) return;
-    this.emit('notification', ev);
-    this.runCommand(ev);
+    // Render ONCE here so every display sink (host command + the browser bell via
+    // SSE) shows identical text — no parallel render rule on the client.
+    const rendered = renderNotification(ev);
+    this.emit('notification', { ...ev, rendered });
+    this.runCommand(ev, rendered);
     this.postWebhook(ev);
   }
 
@@ -395,12 +403,12 @@ export class Notifier extends EventEmitter {
       `[notifier] webhook POST failed (no retries; logged at most hourly): ${msg}`);
   }
 
-  private runCommand(ev: NotificationEvent): void {
+  private runCommand(ev: NotificationEvent, rendered: { title: string; body: string }): void {
     const cfg = this.deps.config();
     if (!cfg.enabled) return;
     const [cmd, ...args] = cfg.command;
     if (!cmd) return;
-    const { title, body } = renderNotification(ev);
+    const { title, body } = rendered;
     // substitution in ARGUMENTS only — argv[0] selects the executable and must
     // never be influenced by PR-controlled content
     const argv = args.map((a) => a.replaceAll('{title}', title).replaceAll('{body}', body));

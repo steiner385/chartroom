@@ -316,6 +316,16 @@ describe('renderNotification', () => {
     expect(r.title).toBe('acme/widgets#7 live on prod');
     expect(r.body).toBe('fix: the thing — live on prod');
   });
+
+  it('the fired SSE event carries the SAME rendered strings (single source of truth)', () => {
+    const h = harness();
+    h.observe(stage('ci'), stage('parked', 'ci-failed'));
+    expect(h.events).toHaveLength(1);
+    const ev = h.events[0]!;
+    // the browser bell consumes ev.rendered verbatim — it must equal renderNotification(ev)
+    expect(ev.rendered).toEqual(renderNotification(ev));
+    expect(ev.rendered?.title).toBe('acme/widgets#7 CI failed');
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -644,7 +654,9 @@ describe('Notifier digest delivery (issue #51)', () => {
     const h = harness(WITH_HOOK);
     h.notifier.sendDigest('Daily CI digest (24h) — 14 merges, 2 ejects', 'r/a:\n  merged: 14');
     expect(h.events).toEqual([{ repo: '', prNumber: 0, type: 'digest',
-      title: 'Daily CI digest (24h) — 14 merges, 2 ejects', detail: 'r/a:\n  merged: 14' }]);
+      title: 'Daily CI digest (24h) — 14 merges, 2 ejects', detail: 'r/a:\n  merged: 14',
+      // pre-rendered display strings ride along for the browser bell (digest passes through)
+      rendered: { title: 'Daily CI digest (24h) — 14 merges, 2 ejects', body: 'r/a:\n  merged: 14' } }]);
     // command sink gets the digest subject/body verbatim (no "repo#0" mangling)
     expect(h.execCalls[0]!.args).toEqual([
       'Daily CI digest (24h) — 14 merges, 2 ejects', 'r/a:\n  merged: 14']);
