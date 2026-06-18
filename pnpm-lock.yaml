@@ -14,12 +14,6 @@ importers:
       express:
         specifier: ^4.22.2
         version: 4.22.2
-      react:
-        specifier: ^19.2.7
-        version: 19.2.7
-      react-dom:
-        specifier: ^19.2.7
-        version: 19.2.7(react@19.2.7)
       yaml:
         specifier: ^2.9.0
         version: 2.9.0
@@ -60,6 +54,12 @@ importers:
       postcss-prefix-selector:
         specifier: ^2.1.1
         version: 2.1.1(postcss@8.5.15)
+      react:
+        specifier: ^19.2.7
+        version: 19.2.7
+      react-dom:
+        specifier: ^19.2.7
+        version: 19.2.7(react@19.2.7)
       supertest:
         specifier: ^7.2.2
         version: 7.2.2
