@@ -192,6 +192,9 @@ button.model-chip { cursor: pointer; }
 .cmdk-opt.empty { opacity: 0.5; cursor: default; }
 .cmdk-trigger { background: var(--bg); border: 1px solid var(--border); border-radius: 6px; color: var(--text); opacity: 0.75; font-size: 11px; padding: 3px 7px; cursor: pointer; }
 .cmdk-trigger:hover { opacity: 1; }
+/* legacy back-door — intentionally low-key (the workspace is the default now) */
+.classic-link { font-size: 11px; color: var(--muted); opacity: 0.7; text-decoration: none; white-space: nowrap; margin-left: 2px; }
+.classic-link:hover { opacity: 1; text-decoration: underline; }
 .optimize-caveat { font-size: 12px; color: var(--amber); border: 1px solid var(--amber); border-radius: 8px; padding: 8px 10px; margin: 8px 0; background: color-mix(in srgb, var(--amber) 8%, transparent); }
 .optimize-findings { border: 1px solid var(--border); border-radius: 8px; padding: 10px; margin: 8px 0 12px; }
 .optimize-findings h3 { margin: 0 0 8px; font-size: 13px; }

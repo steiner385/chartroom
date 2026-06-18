@@ -184,6 +184,8 @@ export function App() {
     <main className={kiosk ? 'app kiosk' : 'app'}>
       <header>
         <h1>PR Pipeline</h1>
+        <a className="workspace-link" href="?workspace=1"
+          title="Switch to the new CI/CD workspace (now the default)">✨ New workspace →</a>
         {!connected && (
           <span className="stale disconnected">disconnected — retrying…</span>
         )}

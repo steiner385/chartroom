@@ -51,6 +51,13 @@ describe('WorkspaceApp (Increment 1 MVP composition)', () => {
     expect(screen.queryByText('Metrics')).not.toBeInTheDocument();
   });
 
+  it('offers the legacy back-door link (workspace is the default now)', () => {
+    mockHook.mockReturnValue({ state: STATE, connected: true });
+    render(<WorkspaceApp />);
+    const link = screen.getByRole('link', { name: /classic/i });
+    expect(link).toHaveAttribute('href', '?legacy=1');
+  });
+
   it('surfaces the Insights section (Metrics + Tune folded together — WS3a)', () => {
     mockHook.mockReturnValue({ state: STATE, connected: true });
     render(<WorkspaceApp />);

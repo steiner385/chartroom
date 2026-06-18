@@ -96,6 +96,8 @@ export function WorkspaceApp() {
         aria-haspopup="dialog" aria-expanded={settingsOpen} onClick={() => setSettingsOpen(true)}>
         <span aria-hidden="true">⚙</span>
       </button>
+      <a className="classic-link" href="?legacy=1"
+        title="Switch to the classic dashboard (sticky — return with ?workspace=1)">Classic ↩</a>
     </div>
   );
 
