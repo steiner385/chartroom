@@ -178,6 +178,7 @@ button.model-chip { cursor: pointer; }
 .cmdk-opt.empty { opacity: 0.5; cursor: default; }
 .cmdk-trigger { background: var(--bg); border: 1px solid var(--border); border-radius: 6px; color: var(--text); opacity: 0.75; font-size: 11px; padding: 3px 7px; cursor: pointer; }
 .cmdk-trigger:hover { opacity: 1; }
+.optimize-caveat { font-size: 12px; color: var(--amber); border: 1px solid var(--amber); border-radius: 8px; padding: 8px 10px; margin: 8px 0; background: color-mix(in srgb, var(--amber) 8%, transparent); }
 /* roadmap 2.2 — clickable rows are real buttons; reset to look like the row */
 .fleet-row-btn, .leaderboard-row-btn, .diagnose-pr-btn {
   display: flex; align-items: center; gap: 8px; width: 100%; text-align: left;

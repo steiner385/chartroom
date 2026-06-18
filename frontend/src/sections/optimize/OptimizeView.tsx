@@ -30,11 +30,15 @@ export function OptimizeView({ repo, api }: OptimizeViewProps) {
   const [quarantine, setQuarantine] = useState<{ check: string; diff?: string; error?: string } | null>(null);
   const [planChecks, setPlanChecks] = useState<Set<string>>(new Set());
   const [plan, setPlan] = useState<{ combinedCostDeltaMinutes: number; legal: boolean; reason?: string } | null>(null);
+  const [rulesetReadable, setRulesetReadable] = useState(true);
 
   useEffect(() => {
     if (!repo) return;
-    setModel(null); setError(null); setSelected(null); setSim(null); setDiff(null); setPrompt(null);
+    setModel(null); setError(null); setSelected(null); setSim(null); setDiff(null); setPrompt(null); setRulesetReadable(true);
     api.getPipeline(repo).then((r) => setModel(r.model)).catch((e: Error) => setError(e.message));
+    // trust caveat (roadmap 4.6): a verdict computed without the live branch-protection
+    // ruleset is static-only — say so, never imply ruleset-verified safety.
+    api.ruleset(repo).then((rs) => setRulesetReadable(rs.readable)).catch(() => setRulesetReadable(false));
   }, [repo, api]);
 
   const from = useMemo(() => (model && selected ? homeTier(model, selected) : null), [model, selected]);
@@ -100,6 +104,9 @@ export function OptimizeView({ repo, api }: OptimizeViewProps) {
   return (
     <div className="optimize-view">
       <h2>Optimize — {repo}</h2>
+      {!rulesetReadable && (
+        <p className="optimize-caveat" role="status">⚠ Verdicts are <strong>static-only</strong> — the live branch-protection ruleset is unreadable (grant <code>administration:read</code>). Safety is checked against the inferred gate set, not the enforced one.</p>
+      )}
       <ul className="optimize-checks" role="list">
         {model.checks.map((c) => (
           <li key={c} className={c === selected ? 'optimize-check active' : 'optimize-check'}>

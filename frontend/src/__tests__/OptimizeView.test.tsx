@@ -121,6 +121,19 @@ describe('OptimizeView (US4 — drives /api/workspace loop)', () => {
     expect(await screen.findByText(/Plan blocked — build: required-gate/)).toBeInTheDocument();
   });
 
+  it('warns that verdicts are static-only when the live ruleset is unreadable (roadmap 4.6)', async () => {
+    const api = fakeApi({ ruleset: vi.fn(async () => ({ readable: false, derivedRequired: [], liveRequired: [], missingFromModel: [], extraInModel: [], inSync: false })) });
+    render(<OptimizeView repo="o/r" api={api} />);
+    expect(await screen.findByText(/static-only/i)).toBeInTheDocument();
+    expect(screen.getByText('administration:read')).toBeInTheDocument();
+  });
+
+  it('shows no static-only caveat when the ruleset is readable', async () => {
+    render(<OptimizeView repo="o/r" api={fakeApi()} />);
+    await screen.findAllByText('Simulate demote');
+    expect(screen.queryByText(/static-only/i)).not.toBeInTheDocument();
+  });
+
   it('surfaces a load error', async () => {
     const api = fakeApi({ getPipeline: vi.fn(async () => { throw new Error('no derivable model'); }) });
     render(<OptimizeView repo="o/r" api={api} />);
