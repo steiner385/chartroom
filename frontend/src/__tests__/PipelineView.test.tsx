@@ -3,9 +3,9 @@ import { render, screen, fireEvent, within } from '@testing-library/react';
 import { PipelineView } from '../sections/pipeline/PipelineView';
 import type { DashboardState, PrView } from '../types';
 
-const pr = (repo: string, number: number, title: string): PrView => ({
+const pr = (repo: string, number: number, title: string, stage = 'ci'): PrView => ({
   repo, number, title, url: `https://x/${number}`,
-  stage: { stage: 'ci', substate: null, percent: 50, etaSeconds: 100, etaRangeSeconds: null, overdue: false },
+  stage: { stage, substate: null, percent: 50, etaSeconds: 100, etaRangeSeconds: null, overdue: false },
   queueAheadCount: null, checks: [],
 } as unknown as PrView);
 
@@ -44,5 +44,20 @@ describe('PipelineView (the PR pipeline view, ported into the workspace)', () =>
   it('shows a loading state when state is null', () => {
     render(<PipelineView state={null} focusedRepo={null} />);
     expect(screen.getByRole('status')).toBeInTheDocument();
+  });
+
+  it('collapses the awaiting-prod herd into one expandable row, keeping running PRs visible', () => {
+    const st = state({ repos: [{ repo: 'acme/alpha', hasDeploy: true, queue: null, prs: [
+      pr('acme/alpha', 1, 'running pr', 'ci'),
+      pr('acme/alpha', 2, 'merged a', 'qa-deploy'),
+      pr('acme/alpha', 3, 'merged b', 'qa-deploy'),
+    ] }] } as never);
+    render(<PipelineView state={st} focusedRepo={null} />);
+    // the running PR stays visible; the 2 awaiting-prod collapse behind a toggle
+    expect(screen.getByText('running pr')).toBeInTheDocument();
+    expect(screen.queryByText('merged a')).not.toBeInTheDocument();
+    const toggle = screen.getByRole('button', { name: /2 merged · awaiting prod/i });
+    fireEvent.click(toggle);
+    expect(screen.getByText('merged a')).toBeInTheDocument();
   });
 });

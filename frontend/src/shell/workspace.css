@@ -145,6 +145,9 @@
 .canvas-node.n-conditional { border-color: var(--amber); }
 .canvas-node-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .build-hint { color: var(--text); opacity: 0.65; font-size: 12px; margin: 8px 0; }
+.pipeline-cohort { margin: 8px 0; }
+.cohort-toggle { width: 100%; text-align: left; background: var(--bg); border: 1px dashed var(--border); border-radius: 8px; padding: 8px 10px; cursor: pointer; color: var(--text); font-size: 13px; }
+.cohort-toggle:hover { border-style: solid; }
 .canvas-node-gate { font-size: 10px; text-transform: uppercase; color: var(--text); opacity: 0.75; white-space: nowrap; }
 .canvas-lane-event { font-size: 11px; color: var(--text); opacity: 0.6; }
 button.canvas-node { width: 100%; cursor: pointer; background: var(--bg); text-align: left; }

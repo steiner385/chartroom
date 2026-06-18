@@ -8,6 +8,7 @@ import type { DashboardState, PrView } from '../../types';
 import { PrRow } from '../../PrRow';
 import { QueueTrain } from '../../QueueTrain';
 import { StatusStrip, bucketPr, type Bucket } from '../../StatusStrip';
+import { splitCohort } from './ordering';
 
 function isActive(pr: PrView): boolean {
   const { stage } = pr.stage;
@@ -21,6 +22,7 @@ function isFailed(pr: PrView): boolean {
 export function PipelineView({ state, focusedRepo }: { state: DashboardState | null; focusedRepo: string | null }) {
   const [activeFilter, setActiveFilter] = useState<Bucket | null>(null);
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
+  const [openCohorts, setOpenCohorts] = useState<Set<string>>(new Set());
 
   if (!state) return <div className="pipeline-view" role="status">Loading pipeline…</div>;
 
@@ -28,6 +30,10 @@ export function PipelineView({ state, focusedRepo }: { state: DashboardState | n
   const repos = [...state.repos].sort((a, b) => (a.repo === focusedRepo ? -1 : b.repo === focusedRepo ? 1 : 0));
   const allPrs = repos.flatMap((r) => r.prs);
   const toggle = (repo: string) => setCollapsed((p) => { const n = new Set(p); n.has(repo) ? n.delete(repo) : n.add(repo); return n; });
+  const toggleCohort = (repo: string) => setOpenCohorts((p) => { const n = new Set(p); n.has(repo) ? n.delete(repo) : n.add(repo); return n; });
+  const row = (pr: typeof allPrs[number], r: typeof repos[number]) => (
+    <PrRow key={pr.number} pr={pr} hasDeploy={r.hasDeploy} queueCulprit={r.queue?.unmergeableCulprit ?? null} expandable />
+  );
 
   return (
     <div className="pipeline-view">
@@ -54,16 +60,25 @@ export function PipelineView({ state, focusedRepo }: { state: DashboardState | n
                 )}
               </button>
             </h2>
-            {!isCollapsed && (
-              <>
-                <QueueTrain queue={r.queue} />
-                {visiblePrs.length === 0 && hiddenCount === 0 && <p className="empty">no active PRs</p>}
-                {visiblePrs.map((pr) => (
-                  <PrRow key={pr.number} pr={pr} hasDeploy={r.hasDeploy}
-                    queueCulprit={r.queue?.unmergeableCulprit ?? null} expandable />
-                ))}
-              </>
-            )}
+            {!isCollapsed && (() => {
+              const { lead, cohort } = splitCohort(visiblePrs);
+              const cohortOpen = openCohorts.has(r.repo);
+              return (
+                <>
+                  <QueueTrain queue={r.queue} />
+                  {visiblePrs.length === 0 && hiddenCount === 0 && <p className="empty">no active PRs</p>}
+                  {lead.map((pr) => row(pr, r))}
+                  {cohort.length > 0 && (
+                    <div className="pipeline-cohort">
+                      <button type="button" className="cohort-toggle" aria-expanded={cohortOpen} onClick={() => toggleCohort(r.repo)}>
+                        <span aria-hidden="true">{cohortOpen ? '▾' : '▸'}</span> {cohort.length} merged · awaiting prod deploy
+                      </button>
+                      {cohortOpen && cohort.map((pr) => row(pr, r))}
+                    </div>
+                  )}
+                </>
+              );
+            })()}
           </section>
         );
       })}
