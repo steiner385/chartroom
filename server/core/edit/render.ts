@@ -194,3 +194,51 @@ export function renderShiftLeft(yamlText: string, jobId: string): EditResult {
   const diff = [`@@ job ${jobId} — shift left (remove event guard) @@`, `-${lines[ifIdx]}`, ...lines.slice(jobLine, jobLine + 1).map((l) => ` ${l}`)].join('\n');
   return { ok: true, newText, addedLine: '', diff };
 }
+
+const unquote = (s: string) => s.replace(/^['"]|['"]$/g, '');
+
+/** Strip every reference to `jobId` from `needs:` clauses (inline-array, scalar,
+ *  and block-list forms). Pure helper for renderRemoveCheck. */
+function stripNeedsRef(lines: string[], jobId: string): string[] {
+  const out: string[] = [];
+  let needsIndent: number | null = null; // indent of the `needs:` header while inside a block list
+  for (const line of lines) {
+    const indent = line.match(/^(\s*)/)![1].length;
+    if (needsIndent !== null) {
+      const item = line.match(/^\s*-\s*(\S+)\s*(#.*)?$/);
+      if (item && indent > needsIndent) {
+        if (unquote(item[1]) === jobId) continue; // drop this needs list item
+        out.push(line); continue;
+      }
+      needsIndent = null; // block ended
+    }
+    const inlineArr = line.match(/^(\s*needs\s*:\s*)\[(.*)\]\s*(#.*)?$/);
+    if (inlineArr) {
+      const items = inlineArr[2].split(',').map((s) => unquote(s.trim())).filter((s) => s && s !== jobId);
+      out.push(`${inlineArr[1]}[${items.join(', ')}]`);
+      continue;
+    }
+    const scalar = line.match(/^(\s*)needs\s*:\s*(\S+)\s*(#.*)?$/);
+    if (scalar && unquote(scalar[2]) === jobId) continue; // drop `needs: jobId`
+    const header = line.match(/^(\s*)needs\s*:\s*(#.*)?$/);
+    if (header) { needsIndent = header[1].length; out.push(line); continue; }
+    out.push(line);
+  }
+  return out;
+}
+
+/** Remove a dead job's block and strip it from every `needs:` reference. The
+ *  CALLER (validator) must refuse this for a required gate / where removal would
+ *  orphan a gate — this renderer only does the textual edit. Refuses a missing job. */
+export function renderRemoveCheck(yamlText: string, jobId: string): EditResult {
+  const lines = yamlText.split('\n');
+  const loc = locateJobBlock(lines, jobId);
+  if (!loc) return { ok: false, reason: `could not locate job "${jobId}" in the workflow` };
+  const { jobLine, end } = loc;
+  const removedSlice = lines.slice(jobLine, end);
+  const withoutJob = [...lines.slice(0, jobLine), ...lines.slice(end)];
+  const cleaned = stripNeedsRef(withoutJob, jobId);
+  const newText = cleaned.join('\n');
+  const diff = [`@@ remove job ${jobId} @@`, ...removedSlice.slice(0, 3).map((l) => `-${l}`)].join('\n');
+  return { ok: true, newText, addedLine: '', diff };
+}

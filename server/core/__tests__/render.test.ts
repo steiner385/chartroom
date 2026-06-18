@@ -230,3 +230,38 @@ describe('renderShiftLeft (relax a simple event guard — inverse of G2)', () =>
     expect(renderShiftLeft(GUARDED, 'nope').ok).toBe(false);
   });
 });
+
+describe('renderRemoveCheck (delete a job + clean needs)', () => {
+  const WF3 = `on: push\njobs:\n  build:\n    runs-on: x\n    steps: []\n  dead:\n    runs-on: x\n    steps: []\n  ci:\n    needs: [build, dead]\n    runs-on: x\n    steps: []\n`;
+
+  it('removes the job and strips it from an inline needs array; round-trips', () => {
+    const r = renderRemoveCheck(WF3, 'dead');
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    const after = parse(r.newText);
+    expect(after.jobs.dead).toBeUndefined();
+    expect(after.jobs.ci.needs).toEqual(['build']);
+    expect(after.jobs.build).toBeTruthy();
+    expect(r.diff).toMatch(/remove job dead/);
+  });
+
+  it('strips a block-list needs item', () => {
+    const wf = `on: push\njobs:\n  dead:\n    runs-on: x\n    steps: []\n  ci:\n    needs:\n      - build\n      - dead\n    runs-on: x\n    steps: []\n`;
+    const r = renderRemoveCheck(wf, 'dead');
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(parse(r.newText).jobs.ci.needs).toEqual(['build']);
+  });
+
+  it('drops a scalar `needs: dead` line entirely', () => {
+    const wf = `on: push\njobs:\n  dead:\n    runs-on: x\n    steps: []\n  ci:\n    needs: dead\n    runs-on: x\n    steps: []\n`;
+    const r = renderRemoveCheck(wf, 'dead');
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(parse(r.newText).jobs.ci.needs).toBeUndefined();
+  });
+
+  it('refuses a missing job', () => {
+    expect(renderRemoveCheck(WF3, 'nope').ok).toBe(false);
+  });
+});
