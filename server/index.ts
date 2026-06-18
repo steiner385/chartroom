@@ -9,7 +9,7 @@ import { GithubClient } from './github';
 import { ClientRouter } from './client-router';
 import { readyAndAutoMerge } from './pr-actions';
 import { openDemotionDraftPr } from './demotion-action';
-import { HistoryStore } from './history';
+import { HistoryStore, FLAKE_MIN_RUNS } from './history';
 import { DeployWatcher } from './deploy-watcher';
 import { Poller, describeError } from './poller';
 import { RunnerRoutingController } from './runner-routing';
@@ -21,6 +21,7 @@ import { computeProtectionMap } from './protection-map';
 import { createWorkspaceRouter } from './core/api/workspace-router';
 import { evaluateBudgets } from './core/analytics/budgets';
 import { notifyBudgetBreaches } from './core/analytics/budget-notify';
+import { budgetCurrents } from './core/analytics/budget-currents';
 import { workspaceDepsFromClient } from './core/api/wire';
 import { WorkspaceStore } from './core/store/workspaceStore';
 import { LiveSnapshotStore } from './core/live/snapshot';
@@ -318,15 +319,26 @@ async function main() {
         // Durable workspace store (Groups H/L2/I2) — real persistence outliving the
         // rolling telemetry retention. Wires outcomes/audit/policy from real data.
         const wsStore = new WorkspaceStore(join(dataDir(), 'workspace.db'));
+        // Current spend per budget kind (roadmap 5.6c) over the trailing 30d —
+        // the single source both /budgets and the breach-alert timer evaluate, so
+        // minutes / flake / wait-p90 budgets work, not just cost.
+        const budgetCurrentValues = () => {
+          const sinceDate = new Date(Date.now() - 30 * 86_400_000).toISOString().slice(0, 10);
+          const sinceIso = new Date(Date.now() - 30 * 86_400_000).toISOString();
+          const costDollars = history.costActualsSince(sinceDate).filter((r) => r.scope === 'fleet').reduce((s, r) => s + r.dollars, 0);
+          let totalDurationSecs = 0;
+          for (const stats of history.successStatsByRepo(sinceIso).values()) for (const s of stats) totalDurationSecs += s.sumDurationSecs;
+          const flakeRatesPct: number[] = [];
+          for (const stats of history.flakeStatsByRepo(sinceIso).values()) for (const s of stats) if (s.totalRuns >= FLAKE_MIN_RUNS) flakeRatesPct.push(s.flakeRatePct);
+          const runnerWaitSecs = history.runnerWaitsSince(sinceIso).map((w) => w.waitSecs);
+          return budgetCurrents({ costDollars, totalDurationSecs, flakeRatesPct, runnerWaitSecs });
+        };
         // Budget-breach alerting (roadmap 5.6c): re-evaluate fleet budgets on a
-        // timer and push a notification when one crosses its threshold — the same
-        // evaluator the /budgets endpoint uses (cost from trailing-30d actuals).
+        // timer and push a notification when one crosses its threshold.
         const checkBudgets = () => {
           const budgets = wsStore.getBudgets('fleet');
           if (budgets.length === 0) return;
-          const sinceDate = new Date(Date.now() - 30 * 86_400_000).toISOString().slice(0, 10);
-          const cost = history.costActualsSince(sinceDate).filter((r) => r.scope === 'fleet').reduce((s, r) => s + r.dollars, 0);
-          const gauges = evaluateBudgets({ cost }, budgets);
+          const gauges = evaluateBudgets(budgetCurrentValues(), budgets);
           notifyBudgetBreaches('fleet', gauges, (sc, kind, active, detail) => notifier.budgetBreach(sc, kind, active, detail));
         };
         setInterval(checkBudgets, BUDGET_CHECK_MS).unref();
@@ -396,14 +408,10 @@ async function main() {
               return checks;
             } catch { return null; }
           },
-          // Group J2/J3 budgets: thresholds from the store, current spend from the
-          // fleet cost-actuals over the trailing 30d. No budgets stored → empty.
-          budgets: async () => {
-            const budgets = wsStore.getBudgets('fleet');
-            const sinceDate = new Date(Date.now() - 30 * 86_400_000).toISOString().slice(0, 10);
-            const cost = history.costActualsSince(sinceDate).filter((r) => r.scope === 'fleet').reduce((s, r) => s + r.dollars, 0);
-            return { budgets, current: { cost } };
-          },
+          // Group J2/J3 budgets: thresholds from the store, current spend per kind
+          // (cost/minutes/flake/wait-p90) over the trailing 30d — the same values
+          // the breach-alert timer evaluates. No budgets stored → empty.
+          budgets: async () => ({ budgets: wsStore.getBudgets('fleet'), current: budgetCurrentValues() }),
         });
       })()
     : undefined;
