@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
+import { useApiBase } from './embed/ApiBaseContext';
 import { simulateMove, legalFromTiers, legalToTargets } from './protectionSimulate';
 import { buildClaudePrompt } from './protectionPrompt';
 
@@ -96,6 +97,7 @@ function cellTitle(c: Cell): string {
 // ---- component --------------------------------------------------------------
 
 export function ProtectionMap() {
+  const { apiUrl } = useApiBase();
   const [repos, setRepos] = useState<string[]>([]);
   const [repo, setRepo] = useState<string | null>(null);
   const [model, setModel] = useState<DerivedModel | null>(null);
@@ -112,7 +114,7 @@ export function ProtectionMap() {
 
   useEffect(() => {
     let cancelled = false;
-    fetch('/api/repos')
+    fetch(apiUrl('/repos'))
       .then((r) => r.json() as Promise<{ repos: { repo: string; excluded: boolean }[] }>)
       .then((data) => {
         if (cancelled) return;
@@ -129,7 +131,7 @@ export function ProtectionMap() {
     if (!repo) return;
     let cancelled = false;
     setLoading(true); setError(null);
-    fetch(`/api/protection-map?repo=${encodeURIComponent(repo)}`)
+    fetch(apiUrl(`/protection-map?repo=${encodeURIComponent(repo)}`))
       .then(async (r) => {
         if (!r.ok) throw new Error((await r.json().catch(() => ({}))).error ?? `HTTP ${r.status}`);
         return r.json() as Promise<DerivedModel>;
@@ -155,7 +157,7 @@ export function ProtectionMap() {
   useEffect(() => {
     if (!model || metrics) return;
     let cancelled = false;
-    fetch('/api/metrics?window=30d')
+    fetch(apiUrl('/metrics?window=30d'))
       .then((r) => (r.ok ? r.json() : null))
       .then((m) => { if (!cancelled) setMetrics(m); })
       .catch(() => { if (!cancelled) setMetrics(null); });

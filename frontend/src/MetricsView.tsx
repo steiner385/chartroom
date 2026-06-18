@@ -1,4 +1,5 @@
 import { createContext, useContext, useEffect, useId, useRef, useState, type ReactNode } from 'react';
+import { useApiBase } from './embed/ApiBaseContext';
 import { scrollBehavior } from './motion';
 import type { HeadlineStat, MetricsBucket, MetricsPayload, MetricsWindow, DemotionCandidate, PromotionCandidate } from './types';
 import { RunnerRouting } from './RunnerRouting';
@@ -232,6 +233,7 @@ export function MetricsView({ now, focusCostNonce }: {
    *  into view and moves focus to its heading. */
   focusCostNonce?: number;
 } = {}) {
+  const { apiUrl } = useApiBase();
   const [window, setWindow] = useState<MetricsWindow>('3d');
   const [bucketPref, setBucketPref] = useState<MetricsBucket>('hour');
   // Per-candidate demotion draft-PR state, keyed `${repo}::${name}/${event}`.
@@ -240,7 +242,7 @@ export function MetricsView({ now, focusCostNonce }: {
     const key = `${repo}::${candidate.name}/${candidate.event}`;
     setDemotePr((p) => ({ ...p, [key]: { loading: true } }));
     try {
-      const res = await fetch('/api/demotion/draft-pr', {
+      const res = await fetch(apiUrl('/demotion/draft-pr'), {
         method: 'POST', headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ repo, candidate }),
       });
@@ -257,7 +259,7 @@ export function MetricsView({ now, focusCostNonce }: {
     const key = `${repo}::${candidate.name}/${candidate.event}`;
     setPromotePr((p) => ({ ...p, [key]: { loading: true } }));
     try {
-      const res = await fetch('/api/promotion/draft-pr', {
+      const res = await fetch(apiUrl('/promotion/draft-pr'), {
         method: 'POST', headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ repo, candidate }),
       });
@@ -303,7 +305,7 @@ export function MetricsView({ now, focusCostNonce }: {
   useEffect(() => {
     let cancelled = false;
     setError(null);
-    fetch(`/api/metrics?window=${window}&bucket=${bucket}`)
+    fetch(apiUrl(`/metrics?window=${window}&bucket=${bucket}`))
       .then((res) => {
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         return res.json() as Promise<MetricsPayload>;

@@ -19,7 +19,6 @@
     /* same AA-vs-white fills as light — white on #5c9bff was only 2.77:1 */
     --accent-strong: #2563eb; --done-strong: #15803d; --amber-strong: #9a5d00; }
 }
-body { margin: 0; background: var(--bg); color: var(--text); }
 /* Wider cap for the glance-from-across-the-room context this tool targets — the
    metro tracks, queue trains, and metric charts use the extra width (UX-M2). */
 .app { max-width: min(1400px, 96vw); margin: 0 auto; padding: 16px 20px 60px; }

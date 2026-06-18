@@ -1,0 +1,4 @@
+/* Standalone-only globals: full-viewport chrome that must NOT ship in the embed
+   bundle (the host owns the page box). Imported only by main.tsx. */
+html, body, #root { height: 100%; }
+body { margin: 0; background: var(--bg); color: var(--text); }

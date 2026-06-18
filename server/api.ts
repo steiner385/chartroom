@@ -492,6 +492,7 @@ export function createApp(opts: {
       'content-type': 'text/event-stream',
       'cache-control': 'no-cache',
       connection: 'keep-alive',
+      'x-accel-buffering': 'no',
     });
     const send = () => { if (res.destroyed) return; res.write(`data: ${JSON.stringify(opts.getState())}\n\n`); };
     // Named SSE event (issue #19): notification events ride the same stream as

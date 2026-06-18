@@ -57,3 +57,24 @@ export function laneToSection(laneId: string | null): SectionId {
     default: return 'pipeline'; // pr-ci / merge-queue / main / deploy → the operational view
   }
 }
+
+/** `${basename}/${id}` with the basename's trailing slash trimmed. */
+export function joinPath(basename: string, id: SectionId): string {
+  const b = basename.replace(/\/+$/, '');
+  return `${b}/${id}`;
+}
+
+/** Parse the first path segment after `basename` into a SectionId (null if none/unknown). */
+export function sectionFromPath(pathname: string, basename: string): SectionId | null {
+  const b = basename.replace(/\/+$/, '');
+  if (b && !(pathname === b || pathname.startsWith(`${b}/`))) return null;
+  const seg = pathname.slice(b.length).replace(/^\/+/, '').split('/')[0].trim().toLowerCase();
+  if (!seg) return null;
+  if (IDS.includes(seg)) return seg as SectionId;
+  return HASH_ALIASES[seg] ?? null;
+}
+
+/** The canonical path for a section under a basename. */
+export function pathForSection(id: SectionId, basename: string): string {
+  return joinPath(basename, id);
+}

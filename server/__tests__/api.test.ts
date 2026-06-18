@@ -67,6 +67,20 @@ describe('api', () => {
     }
   });
 
+  it('sets X-Accel-Buffering: no on the SSE stream', async () => {
+    const app = createApp({ getState: () => STATE, bus: new EventEmitter() });
+    const res = await request(app).get('/api/events')
+      .parse((res, cb) => {
+        let data = '';
+        res.on('data', (chunk: Buffer) => {
+          data += chunk.toString();
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          if (data.includes('\n\n')) { (res as any).destroy(); cb(null, data); }
+        });
+      });
+    expect(res.headers['x-accel-buffering']).toBe('no');
+  });
+
   it('SSE notification listeners are removed on close (no leak)', async () => {
     const bus = new EventEmitter();
     const app = createApp({ getState: () => STATE, bus });

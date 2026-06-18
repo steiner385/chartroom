@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { renderHook, act } from '@testing-library/react';
 import { useDashboard } from '../useDashboard';
+import { ApiBaseProvider } from '../embed/ApiBaseContext';
 import type { DashboardState } from '../types';
 
 // Minimal EventSource mock installed on globalThis (test-file-scoped)
@@ -235,4 +236,11 @@ describe('useDashboard browser notifications (issue #19)', () => {
     }).not.toThrow();
     expect(MockNotification.instances).toHaveLength(0);
   });
+});
+
+it('opens the SSE at the injected apiBase', () => {
+  const wrapper = ({ children }: { children: React.ReactNode }) =>
+    <ApiBaseProvider base="/api/ci">{children}</ApiBaseProvider>;
+  renderHook(() => useDashboard(), { wrapper });
+  expect(MockEventSource.instances[0].url).toBe('/api/ci/events');
 });

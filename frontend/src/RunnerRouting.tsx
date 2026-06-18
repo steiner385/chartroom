@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import { useApiBase } from './embed/ApiBaseContext';
 import type { RunnerPlanResponse, PlanRow } from './types';
 import { formatSince } from './format';
 
@@ -39,13 +40,14 @@ export function groupByWorkflow(plan: PlanRow[]): { workflow: string; rows: Plan
 // ---- component --------------------------------------------------------------
 
 export function RunnerRouting() {
+  const { apiUrl } = useApiBase();
   const [data, setData] = useState<RunnerPlanResponse | null>(null);
   const [fetchError, setFetchError] = useState<string | null>(null);
 
   const load = () => {
     let cancelled = false;
     setFetchError(null);
-    fetch('/api/runner-plan')
+    fetch(apiUrl('/runner-plan'))
       .then((res) => {
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         return res.json() as Promise<RunnerPlanResponse>;
@@ -58,7 +60,7 @@ export function RunnerRouting() {
   useEffect(() => load(), []); // eslint-disable-line react-hooks/exhaustive-deps
 
   const put = async (patch: Record<string, unknown>) => {
-    await fetch('/api/runner-routing', {
+    await fetch(apiUrl('/runner-routing'), {
       method: 'PUT',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify(patch),

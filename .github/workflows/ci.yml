@@ -29,3 +29,18 @@ jobs:
 
       - name: Build
         run: pnpm build
+
+      - name: Build embed bundle
+        run: pnpm build:embed
+
+      - name: Gate — no absolute /api literals in frontend
+        run: |
+          if grep -rn "fetch('/api\|fetch(\"/api\|fetch(\`/api\|new EventSource('/api\|new EventSource(\"/api\|new EventSource(\`/api" frontend/src --include='*.ts' --include='*.tsx' | grep -v __tests__; then
+            echo "Found absolute /api literal — use useApiBase().apiUrl()"; exit 1
+          fi
+
+      - name: Gate — embed CSS is scoped, embed JS has no React root
+        run: |
+          grep -nE '^\s*(body|html)\s*\{' dist/embed/style.css && { echo "Unscoped body/html in embed CSS"; exit 1; } || true
+          grep -q 'react-dom/client' dist/embed/index.js && { echo "Embed bundles a React root"; exit 1; } || true
+          echo "embed bundle gates passed"

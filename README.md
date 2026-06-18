@@ -721,6 +721,40 @@ webhook receiver**:
 
 ---
 
+## Embedding pr-dashboard in a host app
+
+pr-dashboard ships a content-only React component alongside the standalone app.
+For the full host-integration handoff — routing/nested-router bridge, the proxy
+& backend contract, theming, SSR/React constraints, and a setup checklist — see
+[docs/embedding-host-guide.md](docs/embedding-host-guide.md).
+
+```tsx
+import { PrDashboard } from 'pr-dashboard/embed';
+import 'pr-dashboard/embed/style.css';
+
+<PrDashboard
+  apiBase="/api/ci"        // host proxy root (auth is the host's job); default '/api'
+  basename="/console/ci"   // URL prefix for path routing; default ''
+  routerMode="path"        // 'path' (default) | 'hash'
+  focusedRepo={repo}       // optional controlled repo; else an in-content sticky switcher
+  onFocusChange={setRepo}  // optional
+  withCredentials          // optional — send cookies on the SSE (cookie-proxy hosts)
+/>
+```
+
+**Props:** `apiBase?`, `basename?`, `routerMode?`, `focusedRepo?`, `onFocusChange?`, `className?`, `withCredentials?`.
+
+**Consumption:** `dist/` is built on install via the `prepare` script, so a git dependency works:
+`"pr-dashboard": "github:<org>/pr-dashboard#<sha>"`. React 19 is a peer dependency — the host provides the single React instance.
+
+**Deployment & proxy contract (host session must provision):**
+- Add the host origin to the backend's `allowedOriginHosts` **or** strip the inbound `Origin` at the proxy — otherwise the backend's `originGuard` 403s every mutating call (ready-merge, draft-PR levers).
+- Point the backend's `bindHosts` at an address the proxy can reach (default is loopback-only).
+- Allow-list the proxied paths; **exclude `/admin/*`** (`/api/admin/restart` exits the process) and decide whether `/config` and the write levers are exposed to host-authed users.
+- SSE: inject credentials server-side at the proxy (native `EventSource` can't set headers) or use a cookie + `withCredentials`; disable proxy buffering (the backend already sends `X-Accel-Buffering: no`); keep the proxy read-timeout above the 25s server ping. Note: `withCredentials` affects only the SSE `EventSource` (cookie-mode fallback, since native EventSource can't set headers); the mutating fetch calls do NOT send browser cookies — fetch-path auth must be injected by the host proxy (same-origin proxy or server-side credential injection).
+
+---
+
 ## License
 
 [MIT](LICENSE) © 2026 Tony Stein.

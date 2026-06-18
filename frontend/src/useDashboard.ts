@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { DashboardState, NotificationEvent } from './types';
+import { useApiBase } from './embed/ApiBaseContext';
 
 // ---- browser notifications (issue #19) ----
 // Opt-in Web Notifications for the named `notification` SSE frames. No service
@@ -46,6 +47,7 @@ export function useDashboard(): DashboardHook {
   const [stale, setStale] = useState(false);
   const staleTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const supported = notifySupported();
+  const { apiUrl, withCredentials } = useApiBase();
   // restore the persisted bell only while permission is still granted — a
   // revoked permission would otherwise show an on-bell that does nothing
   const [notifyEnabled, setNotifyEnabled] = useState(() =>
@@ -63,7 +65,7 @@ export function useDashboard(): DashboardHook {
       staleTimer.current = setTimeout(() => setStale(true), STALE_AFTER_MS);
     };
     const onFrame = (data: string) => { setConnected(true); setStale(false); armStale(); setState(JSON.parse(data) as DashboardState); };
-    const es = new EventSource('/api/events');
+    const es = new EventSource(apiUrl('/events'), withCredentials ? { withCredentials: true } : undefined);
     es.onopen = () => setConnected(true);
     es.onmessage = (e) => onFrame(e.data);
     es.onerror = () => setConnected(false);
@@ -85,7 +87,7 @@ export function useDashboard(): DashboardHook {
       } catch { /* malformed frame — ignore */ }
     });
     return () => { es.close(); if (staleTimer.current) clearTimeout(staleTimer.current); };
-  }, []);
+  }, [apiUrl, withCredentials]);
 
   const toggleNotify = useCallback(() => {
     if (!notifySupported()) return;
