@@ -7,7 +7,7 @@ import { useState } from 'react';
 import type { DashboardState, PrView } from '../../types';
 import { PrRow } from '../../PrRow';
 import { QueueTrain } from '../../QueueTrain';
-import { StatusStrip, bucketPr, type Bucket } from '../../StatusStrip';
+import { StatusStrip, bucketPr, isActivePr, isFailedPr, type Bucket } from '../../StatusStrip';
 import { splitCohort, deployBreakdown } from './ordering';
 import { nextToMerge } from './queueFront';
 
@@ -17,14 +17,6 @@ function eta(secs: number | null): string | null {
   return secs < 90 ? `~${Math.round(secs)}s` : secs < 5400 ? `~${Math.round(secs / 60)}m` : `~${Math.round(secs / 3600)}h`;
 }
 
-function isActive(pr: PrView): boolean {
-  const { stage } = pr.stage;
-  return stage === 'ci' || stage === 'queue' || stage === 'qa-deploy';
-}
-function isFailed(pr: PrView): boolean {
-  const { stage, substate } = pr.stage;
-  return (stage === 'parked' && substate === 'ci-failed') || (stage === 'queue' && substate === 'group-failed');
-}
 
 export function PipelineView({ state, focusedRepo }: { state: DashboardState | null; focusedRepo: string | null }) {
   const [activeFilter, setActiveFilter] = useState<Bucket | null>(null);
@@ -49,8 +41,8 @@ export function PipelineView({ state, focusedRepo }: { state: DashboardState | n
         const isCollapsed = collapsed.has(r.repo);
         const visiblePrs = activeFilter ? r.prs.filter((pr) => bucketPr(pr) === activeFilter) : r.prs;
         const hiddenCount = r.prs.length - visiblePrs.length;
-        const activeCount = r.prs.filter(isActive).length;
-        const failedCount = r.prs.filter(isFailed).length;
+        const activeCount = r.prs.filter(isActivePr).length;
+        const failedCount = r.prs.filter(isFailedPr).length;
         return (
           <section key={r.repo}>
             <h2 className="repo-header">
