@@ -91,7 +91,7 @@ export function BuildView({ repo, api }: BuildViewProps) {
       <PipelineCanvas lanes={lanes} onSelect={setSelectedCheck} selected={selectedCheck ?? undefined} />
 
       {selectedCheck && jobIdFor(model, selectedCheck)
-        ? <NodeInspector check={selectedCheck} jobId={jobIdFor(model, selectedCheck)!} onApply={add} />
+        ? <NodeInspector check={selectedCheck} jobId={jobIdFor(model, selectedCheck)!} needs={model.checkMeta.find((m) => m.check === selectedCheck)?.needs} onApply={add} />
         : <p className="build-hint">Select a check in the pipeline above to edit it — add a timeout, shift it left, or remove it. Changes are validated before any draft PR.</p>}
 
       {stack.length > 0 && (

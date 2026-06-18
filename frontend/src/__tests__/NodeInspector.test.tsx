@@ -11,6 +11,11 @@ describe('NodeInspector (click-a-node form — keyboard-operable)', () => {
     expect(onApply).toHaveBeenCalledWith({ op: 'timeout', jobId: 'e2e', minutes: 15 });
   });
 
+  it('shows the check dependencies (needs — DAG edges, roadmap 5.1)', () => {
+    render(<NodeInspector check="ci" jobId="ci" needs={['build', 'static-checks']} onApply={vi.fn()} />);
+    expect(screen.getByText(/Depends on \(needs\): build, static-checks/)).toBeInTheDocument();
+  });
+
   it('composes shift-left and remove', () => {
     const onApply = vi.fn();
     render(<NodeInspector check="lint" jobId="lint" onApply={onApply} />);

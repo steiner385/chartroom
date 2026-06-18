@@ -9,13 +9,17 @@ const DEFAULT_TIMEOUT = 15;
 export interface NodeInspectorProps {
   check: string;
   jobId: string;
+  needs?: string[];
   onApply: (m: CandidateMutationDto) => void;
 }
 
-export function NodeInspector({ check, jobId, onApply }: NodeInspectorProps) {
+export function NodeInspector({ check, jobId, needs, onApply }: NodeInspectorProps) {
   return (
     <section className="node-inspector" aria-label={`Edit ${check}`}>
       <h3 className="node-inspector-title">Edit <code>{check}</code></h3>
+      {needs && needs.length > 0 && (
+        <p className="node-inspector-needs">Depends on (needs): {needs.join(', ')}</p>
+      )}
       <div className="node-inspector-ops">
         <button type="button" onClick={() => onApply({ op: 'timeout', jobId, minutes: DEFAULT_TIMEOUT })}>Add timeout</button>
         <button type="button" onClick={() => onApply({ op: 'shift-left', jobId })}>Shift-left</button>

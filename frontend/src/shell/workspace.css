@@ -200,6 +200,7 @@ button.canvas-node { width: 100%; cursor: pointer; background: var(--bg); text-a
 button.canvas-node.selected { outline: 2px solid var(--accent, #6af); outline-offset: 1px; }
 .node-inspector { border: 1px solid var(--border); border-radius: 8px; padding: 10px; margin: 8px 0; }
 .node-inspector-title { margin: 0 0 8px; font-size: 13px; }
+.node-inspector-needs { margin: 0 0 8px; font-size: 11px; color: var(--muted, #8a94a6); }
 .node-inspector-ops { display: flex; gap: 8px; flex-wrap: wrap; }
 .raw-hatch { margin-top: 14px; border-top: 1px solid var(--border); padding-top: 10px; }
 .raw-hatch-toggle { background: none; border: none; color: var(--text); cursor: pointer; font-size: 12px; padding: 4px 0; }

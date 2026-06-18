@@ -9,7 +9,7 @@ export interface CellLike {
   state: string;
   drift?: boolean;
 }
-export interface CheckMetaLike { check: string; isRequiredMergeGate: boolean; provenance: { file: string; jobId: string }[] }
+export interface CheckMetaLike { check: string; isRequiredMergeGate: boolean; provenance: { file: string; jobId: string }[]; needs?: string[] }
 export interface DerivedModelLike {
   tiers: TierLike[];
   checks: string[];
