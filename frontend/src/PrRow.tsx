@@ -1,4 +1,5 @@
 import { useState, type MouseEvent, type KeyboardEvent } from 'react';
+import { useApiBase } from './embed/ApiBaseContext';
 import type { PrView } from './types';
 import { formatDur, formatEta, stageLabel } from './format';
 import { MetroTrack } from './MetroTrack';
@@ -100,6 +101,7 @@ export function PrRow({ pr, hasDeploy, queueCulprit = null, expandable = true }:
   /** false in kiosk mode (issue #20): row is read-only — no expand-on-click. */
   expandable?: boolean;
 }) {
+  const { apiUrl } = useApiBase();
   const [open, setOpen] = useState(false);
   const [busy, setBusy] = useState(false);
   const [actionResult, setActionResult] = useState<{ ok: boolean; msg: string } | null>(null);
@@ -111,7 +113,7 @@ export function PrRow({ pr, hasDeploy, queueCulprit = null, expandable = true }:
     setBusy(true);
     setActionResult(null);
     try {
-      const res = await fetch('/api/pr/ready-merge', {
+      const res = await fetch(apiUrl('/pr/ready-merge'), {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ repo: pr.repo, number: pr.number }),

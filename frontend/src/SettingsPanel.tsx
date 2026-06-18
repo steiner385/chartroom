@@ -1,4 +1,5 @@
 import { useEffect, useId, useRef, useState, type RefObject } from 'react';
+import { useApiBase } from './embed/ApiBaseContext';
 import type {
   ConfigResponse,
   ConfigPatch,
@@ -157,6 +158,7 @@ function deploySummary(report: RepoSettingsReport): string {
 }
 
 export function SettingsPanel({ open, onClose, returnFocusRef, connected }: SettingsPanelProps) {
+  const { apiUrl } = useApiBase();
   const [config, setConfig] = useState<ConfigResponse | null>(null);
   const [form, setForm] = useState<FormModel | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -175,7 +177,7 @@ export function SettingsPanel({ open, onClose, returnFocusRef, connected }: Sett
   useEffect(() => {
     if (!open) return;
     let cancelled = false;
-    fetch('/api/repos')
+    fetch(apiUrl('/repos'))
       .then((r) => (r.ok ? r.json() : Promise.reject(new Error(`GET /api/repos → ${r.status}`))))
       .then((body: { repos: { repo: string; excluded: boolean }[] }) => {
         if (!cancelled) setRepoNames(body.repos.map((r) => r.repo));
@@ -190,7 +192,7 @@ export function SettingsPanel({ open, onClose, returnFocusRef, connected }: Sett
     setLoadError(null);
     void (async () => {
       try {
-        const res = await fetch('/api/config');
+        const res = await fetch(apiUrl('/config'));
         if (!res.ok) throw new Error(`GET /api/config → ${res.status}`);
         const body = (await res.json()) as ConfigResponse;
         if (cancelled) return;
@@ -266,7 +268,7 @@ export function SettingsPanel({ open, onClose, returnFocusRef, connected }: Sett
     setFieldErrors({});
     setAppliedMsg(null);
     try {
-      const res = await fetch('/api/config', {
+      const res = await fetch(apiUrl('/config'), {
         method: 'PUT',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify(toPatch(form, config.resolved.notifications.enabled)),
@@ -299,7 +301,7 @@ export function SettingsPanel({ open, onClose, returnFocusRef, connected }: Sett
   const handleRestart = async () => {
     setConfirmingRestart(false);
     try {
-      const res = await fetch('/api/admin/restart', { method: 'POST' });
+      const res = await fetch(apiUrl('/admin/restart'), { method: 'POST' });
       if (!res.ok) throw new Error(`restart failed: ${res.status}`);
       setRestartRequested(true);
     } catch (e) {
