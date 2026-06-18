@@ -46,6 +46,17 @@ describe('PipelineCanvas (read-only DAG lanes)', () => {
     expect(screen.getByTestId('node-queue-flaky').className).not.toMatch(/dep-highlight/);
   });
 
+  it('draws an SVG edge from each dependency to the selected node (needs DAG arrows, roadmap 5.1)', () => {
+    render(<PipelineCanvas lanes={LANES} onSelect={vi.fn()} selected="e2e" highlightDeps={new Set(['lint'])} />);
+    const edge = screen.getByTestId('pipeline-canvas').querySelector('line[data-edge="lint->e2e"]');
+    expect(edge).not.toBeNull();
+  });
+
+  it('draws no edges when nothing is selected', () => {
+    render(<PipelineCanvas lanes={LANES} onSelect={vi.fn()} />);
+    expect(screen.getByTestId('pipeline-canvas').querySelectorAll('line[data-edge]')).toHaveLength(0);
+  });
+
   it('renders an empty-state when no lanes have nodes', () => {
     render(<PipelineCanvas lanes={[{ tierId: 'pr', label: 'PR', event: 'pull_request', nodes: [] }]} />);
     expect(screen.getByText(/no checks/i)).toBeInTheDocument();
