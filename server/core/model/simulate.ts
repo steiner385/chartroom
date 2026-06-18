@@ -7,6 +7,9 @@ import type { DerivedModel } from '../../pipeline-model/derived';
 import { validateTierChange, requiredGateChecks, type LegalityVerdict } from './legality';
 
 export type MoveDirection = 'demote' | 'promote' | 'remove' | 'none';
+/** Sample-size confidence in the projected deltas (roadmap 4.2). 'low' downgrades
+ *  an apply to scaffold-only — the deltas are too thinly-observed to act on blindly. */
+export type SimConfidence = 'high' | 'medium' | 'low';
 export interface TierMove { check: string; fromTierId: string; toTierId: string | null }
 export interface SimResult {
   check: string; fromTierId: string; toTierId: string | null;
@@ -15,6 +18,16 @@ export interface SimResult {
    *  on/off the PR (pull_request) tier. Negative = a faster PR; an upper bound,
    *  realised only if the check is on the PR critical path. */
   latencyDeltaSeconds: number;
+  /** Risk delta (roadmap 4.2): expected real failures that ESCAPE per 100 runs if
+   *  this move drops a gate that catches them (positive = riskier). Zero when the
+   *  affected check never catches a real failure — i.e. a safe demotion. */
+  riskDeltaPer100: number;
+  /** Throughput delta (roadmap 4.2): change in merge-queue trains/hour, via the
+   *  queue critical-path (max running-check duration). Non-zero only when the move
+   *  removes/relocates the queue BOTTLENECK; a non-bottleneck move is honestly ~0. */
+  throughputDeltaPerHour: number;
+  /** Sample-size confidence band for the deltas above; 'low' ⇒ scaffold-only. */
+  confidence: SimConfidence;
   gatesLost: string[];
   gatesGained: string[];
   estimated: boolean;
@@ -38,6 +51,23 @@ function tierRunScale(m: DerivedModel, tierId: string): number {
   let n = 0;
   for (const c of m.cells) if (c.tierId === tierId && c.observed) n = Math.max(n, c.observed.runs);
   return n;
+}
+/** Pooled real-failures-per-run for a check across observed cells (roadmap 4.2 risk). */
+function perRunRealFailRate(m: DerivedModel, check: string): number {
+  let fails = 0, runs = 0;
+  for (const c of m.cells) if (c.check === check && c.observed && c.observed.runs > 0) { fails += c.observed.realFailures; runs += c.observed.runs; }
+  return runs ? fails / runs : 0;
+}
+/** Queue critical path (minutes): the slowest running check at a tier — the bottleneck
+ *  that gates how fast a merge train clears. `exclude` removes one check (the move). */
+function tierCriticalPathMinutes(m: DerivedModel, tierId: string, exclude?: string): number {
+  let max = 0;
+  for (const c of m.cells) {
+    if (c.tierId !== tierId || !c.intent.runs || c.check === exclude || !c.observed || c.observed.runs <= 0) continue;
+    const perRun = c.observed.minutes / c.observed.runs;
+    if (perRun > max) max = perRun;
+  }
+  return max;
 }
 function directionOf(m: DerivedModel, fromId: string, toId: string | null): MoveDirection {
   if (toId == null) return 'remove';
@@ -73,15 +103,42 @@ export function simulateTierMove(model: DerivedModel, move: TierMove, liveRequir
   if (prTierId && move.fromTierId === prTierId) latencyDeltaSeconds -= durSec;
   if (prTierId && move.toTierId === prTierId) latencyDeltaSeconds += durSec;
 
+  // Risk (roadmap 4.2): dropping a gate that catches real failures lets them escape;
+  // adding a gate catches more. Magnitude = the check's pooled real-fail rate per 100 runs.
+  const realRatePer100 = perRunRealFailRate(model, move.check) * 100;
+  const riskDeltaPer100 = realRatePer100 * (gatesLost.length ? 1 : 0) - realRatePer100 * (gatesGained.length ? 1 : 0);
+
+  // Throughput (roadmap 4.2): if the move pulls the queue BOTTLENECK off the queue
+  // tier, the merge train clears faster (trains/hour rises). A non-bottleneck move
+  // leaves the critical path unchanged → honest ~0.
+  const queueTierId = model.tiers.find((t) => t.event === 'merge_group')?.id;
+  let throughputDeltaPerHour = 0;
+  if (queueTierId && move.fromTierId === queueTierId && move.toTierId !== queueTierId) {
+    const oldCP = tierCriticalPathMinutes(model, queueTierId);
+    const newCP = tierCriticalPathMinutes(model, queueTierId, move.check);
+    if (oldCP > 0 && newCP > 0 && newCP < oldCP) throughputDeltaPerHour = 60 / newCP - 60 / oldCP;
+  }
+
+  // Confidence band: driven by the thinnest observed sample on the affected cells;
+  // an estimated add-side is a guess, so it caps confidence at 'low'.
+  const sampleRuns = [from?.observed?.runs, move.toTierId ? cellFor(model, move.check, move.toTierId)?.observed?.runs : undefined]
+    .filter((n): n is number => typeof n === 'number' && n > 0);
+  const minRuns = sampleRuns.length ? Math.min(...sampleRuns) : 0;
+  const confidence: SimConfidence = estimated || minRuns < 10 ? 'low' : minRuns < 50 ? 'medium' : 'high';
+
   const cost = costDeltaMinutes < 0 ? `saves ${(-costDeltaMinutes).toLocaleString()} min`
     : costDeltaMinutes > 0 ? `adds ${costDeltaMinutes.toLocaleString()} min` : 'no cost change';
   const cov = gatesLost.length ? ` · loses gate at ${gatesLost.join(', ')}`
     : gatesGained.length ? ` · adds gate at ${gatesGained.join(', ')}` : '';
   const lat = latencyDeltaSeconds < 0 ? ` · up to ~${Math.round(-latencyDeltaSeconds / 60)}m faster PR`
     : latencyDeltaSeconds > 0 ? ` · up to ~${Math.round(latencyDeltaSeconds / 60)}m slower PR` : '';
-  const note = verdict.legal ? `${cost}${estimated ? ' (est.)' : ''}${lat}${cov}` : `not possible — ${verdict.detail ?? verdict.reason}`;
+  const risk = riskDeltaPer100 > 0 ? ` · +${riskDeltaPer100.toFixed(0)} risk (real fails/100 escape)`
+    : riskDeltaPer100 < 0 ? ` · −${(-riskDeltaPer100).toFixed(0)} risk (real fails/100 caught)` : '';
+  const thru = throughputDeltaPerHour >= 1 ? ` · +${throughputDeltaPerHour.toFixed(1)} trains/hr` : '';
+  const conf = confidence !== 'high' ? ` · ${confidence} confidence` : '';
+  const note = verdict.legal ? `${cost}${estimated ? ' (est.)' : ''}${lat}${thru}${risk}${cov}${conf}` : `not possible — ${verdict.detail ?? verdict.reason}`;
 
-  return { check: move.check, fromTierId: move.fromTierId, toTierId: move.toTierId, costDeltaMinutes, latencyDeltaSeconds, gatesLost, gatesGained, estimated, direction, legal: verdict.legal, reason: verdict.reason, note };
+  return { check: move.check, fromTierId: move.fromTierId, toTierId: move.toTierId, costDeltaMinutes, latencyDeltaSeconds, riskDeltaPer100, throughputDeltaPerHour, confidence, gatesLost, gatesGained, estimated, direction, legal: verdict.legal, reason: verdict.reason, note };
 }
 
 export interface PlanResult {

@@ -9,6 +9,9 @@ export interface SimResultDto {
   legal: boolean; reason?: string; note: string;
   costDeltaMinutes: number; direction: string;
   latencyDeltaSeconds?: number;
+  riskDeltaPer100?: number;
+  throughputDeltaPerHour?: number;
+  confidence?: 'high' | 'medium' | 'low';
   gatesLost: string[]; gatesGained: string[]; estimated: boolean;
 }
 export interface TierMoveDto { check: string; fromTierId: string; toTierId: string | null }

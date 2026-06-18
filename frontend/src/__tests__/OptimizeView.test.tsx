@@ -65,6 +65,18 @@ describe('OptimizeView (US4 — drives /api/workspace loop)', () => {
     expect(await screen.findByLabelText('draft PR diff')).toHaveTextContent('e2e → merge_group');
   });
 
+  it('flags a low-confidence projection as scaffold-only (roadmap 4.2)', async () => {
+    const api = fakeApi({
+      simulate: vi.fn(async () => ({
+        legal: true, note: 'saves 30 min · low confidence', costDeltaMinutes: -30,
+        direction: 'remove', gatesLost: [], gatesGained: [], estimated: false, confidence: 'low' as const,
+      })),
+    });
+    render(<OptimizeView repo="o/r" api={api} />);
+    fireEvent.click((await screen.findAllByText('Simulate demote'))[0]);
+    expect(await screen.findByText(/review scaffold, not a structured apply/)).toBeInTheDocument();
+  });
+
   it('a legal demote offers a Claude Code prompt that surfaces the generated text (FR-013/016)', async () => {
     const api = fakeApi({ prompt: vi.fn(async () => ({ prompt: 'In o/r, demote the CI check "e2e"…' })) });
     render(<OptimizeView repo="o/r" api={api} />);

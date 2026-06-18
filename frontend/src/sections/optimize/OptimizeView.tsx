@@ -171,6 +171,9 @@ export function OptimizeView({ repo, api }: OptimizeViewProps) {
       {selected && sim && (
         <section className="optimize-sim" aria-label={`Simulation for ${selected}`}>
           <p className={sim.legal ? 'sim-note legal' : 'sim-note illegal'} role="status">{sim.note}</p>
+          {sim.legal && sim.confidence === 'low' && (
+            <p className="sim-low-confidence" role="status">⚠ Low-confidence projection (thin/estimated data) — this would generate a review scaffold, not a structured apply.</p>
+          )}
           {sim.legal
             ? <div className="optimize-actions">
                 <button type="button" disabled={busy} onClick={preview}>Preview draft PR</button>

@@ -67,6 +67,74 @@ describe('simulateTierMove (server-side, FR-011/FR-012)', () => {
   });
 });
 
+describe('simulateTierMove multi-dimensional deltas (roadmap 4.2)', () => {
+  const obsRF = (runs: number, minutes: number, realFailures: number) =>
+    ({ ran: runs > 0, runs, realFailures, failRatePct: runs ? (realFailures / runs) * 100 : 0, flakeRatePct: 0, minutes });
+  // A check that GATES the queue, catches real failures, but is NOT a required gate → legal to drop.
+  const RISK_MODEL: DerivedModel = {
+    tiers: MODEL.tiers,
+    checks: ['flaky-gate', 'fast'],
+    cells: [
+      cell('flaky-gate', 'pr', false, false, null, 'absent'),
+      cell('flaky-gate', 'queue', true, true, obsRF(100, 4000, 20), 'gate'), // 40 min/run, catches 20/100
+      cell('flaky-gate', 'main', false, false, null, 'absent'),
+      cell('fast', 'pr', false, false, null, 'absent'),
+      cell('fast', 'queue', true, false, obsRF(100, 100, 0), 'advisory'), // 1 min/run, no real catches
+      cell('fast', 'main', false, false, null, 'absent'),
+    ],
+    checkMeta: [
+      { check: 'flaky-gate', triggers: ['merge_group'], provenance: [{ file: 'ci.yml', jobId: 'flaky-gate' }], confidence: 'high', isRequiredMergeGate: false },
+      { check: 'fast', triggers: ['merge_group'], provenance: [{ file: 'ci.yml', jobId: 'fast' }], confidence: 'high', isRequiredMergeGate: false },
+    ],
+  };
+
+  it('risk delta rises when dropping a gate that catches real failures', () => {
+    const r = simulateTierMove(RISK_MODEL, { check: 'flaky-gate', fromTierId: 'queue', toTierId: null });
+    expect(r.legal).toBe(true);
+    expect(r.riskDeltaPer100).toBeCloseTo(20, 5); // 20 real failures / 100 runs now escape the queue
+    expect(r.note).toMatch(/risk/i);
+  });
+
+  it('risk delta is zero when the dropped check never catches real failures (safe demotion)', () => {
+    const r = simulateTierMove(RISK_MODEL, { check: 'fast', fromTierId: 'queue', toTierId: null });
+    expect(r.riskDeltaPer100).toBe(0);
+  });
+
+  it('throughput rises when the queue BOTTLENECK is removed (critical-path proxy)', () => {
+    // flaky-gate (40 min) is the queue critical path; fast (1 min) is not.
+    const r = simulateTierMove(RISK_MODEL, { check: 'flaky-gate', fromTierId: 'queue', toTierId: null });
+    // old CP 40 min → 1.5 trains/hr; new CP 1 min → 60 trains/hr; delta ≈ +58.5/hr
+    expect(r.throughputDeltaPerHour).toBeCloseTo(60 - 1.5, 1);
+  });
+
+  it('removing a NON-bottleneck check yields ~no throughput gain (honest zero)', () => {
+    const r = simulateTierMove(RISK_MODEL, { check: 'fast', fromTierId: 'queue', toTierId: null });
+    expect(r.throughputDeltaPerHour).toBe(0);
+  });
+
+  it('confidence is high with a large sample, low when estimated', () => {
+    const high = simulateTierMove(RISK_MODEL, { check: 'fast', fromTierId: 'queue', toTierId: null });
+    expect(high.confidence).toBe('high'); // 100 observed runs
+    const est = simulateTierMove(MODEL, { check: 'lint', fromTierId: 'pr', toTierId: 'main' });
+    expect(est.estimated).toBe(true);
+    expect(est.confidence).toBe('low'); // add-side is a guess
+  });
+
+  it('low confidence with a thin sample (<10 runs)', () => {
+    const thin: DerivedModel = {
+      tiers: MODEL.tiers, checks: ['rare'],
+      cells: [
+        cell('rare', 'pr', true, false, obsRF(3, 30, 0), 'advisory'),
+        cell('rare', 'queue', false, false, null, 'absent'),
+        cell('rare', 'main', false, false, null, 'absent'),
+      ],
+      checkMeta: [{ check: 'rare', triggers: ['pull_request'], provenance: [{ file: 'ci.yml', jobId: 'rare' }], confidence: 'high', isRequiredMergeGate: false }],
+    };
+    const r = simulateTierMove(thin, { check: 'rare', fromTierId: 'pr', toTierId: null });
+    expect(r.confidence).toBe('low'); // only 3 runs
+  });
+});
+
 describe('simulatePlan (N2/FR-042 — composite legality)', () => {
   it('sums cost and is legal when moves are jointly safe', () => {
     const p = simulatePlan(MODEL, [{ check: 'lint', fromTierId: 'pr', toTierId: null }]);
