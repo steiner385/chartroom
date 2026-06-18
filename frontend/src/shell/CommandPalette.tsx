@@ -7,20 +7,14 @@ import { SECTIONS, hashForSection } from './sections';
 
 interface Command { id: string; label: string; hint: string; run: () => void }
 
-export function CommandPalette({ repos, onFocusRepo }: { repos: readonly string[]; onFocusRepo: (repo: string) => void }) {
-  const [open, setOpen] = useState(false);
+/** Controlled command palette — the shell owns `open` (and the ⌘K shortcut + the
+ *  visible trigger), so the palette is both keyboard- and pointer-openable. */
+export function CommandPalette({ open, onClose, repos, onFocusRepo }: {
+  open: boolean; onClose: () => void; repos: readonly string[]; onFocusRepo: (repo: string) => void;
+}) {
   const [query, setQuery] = useState('');
   const [active, setActive] = useState(0);
   const inputRef = useRef<HTMLInputElement>(null);
-
-  // Global ⌘K / Ctrl-K to open.
-  useEffect(() => {
-    const onKey = (e: globalThis.KeyboardEvent) => {
-      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k') { e.preventDefault(); setOpen((o) => !o); }
-    };
-    window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
-  }, []);
 
   useEffect(() => { if (open) { setQuery(''); setActive(0); inputRef.current?.focus(); } }, [open]);
   useEffect(() => { setActive(0); }, [query]);
@@ -35,11 +29,10 @@ export function CommandPalette({ repos, onFocusRepo }: { repos: readonly string[
     return q ? commands.filter((c) => c.label.toLowerCase().includes(q)) : commands;
   }, [commands, query]);
 
-  const close = () => setOpen(false);
-  const runAt = (i: number) => { const c = matches[i]; if (c) { c.run(); close(); } };
+  const runAt = (i: number) => { const c = matches[i]; if (c) { c.run(); onClose(); } };
 
   const onKeyDown = (e: KeyboardEvent) => {
-    if (e.key === 'Escape') { e.preventDefault(); close(); }
+    if (e.key === 'Escape') { e.preventDefault(); onClose(); }
     else if (e.key === 'ArrowDown') { e.preventDefault(); setActive((i) => Math.min(i + 1, matches.length - 1)); }
     else if (e.key === 'ArrowUp') { e.preventDefault(); setActive((i) => Math.max(i - 1, 0)); }
     else if (e.key === 'Enter') { e.preventDefault(); runAt(active); }
@@ -47,7 +40,7 @@ export function CommandPalette({ repos, onFocusRepo }: { repos: readonly string[
 
   if (!open) return null;
   return (
-    <div className="cmdk-backdrop" onMouseDown={close}>
+    <div className="cmdk-backdrop" onMouseDown={onClose}>
       <div className="cmdk" role="dialog" aria-label="Command palette" aria-modal="true" onMouseDown={(e) => e.stopPropagation()}>
         <input
           ref={inputRef}

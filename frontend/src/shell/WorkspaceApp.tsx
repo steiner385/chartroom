@@ -4,7 +4,7 @@
 // deep-link into the legacy tabs via the bridge — strangler-fig, so nothing is
 // lost mid-rebuild. This is mounted behind the workspace flag; the classic App
 // stays the default until parity.
-import { useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import './workspace.css';
 import { useDashboard } from '../useDashboard';
 import { WorkspaceShell } from './WorkspaceShell';
@@ -46,8 +46,18 @@ export function WorkspaceApp() {
 
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [legendOpen, setLegendOpen] = useState(false);
+  const [paletteOpen, setPaletteOpen] = useState(false);
   const gearRef = useRef<HTMLButtonElement>(null);
   const legendRef = useRef<HTMLButtonElement>(null);
+
+  // Global ⌘K / Ctrl-K opens the command palette (the shell owns the shortcut).
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k') { e.preventDefault(); setPaletteOpen((o) => !o); }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, []);
 
   const header = (
     <div className="workspace-spine">
@@ -57,6 +67,10 @@ export function WorkspaceApp() {
         {connected ? '● live' : '○ reconnecting'}
       </span>
       <SelfHealthDot api={api} />
+      <button type="button" className="cmdk-trigger" aria-label="Command palette (⌘K)"
+        title="Command palette — jump to any section or pipeline (⌘K)" onClick={() => setPaletteOpen(true)}>
+        <span aria-hidden="true">⌘K</span>
+      </button>
       <button type="button" ref={legendRef} className="legend-btn" aria-label="Legend"
         title="Legend — what every shape, color, and term on the board means"
         aria-haspopup="dialog" aria-expanded={legendOpen} onClick={() => setLegendOpen(true)}>
@@ -84,7 +98,7 @@ export function WorkspaceApp() {
     <>
       <SettingsPanel open={settingsOpen} onClose={() => setSettingsOpen(false)} returnFocusRef={gearRef} connected={connected} />
       <LegendPanel open={legendOpen} onClose={() => setLegendOpen(false)} returnFocusRef={legendRef} />
-      <CommandPalette repos={repos} onFocusRepo={focus} />
+      <CommandPalette open={paletteOpen} onClose={() => setPaletteOpen(false)} repos={repos} onFocusRepo={focus} />
     </>
   );
 

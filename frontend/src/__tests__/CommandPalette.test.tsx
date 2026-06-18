@@ -4,19 +4,24 @@ import { CommandPalette } from '../shell/CommandPalette';
 
 beforeEach(() => { location.hash = ''; });
 
-describe('CommandPalette (⌘K — jump to any section or repo)', () => {
-  it('opens on Cmd/Ctrl-K and closes on Escape', () => {
-    render(<CommandPalette repos={['acme/a', 'acme/b']} onFocusRepo={vi.fn()} />);
+describe('CommandPalette (controlled — jump to any section or repo)', () => {
+  it('renders nothing when closed, the dialog when open', () => {
+    const { rerender } = render(<CommandPalette open={false} onClose={vi.fn()} repos={['acme/a']} onFocusRepo={vi.fn()} />);
     expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
-    fireEvent.keyDown(window, { key: 'k', metaKey: true });
+    rerender(<CommandPalette open onClose={vi.fn()} repos={['acme/a']} onFocusRepo={vi.fn()} />);
     expect(screen.getByRole('dialog')).toBeInTheDocument();
-    fireEvent.keyDown(screen.getByRole('combobox'), { key: 'Escape' });
-    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
   });
 
-  it('filters commands and navigates to a section on Enter', () => {
-    render(<CommandPalette repos={['acme/a']} onFocusRepo={vi.fn()} />);
-    fireEvent.keyDown(window, { key: 'k', ctrlKey: true });
+  it('Escape calls onClose', () => {
+    const onClose = vi.fn();
+    render(<CommandPalette open onClose={onClose} repos={['acme/a']} onFocusRepo={vi.fn()} />);
+    fireEvent.keyDown(screen.getByRole('combobox'), { key: 'Escape' });
+    expect(onClose).toHaveBeenCalled();
+  });
+
+  it('filters commands and navigates to a section on Enter (then closes)', () => {
+    const onClose = vi.fn();
+    render(<CommandPalette open onClose={onClose} repos={['acme/a']} onFocusRepo={vi.fn()} />);
     fireEvent.change(screen.getByRole('combobox'), { target: { value: 'insight' } });
     const opts = screen.getAllByRole('option');
     expect(opts.length).toBe(1);
@@ -24,13 +29,12 @@ describe('CommandPalette (⌘K — jump to any section or repo)', () => {
     fireEvent.keyDown(screen.getByRole('combobox'), { key: 'ArrowDown' });
     fireEvent.keyDown(screen.getByRole('combobox'), { key: 'Enter' });
     expect(location.hash).toBe('#insights');
-    expect(screen.queryByRole('dialog')).not.toBeInTheDocument(); // closes after run
+    expect(onClose).toHaveBeenCalled();
   });
 
   it('focuses a repo when its command is chosen', () => {
     const onFocusRepo = vi.fn();
-    render(<CommandPalette repos={['acme/alpha', 'acme/beta']} onFocusRepo={onFocusRepo} />);
-    fireEvent.keyDown(window, { key: 'k', metaKey: true });
+    render(<CommandPalette open onClose={vi.fn()} repos={['acme/alpha', 'acme/beta']} onFocusRepo={onFocusRepo} />);
     fireEvent.change(screen.getByRole('combobox'), { target: { value: 'beta' } });
     fireEvent.keyDown(screen.getByRole('combobox'), { key: 'ArrowDown' });
     fireEvent.keyDown(screen.getByRole('combobox'), { key: 'Enter' });

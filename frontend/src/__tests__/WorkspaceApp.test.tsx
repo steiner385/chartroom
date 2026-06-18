@@ -70,6 +70,18 @@ describe('WorkspaceApp (Increment 1 MVP composition)', () => {
     expect(screen.getByRole('dialog', { name: 'Legend' })).toBeInTheDocument();
   });
 
+  it('opens the command palette via ⌘K and via the header trigger (WS5.3)', () => {
+    mockHook.mockReturnValue({ state: STATE, connected: true });
+    render(<WorkspaceApp />);
+    expect(screen.queryByRole('dialog', { name: /command palette/i })).not.toBeInTheDocument();
+    fireEvent.keyDown(window, { key: 'k', metaKey: true });
+    expect(screen.getByRole('dialog', { name: /command palette/i })).toBeInTheDocument();
+    fireEvent.keyDown(window, { key: 'k', metaKey: true }); // toggles closed
+    expect(screen.queryByRole('dialog', { name: /command palette/i })).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: /command palette/i }));
+    expect(screen.getByRole('dialog', { name: /command palette/i })).toBeInTheDocument();
+  });
+
   it('shows the notifications bell when supported and toggles it', () => {
     const toggleNotify = vi.fn();
     mockHook.mockReturnValue({ state: STATE, connected: true, notifySupported: true, notifyEnabled: false, toggleNotify });
