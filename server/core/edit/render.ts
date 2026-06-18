@@ -150,3 +150,20 @@ export function pinActionSha(yamlText: string, usesRef: string, sha: string): Ed
   const diff = [`@@ pin ${action} → ${sha.slice(0, 7)} @@`, `-${lines[idx]}`, `+${newLine}`].join('\n');
   return { ok: true, newText, addedLine: newLine, diff };
 }
+
+/** Add a workflow-level `concurrency:` block (group + cancel-in-progress) before
+ *  the top-level `jobs:`. NOT low-risk — this changes runtime cancellation of
+ *  in-flight runs. Refuses a workflow that already declares concurrency, or text
+ *  with no top-level `jobs:`. */
+export function addConcurrency(yamlText: string, group: string): EditResult {
+  const lines = yamlText.split('\n');
+  if (lines.some((l) => /^concurrency\s*:/.test(l))) {
+    return { ok: false, reason: `workflow already declares \`concurrency:\` — edit by hand` };
+  }
+  const jobsIdx = lines.findIndex((l) => /^jobs\s*:/.test(l));
+  if (jobsIdx < 0) return { ok: false, reason: `could not find top-level \`jobs:\` — not a workflow?` };
+  const added = [`concurrency:`, `  group: ${group}`, `  cancel-in-progress: true`];
+  const newText = [...lines.slice(0, jobsIdx), ...added, ...lines.slice(jobsIdx)].join('\n');
+  const diff = [`@@ add workflow concurrency @@`, ...added.map((l) => `+${l}`), ` ${lines[jobsIdx]}`].join('\n');
+  return { ok: true, newText, addedLine: added.join('\n'), diff };
+}

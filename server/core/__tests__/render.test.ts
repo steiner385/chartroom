@@ -173,3 +173,29 @@ describe('pinActionSha (pin a uses: ref to a SHA)', () => {
     expect(pinActionSha(WFA, 'actions/setup-node@v4', SHA).ok).toBe(false);
   });
 });
+
+describe('addConcurrency (workflow-level concurrency block)', () => {
+  it('inserts a concurrency block before jobs: and round-trips', () => {
+    const r = addConcurrency(WF, '${{ github.workflow }}-${{ github.ref }}');
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    const before = parse(WF), after = parse(r.newText);
+    expect(after.concurrency.group).toBe('${{ github.workflow }}-${{ github.ref }}');
+    expect(after.concurrency['cancel-in-progress']).toBe(true);
+    expect(after.jobs).toEqual(before.jobs); // jobs untouched
+    expect(after.on).toEqual(before.on);
+    expect(r.diff).toMatch(/add workflow concurrency/);
+  });
+
+  it('refuses a workflow that already declares concurrency', () => {
+    const wf = `name: CI\nconcurrency:\n  group: x\non: push\njobs:\n  a:\n    runs-on: x\n    steps: []\n`;
+    const r = addConcurrency(wf, 'y');
+    expect(r.ok).toBe(false);
+    if (r.ok) return;
+    expect(r.reason).toMatch(/already declares .*concurrency/);
+  });
+
+  it('refuses text with no top-level jobs:', () => {
+    expect(addConcurrency(`on: push\n`, 'x').ok).toBe(false);
+  });
+});
