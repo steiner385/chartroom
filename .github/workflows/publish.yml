@@ -2,7 +2,7 @@ name: Publish to npm
 
 # Tokenless publish via npm Trusted Publishing (OIDC). Requires a one-time setup
 # on npmjs.com AFTER the package exists: package → Settings → Trusted Publisher →
-# GitHub Actions, with repo `steiner385/chartroom` and workflow file `publish.yml`.
+# GitHub Actions, with repo `steiner385/plotroom` and workflow file `publish.yml`.
 # Until that's configured (and the first version is published manually with a
 # token — OIDC can't bootstrap a brand-new name), this workflow will no-op-fail.
 #
