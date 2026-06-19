@@ -1,4 +1,4 @@
-import { Fragment, useEffect, useMemo, useState } from 'react';
+import { Fragment, useEffect, useMemo, useRef, useState } from 'react';
 import { useApiBase } from './embed/ApiBaseContext';
 import { simulateMove, legalFromTiers, legalToTargets } from './protectionSimulate';
 import { buildClaudePrompt } from './protectionPrompt';
@@ -113,6 +113,11 @@ export function ProtectionMap() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  // ---- a11y: drawer focus management (mirrors LegendPanel/SettingsPanel pattern) ----
+  const drawerRef = useRef<HTMLElement>(null);
+  /** Ref to the button that last opened the drawer — focus returns here on close. */
+  const drawerTriggerRef = useRef<HTMLElement | null>(null);
+
   useEffect(() => {
     let cancelled = false;
     fetch(apiUrl('/repos'))
@@ -164,6 +169,42 @@ export function ProtectionMap() {
       .catch(() => { if (!cancelled) setMetrics(null); });
     return () => { cancelled = true; };
   }, [model, metrics]);
+
+  // Esc to close the drawer + focus management + focus trap.
+  // Same mechanics as LegendPanel and SettingsPanel.
+  const FOCUSABLE = 'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])';
+  useEffect(() => {
+    if (!drilled) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        setDrilled(null);
+        return;
+      }
+      // Focus trap: wrap Tab / Shift-Tab within the drawer's focusable elements.
+      if (e.key === 'Tab' && drawerRef.current) {
+        const focusable = [...drawerRef.current.querySelectorAll<HTMLElement>(FOCUSABLE)];
+        if (focusable.length === 0) return;
+        const first = focusable[0];
+        const last = focusable[focusable.length - 1];
+        if (e.shiftKey) {
+          if (document.activeElement === first) { e.preventDefault(); last.focus(); }
+        } else {
+          if (document.activeElement === last) { e.preventDefault(); first.focus(); }
+        }
+      }
+    };
+    document.addEventListener('keydown', onKey);
+    // Move focus into the drawer: prefer close button, fall back to the drawer itself.
+    const focusTarget =
+      drawerRef.current?.querySelector<HTMLElement>(FOCUSABLE) ?? drawerRef.current;
+    focusTarget?.focus();
+    return () => {
+      document.removeEventListener('keydown', onKey);
+      // Restore focus to the trigger that opened the drawer.
+      drawerTriggerRef.current?.focus();
+    };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [drilled]);
 
   const findings = useMemo(() => buildFindings(repo ?? '', model, metrics), [repo, model, metrics]);
   const byCell = useMemo(() => {
@@ -259,8 +300,10 @@ export function ProtectionMap() {
   const toggleGoal = (g: Goal) => setExpandedGoals((s) => { const x = new Set(s); if (x.has(g)) x.delete(g); else x.add(g); return x; });
   // open the drill-down drawer for a check, seeding the simulator with the
   // recommended (legal) move so the user lands on the suggested action.
-  const openDrill = (check: string, goal: Goal, detail: string) => {
+  // `trigger` is the element that opened the drawer — focus returns to it on close.
+  const openDrill = (check: string, goal: Goal, detail: string, trigger?: HTMLElement | null) => {
     if (!model) return;
+    if (trigger) drawerTriggerRef.current = trigger;
     const fromOpts = legalFromTiers(model, check);
     const from = fromOpts[0]?.id ?? model.tiers[0]?.id ?? '';
     const toOpts = legalToTargets(model, check, from);
@@ -328,7 +371,8 @@ export function ProtectionMap() {
                     <ul>
                       {shown.map((f, i) => (
                         <li key={`${f.check}-${i}`} className="pm-finding" data-goal={goal}>
-                          <button type="button" className="pm-finding-btn" onClick={() => openDrill(f.check, goal, f.detail)}
+                          <button type="button" className="pm-finding-btn"
+                            onClick={(e) => openDrill(f.check, goal, f.detail, e.currentTarget)}
                             aria-label={`Details for ${displayName(f.check)}`}>
                             <span className="pm-finding-check" title={f.check}>{displayName(f.check)}</span>
                             <span className="pm-finding-detail">{f.detail}</span>
@@ -372,10 +416,19 @@ export function ProtectionMap() {
                     const open = !collapsed.has(g.name);
                     return (
                       <Fragment key={g.name}>
-                        <tr key={`h-${g.name}`} className="pm-group-row" onClick={() => toggleGroup(g.name)}>
+                        <tr key={`h-${g.name}`} className="pm-group-row">
                           <td className="pm-group-name">
-                            <span className="pm-caret">{open ? '▾' : '▸'}</span> {g.name}
-                            <span className="pm-group-meta">{g.checks.length}{g.gates ? ` · ${g.gates}g` : ''}{g.drift ? ' · ⚠' : ''}</span>
+                            <button
+                              type="button"
+                              className="pm-group-btn"
+                              aria-expanded={open}
+                              aria-label={`Toggle group ${g.name}`}
+                              onClick={() => toggleGroup(g.name)}
+                            >
+                              <span className="pm-caret" aria-hidden="true">{open ? '▾' : '▸'}</span>
+                              {' '}{g.name}
+                              <span className="pm-group-meta">{g.checks.length}{g.gates ? ` · ${g.gates}g` : ''}{g.drift ? ' · ⚠' : ''}</span>
+                            </button>
                           </td>
                           {model.tiers.map((t) => {
                             let best: CellState = 'absent';
@@ -436,7 +489,15 @@ export function ProtectionMap() {
               setCopied(true); window.setTimeout(() => setCopied(false), 1500);
             };
             return (
-              <aside className="pm-drawer" data-testid="pm-drawer" role="dialog" aria-label={`Action for ${displayName(dcheck)}`}>
+              <aside
+                className="pm-drawer"
+                data-testid="pm-drawer"
+                role="dialog"
+                aria-modal="true"
+                aria-label={`Action for ${displayName(dcheck)}`}
+                ref={drawerRef}
+                tabIndex={-1}
+              >
                 <div className="pm-drawer-head">
                   <span className={`pm-drawer-goal pm-fgroup-${drilled.goal}`}>{GOAL_ICON[drilled.goal]} {GOAL_LABEL[drilled.goal]}</span>
                   <strong className="pm-drawer-check" title={dcheck}>{displayName(dcheck)}</strong>
