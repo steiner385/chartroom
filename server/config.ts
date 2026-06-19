@@ -149,6 +149,10 @@ export interface AppConfig {
    *  In 'api' mode clones are never created; a pre-existing clone is used as a
    *  best-effort fallback when the compare API fails transport-wise. */
   ancestrySource: 'api' | 'clone';
+  /** Reusable-workflow caller jobs whose `skipped` conclusion counts as a pass
+   *  when deriving required-check protection (conditional-required pattern).
+   *  Defaults to the common conditional callers; override per host/repo set. */
+  conditionalCallerJobs: string[];
   /** Desktop/browser notifications for alert-worthy transitions (issue #19).
    *  File-only — never PUT-writable (the command template execs on the host). */
   notifications: NotificationsConfig;
@@ -223,6 +227,7 @@ export const DEFAULTS: AppConfig = {
   apiUrl: 'https://api.github.com/graphql',
   rateLimitFloor: 1000,
   ancestrySource: 'api',
+  conditionalCallerJobs: ['pr-affected-tests', 'integration-tests'],
   notifications: DEFAULT_NOTIFICATIONS,
   webhooks: { enabled: false, path: '/api/webhooks/github' },
   costAutoRate: false,
@@ -659,7 +664,7 @@ export function configFileSources(path: string): Record<string, 'default' | 'fil
       .map((k) => [k, k in existing ? 'file' : 'default']));
 }
 
-export function loadConfig(path?: string): AppConfig {
+export function loadConfig(path?: string, opts?: { allowMissingPrivateKey?: boolean }): AppConfig {
   const resolvedPath = path ?? configPath();
   const user: Partial<AppConfig> = existsSync(resolvedPath)
     ? (JSON.parse(readFileSync(resolvedPath, 'utf8')) as Partial<AppConfig>)
@@ -714,6 +719,11 @@ export function loadConfig(path?: string): AppConfig {
     Array.isArray(v) ? v.filter((h): h is string => typeof h === 'string' && h.trim().length > 0) : [];
   merged.bindHosts = cleanHosts(merged.bindHosts).length ? cleanHosts(merged.bindHosts) : ['127.0.0.1'];
   merged.allowedOriginHosts = cleanHosts(merged.allowedOriginHosts);
+  // conditionalCallerJobs: clean string array; a non-array value falls back to
+  // the default (an explicit [] is honored — a host with no conditional callers).
+  merged.conditionalCallerJobs = Array.isArray(user.conditionalCallerJobs)
+    ? cleanHosts(user.conditionalCallerJobs)
+    : DEFAULTS.conditionalCallerJobs;
   // cost auto-rate (issue #100): a plain opt-in flag — coerce any truthy value
   // to a real boolean so a `1`/`"yes"` in the file can't leak a non-boolean into
   // the cost engine; missing/falsy → false (default behavior is the static rate).
@@ -732,7 +742,9 @@ export function loadConfig(path?: string): AppConfig {
     if (typeof a.appId !== 'number' || !Number.isInteger(a.appId) || a.appId < 1) {
       throw new Error(`config: app.appId must be a positive integer (got ${JSON.stringify(a.appId)})`);
     }
-    if (typeof a.privateKeyPath !== 'string' || !a.privateKeyPath.trim()) {
+    // An embedded host supplies the PEM inline (opts.allowMissingPrivateKey) — the
+    // file path is then optional. Standalone still requires it (read from disk).
+    if (!opts?.allowMissingPrivateKey && (typeof a.privateKeyPath !== 'string' || !a.privateKeyPath.trim())) {
       throw new Error('config: app.privateKeyPath must be a non-empty path to the App\'s PEM key');
     }
     if (a.installationId !== undefined
@@ -740,8 +752,11 @@ export function loadConfig(path?: string): AppConfig {
       throw new Error(`config: app.installationId must be a positive integer (got ${JSON.stringify(a.installationId)})`);
     }
     // resolved like other runtime paths (~/ → home, relative → package root);
-    // file existence is checked by AppTokenSource at startup, with a clear error
-    merged.app = { ...a, privateKeyPath: resolveUserPath(a.privateKeyPath) };
+    // file existence is checked by AppTokenSource at startup, with a clear error.
+    // When the key is supplied inline (no path), leave privateKeyPath unset.
+    merged.app = (typeof a.privateKeyPath === 'string' && a.privateKeyPath.trim())
+      ? { ...a, privateKeyPath: resolveUserPath(a.privateKeyPath) }
+      : { ...a };
   }
   const w = merged.webhooks;
   if (typeof w.enabled !== 'boolean') {

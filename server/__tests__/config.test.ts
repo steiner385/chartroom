@@ -1166,3 +1166,34 @@ describe('validateRunnerRoutingPatch', () => {
     expect(validateRunnerRoutingPatch({ reclaimWindow: '99d' }).ok).toBe(false);
   });
 });
+
+describe('conditionalCallerJobs config (#202)', () => {
+  it('defaults to the conditional-required caller jobs', () => {
+    expect(loadConfig('/nonexistent/config.json').conditionalCallerJobs)
+      .toEqual(['pr-affected-tests', 'integration-tests']);
+  });
+  it('honors a file override (strings kept, non-strings filtered out)', () => {
+    expect(loadConfig(writeConfig({ conditionalCallerJobs: ['my-job', 'other', 42, ''] }))
+      .conditionalCallerJobs).toEqual(['my-job', 'other']);
+  });
+  it('a non-array value falls back to the default', () => {
+    expect(loadConfig(writeConfig({ conditionalCallerJobs: 'nope' })).conditionalCallerJobs)
+      .toEqual(['pr-affected-tests', 'integration-tests']);
+  });
+});
+
+describe('loadConfig allowMissingPrivateKey (#202 — inline App key for embedded host)', () => {
+  const appNoKey = { tokenSource: 'app', app: { appId: 123 } }; // no privateKeyPath
+  it('throws without the option (standalone needs the PEM file path)', () => {
+    expect(() => loadConfig(writeConfig(appNoKey))).toThrow(/privateKeyPath/);
+  });
+  it('does not throw when allowMissingPrivateKey is set (host supplies the inline key)', () => {
+    const cfg = loadConfig(writeConfig(appNoKey), { allowMissingPrivateKey: true });
+    expect(cfg.tokenSource).toBe('app');
+    expect(cfg.app!.appId).toBe(123);
+  });
+  it('still validates appId even with the option set', () => {
+    expect(() => loadConfig(writeConfig({ tokenSource: 'app', app: { appId: 0 } }),
+      { allowMissingPrivateKey: true })).toThrow(/appId/);
+  });
+});

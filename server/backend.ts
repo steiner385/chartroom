@@ -50,10 +50,10 @@ function ghEnv(): NodeJS.ProcessEnv {
 
 /** Append one runner-routing audit entry (write/delete) to a JSONL log. Best
  *  effort: a logging failure must never break the control loop. */
-function appendRunnerAudit(entry: object): void {
+function appendRunnerAudit(logsDir: string, entry: object): void {
   try {
-    mkdirSync('logs', { recursive: true });
-    appendFileSync('logs/runner-map.jsonl', `${JSON.stringify(entry)}\n`);
+    mkdirSync(logsDir, { recursive: true });
+    appendFileSync(join(logsDir, 'runner-map.jsonl'), `${JSON.stringify(entry)}\n`);
   } catch { /* best effort */ }
 }
 
@@ -109,8 +109,14 @@ export async function createPrDashboardBackend(
   const dataDir = opts.dataDir;
   const trustHostAuth = opts.trustHostAuth ?? true;
   const restartExit = opts.restartExit ?? (() => { /* no-op: never exit the host */ });
+  // Cleared by startPoller()'s stop fn (the App-mode 24h installation refresh).
+  let stopRegistryRefresh: (() => void) | undefined;
 
-  let config: AppConfig = 'path' in opts.config ? loadConfig(opts.config.path) : opts.config;
+  // When the host supplies the App PEM inline, the config file's privateKeyPath is
+  // optional (the inline key is used) — relax loadConfig's validator accordingly.
+  let config: AppConfig = 'path' in opts.config
+    ? loadConfig(opts.config.path, { allowMissingPrivateKey: !!opts.githubApp })
+    : opts.config;
 
   // Webhooks enabled → the secret must be readable at startup (fail fast, clearly).
   let webhookSecret: string | null = null;
@@ -148,10 +154,12 @@ export async function createPrDashboardBackend(
     router = ClientRouter.forRegistry(registry, githubOptions);
     // pick up new installations without a restart; a failed refresh keeps the
     // previous mapping and is retried on the next tick
-    setInterval(() => {
+    const registryTimer = setInterval(() => {
       registry.refresh().catch((e) => console.warn(
         `[auth] installation registry refresh failed: ${describeError(e)}`));
-    }, REGISTRY_REFRESH_MS).unref();
+    }, REGISTRY_REFRESH_MS);
+    registryTimer.unref();
+    stopRegistryRefresh = () => clearInterval(registryTimer);
     ownersSource = registry;
   } else {
     let tokens: TokenProvider;
@@ -249,7 +257,7 @@ export async function createPrDashboardBackend(
       } catch { /* already absent */ }
     },
     now: () => Date.now(),
-    audit: appendRunnerAudit,
+    audit: (entry) => appendRunnerAudit(join(dataDir, 'logs'), entry),
   });
   await routing.init();
   // One controller step at the end of every poll cycle. The poller emits
@@ -282,7 +290,7 @@ export async function createPrDashboardBackend(
       fetchWorkflow,
       successStatsByRepo: (s) => history.successStatsByRepo(s),
       flakeStatsByRepo: (s) => history.flakeStatsByRepo(s),
-      conditionalCallerJobs: ['pr-affected-tests', 'integration-tests'],
+      conditionalCallerJobs: config.conditionalCallerJobs,
     });
     protectionMapCache.set(repo, { at: nowMs, model });
     return model;
@@ -292,6 +300,10 @@ export async function createPrDashboardBackend(
   // (strangler-fig). A facade routes the per-owner GithubClient by repo so the
   // workspace deps see one client surface. Flag off → router undefined → the app
   // is byte-for-byte unchanged.
+  // Durable workspace store (Groups H/L2/I2) — opened ONCE on the host's dataDir
+  // and shared by the WORKSPACE_IDE router (when on) and the returned `store`, so
+  // a single SQLite writer handles workspace.db (no double-open).
+  const workspaceStore = new WorkspaceStore(join(dataDir, 'workspace.db'));
   let stopBudgetTimer: (() => void) | undefined;
   const workspaceRouter = process.env.WORKSPACE_IDE === '1'
     ? (() => {
@@ -315,11 +327,8 @@ export async function createPrDashboardBackend(
         const deps = workspaceDepsFromClient(routed, {
           successStatsByRepo: (s) => history.successStatsByRepo(s),
           flakeStatsByRepo: (s) => history.flakeStatsByRepo(s),
-          conditionalCallerJobs: ['pr-affected-tests', 'integration-tests'],
+          conditionalCallerJobs: config.conditionalCallerJobs,
         });
-        // Durable workspace store (Groups H/L2/I2) — real persistence outliving the
-        // rolling telemetry retention. Wires outcomes/audit/policy from real data.
-        const wsStore = new WorkspaceStore(join(dataDir, 'workspace.db'));
         // Current spend per budget kind (roadmap 5.6c) over the trailing 30d —
         // the single source both /budgets and the breach-alert timer evaluate, so
         // minutes / flake / wait-p90 budgets work, not just cost.
@@ -337,7 +346,7 @@ export async function createPrDashboardBackend(
         // Budget-breach alerting (roadmap 5.6c): re-evaluate fleet budgets on a
         // timer and push a notification when one crosses its threshold.
         const checkBudgets = () => {
-          const budgets = wsStore.getBudgets('fleet');
+          const budgets = workspaceStore.getBudgets('fleet');
           if (budgets.length === 0) return;
           const gauges = evaluateBudgets(budgetCurrentValues(), budgets);
           notifyBudgetBreaches('fleet', gauges, (sc, kind, active, detail) => notifier.budgetBreach(sc, kind, active, detail));
@@ -384,10 +393,10 @@ export async function createPrDashboardBackend(
               .filter((c) => c.repo === repo)
               .map((c) => ({ at: c.at, kind: 'config', summary: `${c.field}: ${c.oldValue ?? '∅'} → ${c.newValue ?? '∅'}`, actor: 'poller' }));
           },
-          outcomes: async (repo) => wsStore.appliedChanges(repo),
-          auditLog: async (repo) => wsStore.auditLog(repo),
-          policyStore: { get: async (repo) => wsStore.getPolicies(repo), put: async (repo, rules) => wsStore.putPolicies(repo, rules) },
-          recordAction: (row) => wsStore.recordAction(row), // write path: opened actions → audit log
+          outcomes: async (repo) => workspaceStore.appliedChanges(repo),
+          auditLog: async (repo) => workspaceStore.auditLog(repo),
+          policyStore: { get: async (repo) => workspaceStore.getPolicies(repo), put: async (repo, rules) => workspaceStore.putPolicies(repo, rules) },
+          recordAction: (row) => workspaceStore.recordAction(row), // write path: opened actions → audit log
           // Flake-quarantine registry (roadmap 4.5): persist on open, read active set.
           recordQuarantine: (repo, check, until, reason) => history.recordQuarantine(repo, check, until, reason, new Date().toISOString()),
           activeQuarantines: (repo) => history.activeQuarantines(new Date().toISOString(), repo)
@@ -414,15 +423,10 @@ export async function createPrDashboardBackend(
           // Group J2/J3 budgets: thresholds from the store, current spend per kind
           // (cost/minutes/flake/wait-p90) over the trailing 30d — the same values
           // the breach-alert timer evaluates. No budgets stored → empty.
-          budgets: async () => ({ budgets: wsStore.getBudgets('fleet'), current: budgetCurrentValues() }),
+          budgets: async () => ({ budgets: workspaceStore.getBudgets('fleet'), current: budgetCurrentValues() }),
         });
       })()
     : undefined;
-
-  // Durable workspace store handle for the returned `store`. When WORKSPACE_IDE
-  // is off the router doesn't open one; open it here so the host always has a
-  // workspace store on the same dataDir (cheap; SQLite open is lazy-ish).
-  const workspaceStore = new WorkspaceStore(join(dataDir, 'workspace.db'));
 
   // Metrics payload is a heavy synchronous SQLite pass (#159); memoize per
   // (window, bucket) for a short TTL so the multiple surfaces that poll it share
@@ -599,6 +603,7 @@ export async function createPrDashboardBackend(
       poller.stop();
       digest.stop();
       stopBudgetTimer?.();
+      stopRegistryRefresh?.();
     };
   }
 
