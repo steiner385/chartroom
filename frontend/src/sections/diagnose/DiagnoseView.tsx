@@ -115,7 +115,7 @@ export function DiagnoseView({ state, focusedRepo, api }: DiagnoseViewProps) {
       </ul>
       {selected && (
         <section className="diagnose-detail" aria-label={`PR #${selected.number} detail`}>
-          <p className="diagnose-blocker">
+          <p className="diagnose-blocker" role="status">
             {blocker
               ? `Blocked by ${blocker.check.name} (${blocker.why === 'failed' ? (blocker.flaky ? 'failed — likely FLAKE' : 'failed') : 'still running'})`
               : 'Nothing blocking — all checks green.'}

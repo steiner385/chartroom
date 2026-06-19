@@ -80,7 +80,7 @@ export function PipelineView({ state, focusedRepo }: { state: DashboardState | n
                     const prs = next.prNumbers.map((n) => `#${n}`).join(', ');
                     const e = eta(next.etaSeconds);
                     return (
-                      <p className="next-to-merge">
+                      <p className="next-to-merge" role="region" aria-label="Merges next">
                         ⏭ Merges next: <strong>{prs}</strong>{' '}
                         {next.building ? `building${next.percent != null ? ` ${next.percent}%` : ''}` : 'front of queue'}
                         {e ? ` · ${e}` : ''}

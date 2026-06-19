@@ -64,10 +64,10 @@ describe('DiagnoseView', () => {
   it('shows the blocker for the selected PR and lets you switch PRs', () => {
     render(<DiagnoseView state={s} />);
     // first PR selected by default → its failed build is the blocker
-    // diagnose-blocker is per-PR static text (not a live announcement) so no role="status"
-    expect(screen.getByText(/Blocked by build \(failed\)/)).toBeInTheDocument();
+    // diagnose-blocker updates on discrete user click → role="status" is correct
+    expect(screen.getByRole('status')).toHaveTextContent(/Blocked by build \(failed\)/);
     fireEvent.click(screen.getByText(/PR 20/));
-    expect(screen.getByText(/Nothing blocking/)).toBeInTheDocument();
+    expect(screen.getByRole('status')).toHaveTextContent(/Nothing blocking/);
   });
 
   it('renders an empty state with no PRs', () => {
@@ -113,19 +113,31 @@ describe('DiagnoseView', () => {
   });
 
   it('a11y(#171): queue-incidents section is role=region, not role=status (labeled content, not a live announcement)', () => {
-    const stalledState = state([
+    // 5 PRs with the same failing check → clusterFailures(3) produces a cluster → failure-clusters renders.
+    // Patching the repo queue with an unmergeable culprit → queueIncidents produces an incident → queue-incidents renders.
+    const basePrs = [
       pr('o/a', 1, [check('build', { conclusion: 'failure' })]),
       pr('o/a', 2, [check('build', { conclusion: 'failure' })]),
       pr('o/a', 3, [check('build', { conclusion: 'failure' })]),
       pr('o/a', 4, [check('build', { conclusion: 'failure' })]),
       pr('o/a', 5, [check('build', { conclusion: 'failure' })]),
-    ]);
+    ];
+    const baseState = state(basePrs);
+    // Patch the repo to include a stalled queue so queue-incidents renders
+    const stalledState = {
+      ...baseState,
+      repos: baseState.repos.map((r) =>
+        r.repo === 'o/a'
+          ? { ...r, queue: { size: 5, unmergeable: [1], unmergeableCulprit: 1, queueBlocked: [2, 3], locked: false, lockedSince: null } }
+          : r,
+      ),
+    } as typeof baseState;
     render(<DiagnoseView state={stalledState} />);
-    // queue-incidents should be a labeled region, not a status announcement
-    const queueSection = screen.queryByRole('region', { name: /queue incidents/i });
-    const failureSection = screen.queryByRole('region', { name: /failure clusters/i });
-    // if rendered, they must be regions (not status)
-    if (queueSection) expect(queueSection).not.toHaveAttribute('role', 'status');
-    if (failureSection) expect(failureSection).not.toHaveAttribute('role', 'status');
+    // Both sections must be present — if either is missing the test should fail loudly (not vacuously pass)
+    expect(screen.getByRole('region', { name: /queue incidents/i })).toBeInTheDocument();
+    expect(screen.getByRole('region', { name: /failure clusters/i })).toBeInTheDocument();
+    // They must be regions (labeled content), not status live-regions
+    expect(screen.getByRole('region', { name: /queue incidents/i })).not.toHaveAttribute('role', 'status');
+    expect(screen.getByRole('region', { name: /failure clusters/i })).not.toHaveAttribute('role', 'status');
   });
 });
