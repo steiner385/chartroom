@@ -1,4 +1,4 @@
-import { createContext, useContext, useEffect, useId, useRef, useState, type ReactNode } from 'react';
+import { createContext, useCallback, useContext, useEffect, useId, useMemo, useRef, useState, type ReactNode } from 'react';
 import { useApiBase } from './embed/ApiBaseContext';
 import { scrollBehavior } from './motion';
 import type { HeadlineStat, MetricsBucket, MetricsPayload, MetricsWindow, DemotionCandidate, PromotionCandidate } from './types';
@@ -298,6 +298,15 @@ export function MetricsView({ now, focusCostNonce }: {
   const [payload, setPayload] = useState<MetricsPayload | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [refreshTick, setRefreshTick] = useState(0);
+  // Coarse clock tick: refreshes the time axis in the memo ~once per minute so
+  // `nowDate` / `axis` / `dayAxis` don't freeze for an idle session.
+  // Only active when `now` is NOT injected (tests inject a fixed clock).
+  const [clockTick, setClockTick] = useState(0);
+  useEffect(() => {
+    if (now) return; // injected clock — no live tick needed
+    const id = setInterval(() => setClockTick((t) => t + 1), 60_000);
+    return () => clearInterval(id);
+  }, [now]);
 
   const hourDisabled = WINDOW_DAYS[window] > HOUR_BUCKET_MAX_DAYS;
   const bucket: MetricsBucket = hourDisabled ? 'day' : bucketPref;
@@ -334,6 +343,96 @@ export function MetricsView({ now, focusCostNonce }: {
       el.querySelector('h2')?.focus?.();
     });
   }, [focusCostNonce, payload]);
+
+  // Memoize all payload-derived arrays and Maps so SSE frames that deliver the
+  // same payload reference don't rebuild 15+ collections on every render.
+  // This must come before any conditional early return (Rules of Hooks).
+  // `now` is included in deps because windowBuckets() calls it to anchor the axis.
+  const derived = useMemo(() => {
+    if (!payload) return null;
+    const nowDate = (now ?? (() => new Date()))();
+    const kind = payload.bucket;
+    const noun = kind === 'hour' ? 'hour' : 'day';
+    const axis = windowBuckets(payload.window, payload.bucket, nowDate);
+
+    // Repos with zero data in a panel are omitted entirely (not zero rows).
+    const trendRepos = payload.trends.filter((t) => t.points.length);
+    const runnerByRepo = new Map<string, typeof payload.runnerWaits>();
+    for (const rw of payload.runnerWaits) {
+      if (!rw.buckets.length) continue;
+      runnerByRepo.set(rw.repo, [...(runnerByRepo.get(rw.repo) ?? []), rw]);
+    }
+    const queueRepos = payload.queue.filter((q) =>
+      q.mergesPerBucket.length || q.queueWaitBuckets.length || q.groupRunBuckets.length);
+    const jobRepos = payload.slowestJobs.filter((r) => r.jobs.length);
+    const velocityRepos = payload.velocity.filter((v) =>
+      v.mergedPerBucket.length || v.mergeToQaBuckets.length || v.avgLifespanBuckets.length);
+    const calByRepo = new Map<string, typeof payload.calibration>();
+    for (const c of payload.calibration) {
+      if (!c.buckets.length && !c.points.length) continue;
+      calByRepo.set(c.repo, [...(calByRepo.get(c.repo) ?? []), c]);
+    }
+    const flakeRepos = payload.flakiness.filter((f) => f.checks.length);
+    const demotionRepos = (payload.demotionCandidates ?? []).filter((d) => d.candidates.length);
+    const promotionRepos = (payload.promotionCandidates ?? []).filter((p) => p.candidates.length);
+    const killerRepos = payload.trainKillers.filter((t) => t.checks.length);
+    const cpByRepo = new Map<string, typeof payload.criticalPath>();
+    for (const cp of payload.criticalPath) {
+      if (!cp.path.length) continue;
+      cpByRepo.set(cp.repo, [...(cpByRepo.get(cp.repo) ?? []), cp]);
+    }
+    // Needs-graph (#74): group per-(repo,event) graphs by repo for the panel.
+    const needsByRepo = new Map<string, NonNullable<typeof payload.needsGraph>>();
+    for (const g of payload.needsGraph ?? []) {
+      needsByRepo.set(g.repo, [...(needsByRepo.get(g.repo) ?? []), g]);
+    }
+    const lintRepos = payload.lint.filter((l) => l.findings.length);
+    // ?? []: tolerate a pre-upgrade server payload while the SPA is newer
+    const leadTimeRepos = payload.leadTime ?? [];
+    const regressionRepos = (payload.regressions ?? []).filter((r) => r.checks.length);
+    // Fleet telemetry (issues #45/#46/#47) — same pre-upgrade tolerance
+    const poolsByRepo = new Map<string, typeof payload.runnerPools>();
+    for (const rp of payload.runnerPools ?? []) {
+      if (!rp.buckets.length && !rp.starving) continue;
+      poolsByRepo.set(rp.repo, [...(poolsByRepo.get(rp.repo) ?? []), rp]);
+    }
+    const reclaimRepos = (payload.reclaims ?? []).filter((r) => r.total > 0);
+    const concByRepo = new Map<string, typeof payload.concurrency>();
+    for (const c of payload.concurrency ?? []) {
+      if (!c.buckets.length) continue;
+      concByRepo.set(c.repo, [...(concByRepo.get(c.repo) ?? []), c]);
+    }
+    const costRepos = (payload.cost ?? []).filter((c) => c.pools.length > 0);
+    // Cost explorer sub-sections (?? [] tolerates a pre-upgrade server payload)
+    const costJobsByRepo = new Map((payload.costJobs ?? []).map((j) => [j.repo, j.jobs]));
+    const costRunsByRepo = new Map((payload.costRuns ?? []).map((r) => [r.repo, r.runs]));
+    // Actuals vs attributed (phase 2): always day-keyed — bills are daily
+    const costActualScopes = (payload.costActuals ?? []).filter((a) => a.days.length > 0);
+    const dayAxis = windowBuckets(payload.window, 'day', nowDate);
+
+    const recommendations = payload.recommendations ?? [];
+    // Config-change annotations (tuning tool): bucket each change like every other
+    // timestamp and group by repo, so the charts can overlay markers and the
+    // digest below can list "what changed when".
+    const configChanges = payload.configChanges ?? [];
+    const changeMarkersByRepo = new Map<string, ChartMarker[]>();
+    for (const c of configChanges) {
+      const b = c.at.slice(0, payload.bucket === 'hour' ? 13 : 10);
+      const label = `${c.field}: ${c.oldValue ?? '∅'} → ${c.newValue ?? '∅'}`;
+      if (!changeMarkersByRepo.has(c.repo)) changeMarkersByRepo.set(c.repo, []);
+      changeMarkersByRepo.get(c.repo)!.push({ bucket: b, label });
+    }
+
+    return {
+      kind, noun, axis, dayAxis,
+      trendRepos, runnerByRepo, queueRepos, jobRepos, velocityRepos,
+      calByRepo, flakeRepos, demotionRepos, promotionRepos, killerRepos,
+      cpByRepo, needsByRepo, lintRepos, leadTimeRepos, regressionRepos,
+      poolsByRepo, reclaimRepos, concByRepo, costRepos, costJobsByRepo,
+      costRunsByRepo, costActualScopes, recommendations, configChanges, changeMarkersByRepo,
+    };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [payload, now, clockTick]);
 
   const controls = (
     <div className="metrics-controls">
@@ -386,77 +485,15 @@ export function MetricsView({ now, focusCostNonce }: {
     );
   }
 
-  const kind = payload.bucket;
-  const noun = kind === 'hour' ? 'hour' : 'day';
-  const axis = windowBuckets(payload.window, payload.bucket, (now ?? (() => new Date()))());
-
-  // Repos with zero data in a panel are omitted entirely (not zero rows).
-  const trendRepos = payload.trends.filter((t) => t.points.length);
-  const runnerByRepo = new Map<string, typeof payload.runnerWaits>();
-  for (const rw of payload.runnerWaits) {
-    if (!rw.buckets.length) continue;
-    runnerByRepo.set(rw.repo, [...(runnerByRepo.get(rw.repo) ?? []), rw]);
-  }
-  const queueRepos = payload.queue.filter((q) =>
-    q.mergesPerBucket.length || q.queueWaitBuckets.length || q.groupRunBuckets.length);
-  const jobRepos = payload.slowestJobs.filter((r) => r.jobs.length);
-  const velocityRepos = payload.velocity.filter((v) =>
-    v.mergedPerBucket.length || v.mergeToQaBuckets.length || v.avgLifespanBuckets.length);
-  const calByRepo = new Map<string, typeof payload.calibration>();
-  for (const c of payload.calibration) {
-    if (!c.buckets.length && !c.points.length) continue;
-    calByRepo.set(c.repo, [...(calByRepo.get(c.repo) ?? []), c]);
-  }
-  const flakeRepos = payload.flakiness.filter((f) => f.checks.length);
-  const demotionRepos = (payload.demotionCandidates ?? []).filter((d) => d.candidates.length);
-  const promotionRepos = (payload.promotionCandidates ?? []).filter((p) => p.candidates.length);
-  const killerRepos = payload.trainKillers.filter((t) => t.checks.length);
-  const cpByRepo = new Map<string, typeof payload.criticalPath>();
-  for (const cp of payload.criticalPath) {
-    if (!cp.path.length) continue;
-    cpByRepo.set(cp.repo, [...(cpByRepo.get(cp.repo) ?? []), cp]);
-  }
-  // Needs-graph (#74): group per-(repo,event) graphs by repo for the panel.
-  const needsByRepo = new Map<string, NonNullable<typeof payload.needsGraph>>();
-  for (const g of payload.needsGraph ?? []) {
-    needsByRepo.set(g.repo, [...(needsByRepo.get(g.repo) ?? []), g]);
-  }
-  const lintRepos = payload.lint.filter((l) => l.findings.length);
-  // ?? []: tolerate a pre-upgrade server payload while the SPA is newer
-  const leadTimeRepos = payload.leadTime ?? [];
-  const regressionRepos = (payload.regressions ?? []).filter((r) => r.checks.length);
-  // Fleet telemetry (issues #45/#46/#47) — same pre-upgrade tolerance
-  const poolsByRepo = new Map<string, typeof payload.runnerPools>();
-  for (const rp of payload.runnerPools ?? []) {
-    if (!rp.buckets.length && !rp.starving) continue;
-    poolsByRepo.set(rp.repo, [...(poolsByRepo.get(rp.repo) ?? []), rp]);
-  }
-  const reclaimRepos = (payload.reclaims ?? []).filter((r) => r.total > 0);
-  const concByRepo = new Map<string, typeof payload.concurrency>();
-  for (const c of payload.concurrency ?? []) {
-    if (!c.buckets.length) continue;
-    concByRepo.set(c.repo, [...(concByRepo.get(c.repo) ?? []), c]);
-  }
-  const costRepos = (payload.cost ?? []).filter((c) => c.pools.length > 0);
-  // Cost explorer sub-sections (?? [] tolerates a pre-upgrade server payload)
-  const costJobsByRepo = new Map((payload.costJobs ?? []).map((j) => [j.repo, j.jobs]));
-  const costRunsByRepo = new Map((payload.costRuns ?? []).map((r) => [r.repo, r.runs]));
-  // Actuals vs attributed (phase 2): always day-keyed — bills are daily
-  const costActualScopes = (payload.costActuals ?? []).filter((a) => a.days.length > 0);
-  const dayAxis = windowBuckets(payload.window, 'day', (now ?? (() => new Date()))());
-
-  const recommendations = payload.recommendations ?? [];
-  // Config-change annotations (tuning tool): bucket each change like every other
-  // timestamp and group by repo, so the charts can overlay markers and the
-  // digest below can list "what changed when".
-  const configChanges = payload.configChanges ?? [];
-  const changeMarkersByRepo = new Map<string, ChartMarker[]>();
-  for (const c of configChanges) {
-    const b = c.at.slice(0, payload.bucket === 'hour' ? 13 : 10);
-    const label = `${c.field}: ${c.oldValue ?? '∅'} → ${c.newValue ?? '∅'}`;
-    if (!changeMarkersByRepo.has(c.repo)) changeMarkersByRepo.set(c.repo, []);
-    changeMarkersByRepo.get(c.repo)!.push({ bucket: b, label });
-  }
+  // `derived` is non-null here because we returned early above when !payload.
+  const {
+    kind, noun, axis, dayAxis,
+    trendRepos, runnerByRepo, queueRepos, jobRepos, velocityRepos,
+    calByRepo, flakeRepos, demotionRepos, promotionRepos, killerRepos,
+    cpByRepo, needsByRepo, lintRepos, leadTimeRepos, regressionRepos,
+    poolsByRepo, reclaimRepos, concByRepo, costRepos, costJobsByRepo,
+    costRunsByRepo, costActualScopes, recommendations, configChanges, changeMarkersByRepo,
+  } = derived!;
   return (
     <div className="metrics">
       {controls}

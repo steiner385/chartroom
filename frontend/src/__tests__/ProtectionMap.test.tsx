@@ -145,4 +145,86 @@ describe('ProtectionMap', () => {
     );
     expect(keyWarnings).toHaveLength(0);
   });
+
+  // ---- Phase 2 a11y: drawer dialog behaviors + keyboard group rows ----
+
+  it('a11y: drawer has aria-modal="true"', async () => {
+    mockFetch(MODEL);
+    render(<ProtectionMap />);
+    const rail = await screen.findByTestId('pm-findings');
+    fireEvent.click(within(rail).getAllByText('build: production')[0]);
+    const drawer = await screen.findByTestId('pm-drawer');
+    expect(drawer).toHaveAttribute('aria-modal', 'true');
+  });
+
+  it('a11y: focus moves into drawer when it opens', async () => {
+    mockFetch(MODEL);
+    render(<ProtectionMap />);
+    const rail = await screen.findByTestId('pm-findings');
+    fireEvent.click(within(rail).getAllByText('build: production')[0]);
+    await screen.findByTestId('pm-drawer');
+    // After opening, focus should be inside the drawer (close button or drawer itself)
+    const drawer = screen.getByTestId('pm-drawer');
+    await waitFor(() => {
+      expect(drawer.contains(document.activeElement)).toBe(true);
+    });
+  });
+
+  it('a11y: Escape key closes the drawer', async () => {
+    mockFetch(MODEL);
+    render(<ProtectionMap />);
+    const rail = await screen.findByTestId('pm-findings');
+    fireEvent.click(within(rail).getAllByText('build: production')[0]);
+    await screen.findByTestId('pm-drawer');
+    fireEvent.keyDown(document, { key: 'Escape' });
+    await waitFor(() => {
+      expect(screen.queryByTestId('pm-drawer')).not.toBeInTheDocument();
+    });
+  });
+
+  it('a11y: focus returns to the trigger button when drawer closes', async () => {
+    mockFetch(MODEL);
+    render(<ProtectionMap />);
+    const rail = await screen.findByTestId('pm-findings');
+    const triggerBtn = within(rail).getAllByRole('button', { name: /Details for build: production/i })[0];
+    triggerBtn.focus();
+    fireEvent.click(triggerBtn);
+    await screen.findByTestId('pm-drawer');
+    // Close via Esc
+    fireEvent.keyDown(document, { key: 'Escape' });
+    await waitFor(() => {
+      expect(screen.queryByTestId('pm-drawer')).not.toBeInTheDocument();
+    });
+    expect(document.activeElement).toBe(triggerBtn);
+  });
+
+  it('a11y: group row button is keyboard-operable (button role → click toggles)', async () => {
+    mockFetch(MODEL);
+    render(<ProtectionMap />);
+    await screen.findByTestId('pm-grid');
+    // Both checks 'build: production' and 'a11y: axe' have no ' / ' separator,
+    // so groupOf() returns 'other' for both => one group named 'other'
+    const groupBtn = await screen.findByRole('button', { name: /toggle group other/i });
+    // Group with drift stays open by default
+    expect(groupBtn).toHaveAttribute('aria-expanded', 'true');
+    // Real <button> elements respond to Enter/Space as click natively in browsers.
+    // jsdom's fireEvent.keyDown doesn't auto-fire click, so we test via fireEvent.click
+    // (which is what keyboard Enter/Space produce on a real button).
+    fireEvent.click(groupBtn);
+    expect(groupBtn).toHaveAttribute('aria-expanded', 'false');
+    // Click again — should expand
+    fireEvent.click(groupBtn);
+    expect(groupBtn).toHaveAttribute('aria-expanded', 'true');
+  });
+
+  it('a11y: group row button aria-expanded reflects collapsed state', async () => {
+    mockFetch(MODEL);
+    render(<ProtectionMap />);
+    await screen.findByTestId('pm-grid');
+    const groupBtn = await screen.findByRole('button', { name: /toggle group other/i });
+    // The group with drift stays open by default
+    expect(groupBtn).toHaveAttribute('aria-expanded', 'true');
+    fireEvent.click(groupBtn);
+    expect(groupBtn).toHaveAttribute('aria-expanded', 'false');
+  });
 });

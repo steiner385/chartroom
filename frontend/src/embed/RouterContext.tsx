@@ -1,4 +1,4 @@
-import { createContext, useContext, useEffect, useState, type ReactNode } from 'react';
+import { createContext, useCallback, useContext, useEffect, useState, type ReactNode } from 'react';
 import {
   DEFAULT_SECTION, sectionFromHash, hashForSection, sectionFromPath, pathForSection, type SectionId,
 } from '../shell/sections';
@@ -26,11 +26,11 @@ export function RouterProvider(
     return () => window.removeEventListener('popstate', onPop);
   }, [mode, basename]);
 
-  const go = (id: SectionId) => {
+  const go = useCallback((id: SectionId) => {
     if (mode === 'hash') location.hash = hashForSection(id);
     else history.pushState({}, '', pathForSection(id, basename));
     setActive(id);
-  };
+  }, [mode, basename]);
 
   return <RouterContext.Provider value={{ active, go }}>{children}</RouterContext.Provider>;
 }

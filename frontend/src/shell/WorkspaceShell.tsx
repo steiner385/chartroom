@@ -33,7 +33,7 @@ export function WorkspaceShell({ header, children }: WorkspaceShellProps) {
             ))}
           </ul>
         </nav>
-        <main className="workspace-content" role="main" aria-live="polite">{children}</main>
+        <main className="workspace-content" role="main">{children}</main>
       </div>
     </div>
   );

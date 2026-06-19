@@ -81,4 +81,13 @@ describe('WorkspaceShell', () => {
     );
     expect(screen.getByText('Insights')).toHaveAttribute('aria-current', 'page');
   });
+
+  it('main element does NOT have aria-live (no live-region flood on SSE updates)', () => {
+    render(
+      <RouterProvider mode="hash">
+        <WorkspaceShell header={null}><div>BODY</div></WorkspaceShell>
+      </RouterProvider>,
+    );
+    expect(screen.getByRole('main')).not.toHaveAttribute('aria-live');
+  });
 });

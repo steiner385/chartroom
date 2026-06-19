@@ -3,7 +3,7 @@
 // persisted) — there is no hardcoded "primary". The focused repo's name is the
 // guardrail that any authoring action targets the intended pipeline, so it stays
 // pinned and visible. Pure presentation + a small persistence hook.
-import { useMemo, useState, useEffect, useRef, type KeyboardEvent } from 'react';
+import { useCallback, useMemo, useState, useEffect, useRef, type KeyboardEvent } from 'react';
 
 const STORE_KEY = 'workspace.focusedPipeline';
 
@@ -27,10 +27,10 @@ export function useFocusedPipeline(repos: readonly string[], enabled = true): [s
       setFocused(stored && repos.includes(stored) ? stored : repos[0]);
     }
   }, [repos, focused, enabled]);
-  const focus = (repo: string) => {
+  const focus = useCallback((repo: string) => {
     setFocused(repo);
     try { localStorage.setItem(STORE_KEY, repo); } catch { /* ignore */ }
-  };
+  }, []); // setFocused is stable; localStorage is a global — no deps needed
   return [focused, focus];
 }
 
@@ -54,8 +54,8 @@ export function PipelineSwitcher({ repos, focused, onFocus }: PipelineSwitcherPr
   const rootRef = useRef<HTMLDivElement>(null);
   const matches = useMemo(() => filterRepos(repos, query, focused), [repos, query, focused]);
 
-  const close = () => { setOpen(false); setQuery(''); setActive(0); };
-  const pick = (r: string) => { onFocus(r); close(); };
+  const close = useCallback(() => { setOpen(false); setQuery(''); setActive(0); }, []);
+  const pick = useCallback((r: string) => { onFocus(r); close(); }, [onFocus, close]);
 
   // Reset the highlight whenever the candidate set changes.
   useEffect(() => { setActive(0); }, [query, open]);

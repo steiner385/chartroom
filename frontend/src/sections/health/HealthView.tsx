@@ -3,9 +3,14 @@
 // needs-attention" is answerable at a glance (SC-001) and a problem is one click
 // away (SC-002). Pure roll-up + a thin presentational component; data is the live
 // DashboardState (Tier-1).
+import { useMemo } from 'react';
 import type { DashboardState, LaneStatus } from '../../types';
 import { HealthHeader } from '../../HealthHeader';
 import { fleetLeaderboard } from './leaderboard';
+
+/** Stable no-op for the optional onJumpToLane callback — avoids creating a new
+ *  function object on every render when the prop is absent. */
+const NOOP = () => {};
 
 export type RepoVerdict = 'down' | 'attention' | 'healthy';
 export interface RepoRollup { repo: string; prCount: number; verdict: RepoVerdict; reason: string }
@@ -37,14 +42,17 @@ export interface HealthViewProps {
 }
 
 export function HealthView({ state, connected, onJumpToLane, onFocusRepo }: HealthViewProps) {
-  const fleet = fleetRollup(state);
-  const leaderboard = fleetLeaderboard(state).filter((r) => r.flakyChecks > 0).slice(0, 5);
+  const fleet = useMemo(() => fleetRollup(state), [state]);
+  const leaderboard = useMemo(
+    () => fleetLeaderboard(state).filter((r) => r.flakyChecks > 0).slice(0, 5),
+    [state],
+  );
   return (
     <div className="health-view">
       {!connected && (
         <div className="health-liveness" role="status">Reconnecting to the live feed…</div>
       )}
-      <HealthHeader state={state} onJumpToLane={onJumpToLane ?? (() => {})} />
+      <HealthHeader state={state} onJumpToLane={onJumpToLane ?? NOOP} />
       <section className="fleet-rollup" aria-label="Pipeline fleet">
         <h2 className="fleet-rollup-title">Pipelines ({fleet.length})</h2>
         <ul role="list">

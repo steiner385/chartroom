@@ -118,10 +118,10 @@ export function OptimizeView({ repo, api }: OptimizeViewProps) {
     <div className="optimize-view">
       <h2>Optimize — {repo}</h2>
       {!rulesetReadable && (
-        <p className="optimize-caveat" role="status">⚠ Verdicts are <strong>static-only</strong> — the live branch-protection ruleset is unreadable (grant <code>administration:read</code>). Safety is checked against the inferred gate set, not the enforced one.</p>
+        <p className="optimize-caveat">⚠ Verdicts are <strong>static-only</strong> — the live branch-protection ruleset is unreadable (grant <code>administration:read</code>). Safety is checked against the inferred gate set, not the enforced one.</p>
       )}
       {calibration && calibration.count > 0 && (
-        <p className="optimize-calibration" role="status">
+        <p className="optimize-calibration">
           🎯 Predictions are <strong>{Math.round(calibration.meanCostAccuracy * 100)}% accurate</strong> over {calibration.count} landed change{calibration.count === 1 ? '' : 's'}
           {calibration.recommenderUsable ? '' : ' — advisory until proven'}.
         </p>
