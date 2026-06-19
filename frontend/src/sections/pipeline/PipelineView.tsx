@@ -3,7 +3,7 @@
 // the rich per-PR rows (stage, queue, checks, ready+auto-merge actions) and the
 // status filter are identical to the classic dashboard; only the framing (focused
 // repo first, no kiosk branch) is workspace-native. Data is the live Tier-1 state.
-import { useState } from 'react';
+import { useState, useMemo } from 'react';
 import type { DashboardState, PrView } from '../../types';
 import { PrRow } from '../../PrRow';
 import { QueueTrain } from '../../QueueTrain';
@@ -23,11 +23,18 @@ export function PipelineView({ state, focusedRepo }: { state: DashboardState | n
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
   const [openCohorts, setOpenCohorts] = useState<Set<string>>(new Set());
 
-  if (!state) return <div className="pipeline-view" role="status">Loading pipeline…</div>;
+  // Hooks must come before any early return (Rules of Hooks).
+  // focused repo first (stable otherwise) — the workspace's "current pipeline" lead.
+  // Memoized on [state, focusedRepo] so SSE frames that don't change these skip the sort.
+  const repos = useMemo(
+    () => state
+      ? [...state.repos].sort((a, b) => (a.repo === focusedRepo ? -1 : b.repo === focusedRepo ? 1 : 0))
+      : [],
+    [state, focusedRepo],
+  );
+  const allPrs = useMemo(() => repos.flatMap((r) => r.prs), [repos]);
 
-  // focused repo first (stable otherwise) — the workspace's "current pipeline" lead
-  const repos = [...state.repos].sort((a, b) => (a.repo === focusedRepo ? -1 : b.repo === focusedRepo ? 1 : 0));
-  const allPrs = repos.flatMap((r) => r.prs);
+  if (!state) return <div className="pipeline-view" role="status">Loading pipeline…</div>;
   const toggle = (repo: string) => setCollapsed((p) => { const n = new Set(p); n.has(repo) ? n.delete(repo) : n.add(repo); return n; });
   const toggleCohort = (repo: string) => setOpenCohorts((p) => { const n = new Set(p); n.has(repo) ? n.delete(repo) : n.add(repo); return n; });
   const row = (pr: typeof allPrs[number], r: typeof repos[number]) => (

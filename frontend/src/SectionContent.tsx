@@ -1,3 +1,4 @@
+import { useCallback } from 'react';
 import { ForecastBanner } from './shell/ForecastBanner';
 import { HealthView } from './sections/health/HealthView';
 import { PipelineView } from './sections/pipeline/PipelineView';
@@ -22,6 +23,13 @@ export interface SectionContentProps {
 /** Render the active section view. No landmark (the host/standalone shell owns <main>). */
 export function SectionContent({ active, state, connected, api, focused, onFocusRepo }: SectionContentProps) {
   const { go } = useSectionRoute();
+  // Stable callback — same `go` reference → same onJumpToLane identity → HealthView
+  // and HealthHeader don't re-render just because SectionContent re-renders.
+  const onJumpToLane = useCallback(
+    (laneId: string | null) => go(laneToSection(laneId)),
+    [go],
+  );
+
   if (!state) {
     return <div className="workspace-loading" role="status">Connecting to the live feed…</div>;
   }
@@ -33,7 +41,7 @@ export function SectionContent({ active, state, connected, api, focused, onFocus
         <>
           <ForecastBanner api={api} repo={focused} />
           <HealthView state={state} connected={connected} onFocusRepo={onFocusRepo}
-            onJumpToLane={(laneId) => go(laneToSection(laneId))} />
+            onJumpToLane={onJumpToLane} />
         </>
       );
       break;

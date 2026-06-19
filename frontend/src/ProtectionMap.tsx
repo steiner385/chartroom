@@ -241,7 +241,9 @@ export function ProtectionMap() {
     return m;
   }, [model, byCell]);
 
-  // group rows by owning workflow; sort checks problem-first, groups problem-first
+  // group rows by owning workflow; sort checks problem-first, groups problem-first.
+  // Also precomputes per-(group,tier) best CellState for the group header mini-cells
+  // so the render loop doesn't re-run the nested byCell lookup on every reconciliation.
   const grouped = useMemo(() => {
     const groups = new Map<string, string[]>();
     for (const check of model?.checks ?? []) {
@@ -250,14 +252,26 @@ export function ProtectionMap() {
     }
     const getMeta = (c: string) => checkMeta.get(c) ?? ABSENT_META;
     const rank = (c: string) => { const m = getMeta(c); return (m.drift ? 100 : 0) + STATE_RANK[m.role] * 10; };
+    const tiers = model?.tiers ?? [];
     return [...groups.entries()].map(([name, checks]) => {
       checks.sort((a, b) => rank(b) - rank(a) || (getMeta(b).minutes - getMeta(a).minutes) || leafOf(a).localeCompare(leafOf(b)));
       const drift = checks.some((c) => getMeta(c).drift);
       const gates = checks.filter((c) => getMeta(c).role === 'gate').length;
       const visible = checks.filter((c) => showAbsent || getMeta(c).role !== 'absent');
-      return { name, checks, visible, drift, gates, hiddenAbsent: checks.length - visible.length };
+      // Precompute the best CellState per tier for this group's header row mini-cells.
+      const tierBest = new Map<string, CellState>();
+      for (const t of tiers) {
+        let best: CellState = 'absent';
+        for (const c of checks) {
+          // byCell is from the outer useMemo and is stable when model is stable
+          const cell = byCell.get(cellKey(c, t.id));
+          if (cell && STATE_RANK[cell.state] > STATE_RANK[best]) best = cell.state;
+        }
+        tierBest.set(t.id, best);
+      }
+      return { name, checks, visible, drift, gates, hiddenAbsent: checks.length - visible.length, tierBest };
     }).sort((a, b) => Number(b.drift) - Number(a.drift) || b.gates - a.gates || a.name.localeCompare(b.name));
-  }, [model, checkMeta, showAbsent]);
+  }, [model, checkMeta, showAbsent, byCell]);
 
   // per-tier rollup (cost + gate count) for the column headers
   const tierStats = useMemo(() => {
@@ -431,8 +445,7 @@ export function ProtectionMap() {
                             </button>
                           </td>
                           {model.tiers.map((t) => {
-                            let best: CellState = 'absent';
-                            for (const c of g.checks) { const cell = byCell.get(cellKey(c, t.id)); if (cell && STATE_RANK[cell.state] > STATE_RANK[best]) best = cell.state; }
+                            const best = g.tierBest.get(t.id) ?? 'absent';
                             return <td key={t.id} className={`pm-mini pm-${best}`}>{STATE_GLYPH[best]}</td>;
                           })}
                         </tr>

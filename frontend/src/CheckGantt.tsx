@@ -1,4 +1,4 @@
-import { Fragment } from 'react';
+import { Fragment, useMemo } from 'react';
 import type { CheckView } from './types';
 import { formatDur, formatSince } from './format';
 
@@ -155,8 +155,8 @@ export function groupByWorkflow(checks: CheckView[]): WorkflowGroup[] {
 export function CheckGantt({ checks, stage }: {
   checks: CheckView[]; stage: string;
 }) {
-  const scale = ganttScale(checks);
-  const groups = groupByWorkflow(checks);
+  const scale = useMemo(() => ganttScale(checks), [checks]);
+  const groups = useMemo(() => groupByWorkflow(checks), [checks]);
   const grouped = groups.length > 1;
   return (
     <ul className="checks gantt">
