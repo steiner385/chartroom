@@ -37,10 +37,17 @@ beforeEach(() => {
 describe('App', () => {
   it('uses the server-provided hasDeploy per repo group (5-node vs 3-node track)', () => {
     render(<App />);
-    const tracks = screen.getAllByLabelText(/stage \d+ of \d+/);
-    // deploy repo renders the 5-stage track (CI/Queue/Merged/QA/Prod), non-deploy the 3-stage one
-    expect(tracks[0]).toHaveAttribute('aria-label', 'stage 1 of 5');
-    expect(tracks[1]).toHaveAttribute('aria-label', 'stage 1 of 3');
+    // deploy repo: 5-stage track (CI/Queue/Merged/QA/Prod)
+    // non-deploy repo: 3-stage track (CI/Queue/Merged)
+    // aria-label is now a descriptive node-by-node summary (#173)
+    const tracks = document.querySelectorAll('.track');
+    expect(tracks[0]!.getAttribute('aria-label')).toContain('QA');   // 5-node deploy track
+    expect(tracks[0]!.getAttribute('aria-label')).toContain('Prod');
+    expect(tracks[1]!.getAttribute('aria-label')).not.toContain('QA'); // 3-node simple track
+    expect(tracks[1]!.getAttribute('aria-label')).not.toContain('Prod');
+    // both tracks are in ci stage → CI is in progress
+    expect(tracks[0]!.getAttribute('aria-label')).toContain('in progress');
+    expect(tracks[1]!.getAttribute('aria-label')).toContain('in progress');
   });
 
   it('renders a loading state until the first SSE frame', () => {
