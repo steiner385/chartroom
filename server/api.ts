@@ -3,6 +3,7 @@ import type { EventEmitter } from 'node:events';
 import { existsSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import type { DashboardState, RepoSettingsReport } from './poller';
+import { requireProxySecret } from './proxy-guard';
 import { READ_ONLY_CONFIG_KEYS, validateConfigPatch, validateRunnerRoutingPatch, type AppConfig, type ConfigPatch } from './config';
 import { maskWebhookUrl } from './notifier';
 import { resolveMetricsQuery, type MetricsBucket, type MetricsPayload, type MetricsWindow } from './metrics';
@@ -235,6 +236,19 @@ export function createApp(opts: {
   }
 
   app.use(express.json());
+
+  // Health endpoint — always registered BEFORE the proxy guard so Railway's
+  // health-check probes are never auth-gated (the guard also exempts /health
+  // internally, but registering it first is belt-and-suspenders and makes the
+  // exemption explicit in the route order).
+  app.get('/health', (_req, res) => {
+    res.json({ ok: true });
+  });
+
+  // Shared-secret proxy guard (Railway/hosted): requires Authorization: Bearer
+  // <PRDASH_PROXY_SECRET> on all routes except /health. Pass-through when env
+  // is unset (standalone/local behavior unchanged).
+  app.use(requireProxySecret);
 
   // Unified-workspace IDE/model loop (spec 001). Mounted only when wired (flag on);
   // the same-origin guard gates its mutating (non-GET) routes like the rest of /api.

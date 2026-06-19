@@ -1,7 +1,7 @@
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { mkdirSync, appendFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { mkdirSync, appendFileSync, writeFileSync } from 'node:fs';
+import { join, dirname } from 'node:path';
 import { loadConfig, resolveOwners, writeConfigPatch, writeRunnerRoutingPatch, configFileSources,
   type AppConfig, type InstallationAccountsSource, type ViewerClient } from './config';
 import { createTokenSource, AppJwtSigner, InstallationRegistry, type TokenProvider } from './auth';
@@ -57,12 +57,49 @@ function appendRunnerAudit(entry: object): void {
 }
 
 async function main() {
+  // App-creds-from-env boot shim (Railway/hosted): if PRDASH_APP_PRIVATE_KEY is
+  // set, write the PEM to the path the config's app.privateKeyPath expects so
+  // that the file-based App auth flow works without a mounted secret file.
+  // Guard: only runs when the env vars are actually set — no effect on standalone.
+  const appKeyEnv = process.env.PRDASH_APP_PRIVATE_KEY;
+  if (appKeyEnv) {
+    const keyPath = process.env.PRDASH_APP_PRIVATE_KEY_PATH ?? '/app/pr-dashy.private-key.pem';
+    mkdirSync(dirname(keyPath), { recursive: true });
+    writeFileSync(keyPath, appKeyEnv, { mode: 0o600 });
+    console.log(`[auth] PRDASH_APP_PRIVATE_KEY written to ${keyPath}`);
+  }
+  // PRDASH_APP_ID: overlay into env so AppConfig picks it up through the config
+  // file's app.appId (the shim sets it via the config object after loadConfig;
+  // config.ts validates tokenSource==='app' → app.appId present, so we patch
+  // after load below if needed). See post-loadConfig patch below.
+
   let config: AppConfig;
   try {
     config = loadConfig();
   } catch (e) {
     console.error(e instanceof Error ? e.message : String(e));
     process.exit(1);
+  }
+
+  // Overlay PRDASH_APP_ID into the running config (tokenSource 'app' only — the
+  // env value takes precedence over the file so Railway can inject the id without
+  // a config file rewrite). Guard: only when env is set AND app block exists.
+  const appIdEnv = process.env.PRDASH_APP_ID;
+  if (appIdEnv && config.app) {
+    const parsed = Number(appIdEnv);
+    if (Number.isInteger(parsed) && parsed > 0) {
+      config = { ...config, app: { ...config.app, appId: parsed } };
+      console.log(`[auth] PRDASH_APP_ID overlay: appId=${parsed}`);
+    } else {
+      console.warn(`[auth] PRDASH_APP_ID="${appIdEnv}" is not a positive integer — ignored`);
+    }
+  }
+
+  // PRDASH_BIND_ALL=true → bind 0.0.0.0 (Railway/hosted); unset → loopback-only
+  // (standalone/local behavior unchanged when env is absent).
+  if (process.env.PRDASH_BIND_ALL === 'true') {
+    config = { ...config, bindHosts: ['0.0.0.0'] };
+    console.log('[bind] PRDASH_BIND_ALL=true — binding 0.0.0.0');
   }
 
   // Webhooks enabled → the secret must be readable at startup (fail fast, clearly).

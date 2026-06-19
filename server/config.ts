@@ -212,7 +212,7 @@ export const RUNNER_ROUTING_DEFAULTS = {
 export const DEFAULTS: AppConfig = {
   owners: [],
   exclude: [],
-  port: 4400,
+  port: Number(process.env.PORT) || 4400,
   bindHosts: ['127.0.0.1'],
   allowedOriginHosts: [],
   retentionDays: 7,
