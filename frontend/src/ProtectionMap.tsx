@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { Fragment, useEffect, useMemo, useState } from 'react';
 import { useApiBase } from './embed/ApiBaseContext';
 import { simulateMove, legalFromTiers, legalToTargets } from './protectionSimulate';
 import { buildClaudePrompt } from './protectionPrompt';
@@ -371,7 +371,7 @@ export function ProtectionMap() {
                   {grouped.map((g) => {
                     const open = !collapsed.has(g.name);
                     return (
-                      <>
+                      <Fragment key={g.name}>
                         <tr key={`h-${g.name}`} className="pm-group-row" onClick={() => toggleGroup(g.name)}>
                           <td className="pm-group-name">
                             <span className="pm-caret">{open ? '▾' : '▸'}</span> {g.name}
@@ -404,7 +404,7 @@ export function ProtectionMap() {
                         {open && g.hiddenAbsent > 0 && (
                           <tr key={`a-${g.name}`} className="pm-absent-note"><td colSpan={model.tiers.length + 1}>+{g.hiddenAbsent} absent-only checks hidden</td></tr>
                         )}
-                      </>
+                      </Fragment>
                     );
                   })}
                 </tbody>
