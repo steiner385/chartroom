@@ -490,3 +490,42 @@ describe('App repo headings (UX-L1)', () => {
     expect(screen.getByRole('heading', { name: /acme\/widgets/ })).toBeInTheDocument();
   });
 });
+
+// ---------------------------------------------------------------------------
+// Fix 2 — tablist roving tabIndex + arrow-key navigation (#175)
+// ---------------------------------------------------------------------------
+
+describe('App tablist — roving tabIndex and arrow-key nav', () => {
+  it('active tab has tabIndex=0, inactive tabs have tabIndex=-1', () => {
+    render(<App />);
+    const tablist = screen.getByRole('tablist', { name: 'Dashboard views' });
+    const tabs = within(tablist).getAllByRole('tab');
+    // Pipeline is default active tab
+    expect(tabs[0]).toHaveAttribute('tabindex', '0');
+    expect(tabs[1]).toHaveAttribute('tabindex', '-1');
+    expect(tabs[2]).toHaveAttribute('tabindex', '-1');
+    expect(tabs[3]).toHaveAttribute('tabindex', '-1');
+  });
+
+  it('ArrowRight on the first tab activates the second tab', () => {
+    render(<App />);
+    const tablist = screen.getByRole('tablist', { name: 'Dashboard views' });
+    const tabs = within(tablist).getAllByRole('tab');
+    fireEvent.keyDown(tabs[0]!, { key: 'ArrowRight' });
+    expect(tabs[1]).toHaveAttribute('aria-selected', 'true');
+    expect(tabs[0]).toHaveAttribute('aria-selected', 'false');
+    expect(tabs[1]).toHaveAttribute('tabindex', '0');
+    expect(tabs[0]).toHaveAttribute('tabindex', '-1');
+  });
+
+  it('ArrowLeft on the first tab wraps to the last tab', () => {
+    render(<App />);
+    const tablist = screen.getByRole('tablist', { name: 'Dashboard views' });
+    const tabs = within(tablist).getAllByRole('tab');
+    fireEvent.keyDown(tabs[0]!, { key: 'ArrowLeft' });
+    const lastTab = tabs[tabs.length - 1]!;
+    expect(lastTab).toHaveAttribute('aria-selected', 'true');
+    expect(lastTab).toHaveAttribute('tabindex', '0');
+    expect(tabs[0]).toHaveAttribute('tabindex', '-1');
+  });
+});

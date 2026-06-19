@@ -2,6 +2,7 @@ import { Fragment, useEffect, useMemo, useRef, useState } from 'react';
 import { useApiBase } from './embed/ApiBaseContext';
 import { simulateMove, legalFromTiers, legalToTargets } from './protectionSimulate';
 import { buildClaudePrompt } from './protectionPrompt';
+import { useFocusTrap } from './hooks/useFocusTrap';
 
 // ---- DerivedModel mirror (server/pipeline-model/derived) --------------------
 
@@ -170,41 +171,11 @@ export function ProtectionMap() {
     return () => { cancelled = true; };
   }, [model, metrics]);
 
-  // Esc to close the drawer + focus management + focus trap.
-  // Same mechanics as LegendPanel and SettingsPanel.
-  const FOCUSABLE = 'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])';
-  useEffect(() => {
-    if (!drilled) return;
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') {
-        setDrilled(null);
-        return;
-      }
-      // Focus trap: wrap Tab / Shift-Tab within the drawer's focusable elements.
-      if (e.key === 'Tab' && drawerRef.current) {
-        const focusable = [...drawerRef.current.querySelectorAll<HTMLElement>(FOCUSABLE)];
-        if (focusable.length === 0) return;
-        const first = focusable[0];
-        const last = focusable[focusable.length - 1];
-        if (e.shiftKey) {
-          if (document.activeElement === first) { e.preventDefault(); last.focus(); }
-        } else {
-          if (document.activeElement === last) { e.preventDefault(); first.focus(); }
-        }
-      }
-    };
-    document.addEventListener('keydown', onKey);
-    // Move focus into the drawer: prefer close button, fall back to the drawer itself.
-    const focusTarget =
-      drawerRef.current?.querySelector<HTMLElement>(FOCUSABLE) ?? drawerRef.current;
-    focusTarget?.focus();
-    return () => {
-      document.removeEventListener('keydown', onKey);
-      // Restore focus to the trigger that opened the drawer.
-      drawerTriggerRef.current?.focus();
-    };
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [drilled]);
+  // Esc to close the drawer + focus management + focus trap (via shared hook).
+  useFocusTrap(drawerRef, !!drilled, {
+    onClose: () => setDrilled(null),
+    returnFocusRef: drawerTriggerRef,
+  });
 
   const findings = useMemo(() => buildFindings(repo ?? '', model, metrics), [repo, model, metrics]);
   const byCell = useMemo(() => {
