@@ -1,0 +1,17 @@
+{
+  "owners": ["cairnea"],
+  "tokenSource": "app",
+  "app": {
+    "appId": 1,
+    "privateKeyPath": "/app/pr-dashy.private-key.pem"
+  },
+  "repos": {
+    "cairnea/KinDash": {
+      "rollupJobId": "ci",
+      "workflowPath": ".github/workflows/ci.yml",
+      "batchSize": 6
+    }
+  },
+  "retentionDays": 7,
+  "intervals": { "sweepMs": 60000, "hotMs": 15000, "deployMs": 30000 }
+}
