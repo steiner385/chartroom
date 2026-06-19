@@ -98,6 +98,19 @@ const METRICS_SECTIONS: { id: MetricsSection; label: string }[] = [
 ];
 const SECTION_STORAGE_KEY = 'prdash.metrics.section';
 
+/** Read + validate the persisted section from localStorage; returns 'tuning' as
+ *  the default. Called by BOTH the `section` and `everActivated` useState lazy
+ *  initialisers so the localStorage read is shared rather than duplicated. */
+function resolveInitialSection(): MetricsSection {
+  try {
+    const s = localStorage.getItem(SECTION_STORAGE_KEY);
+    if (s && METRICS_SECTIONS.some((x) => x.id === s)) return s as MetricsSection;
+  } catch { /* private mode */ }
+  // Default to the ranked Tuning Actions — the one panel that says what to fix
+  // — rather than a data section, when there's no remembered preference (UX-M3).
+  return 'tuning';
+}
+
 /** Deep-link a Tuning recommendation to the panel that is its evidence (UX-M4):
  *  the section to switch to + the panel id to scroll/focus. lint:* kinds all map
  *  to the workflow-lint panel (handled by prefix in resolveRecLink). */
@@ -112,6 +125,8 @@ function resolveRecLink(kind: string): { section: MetricsSection; panel: string 
     ? { section: 'reliability', panel: 'metrics-workflow-lint' } : null);
 }
 const ActiveSectionContext = createContext<MetricsSection>('tuning');
+/** Tracks which sections have ever been activated (used for lazy rendering). */
+const EverActivatedContext = createContext<ReadonlySet<MetricsSection>>(new Set(['tuning']));
 
 function Panel({ id, title, empty, emptyText = 'no data yet', section, children }: {
   id?: string; title: string; empty: boolean; emptyText?: string;
@@ -119,14 +134,23 @@ function Panel({ id, title, empty, emptyText = 'no data yet', section, children 
   section: MetricsSection; children: ReactNode;
 }) {
   const active = useContext(ActiveSectionContext);
+  const everActivated = useContext(EverActivatedContext);
   // Hide inactive sections with a CSS class (display:none) rather than the
   // `hidden` attribute — display:none hides from screen readers too (correct for
   // an inactive tab), and it keeps the panels in the DOM for one-payload data.
+  //
+  // Lazy rendering (issue #179): a panel that has NEVER been the active section
+  // skips rendering its heavy chart content — only the <section> shell + heading
+  // are emitted. Once activated, the panel stays mounted even when inactive so
+  // the display:none + a11y behaviour is unchanged.
+  const contentReady = section === active || everActivated.has(section);
   return (
     <section className={`metric-panel${section === active ? '' : ' metric-panel--inactive'}`}
       id={id} data-section={section}>
       <h2 tabIndex={id ? -1 : undefined}>{title}</h2>
-      {empty ? <p className="metric-empty">{emptyText}</p> : children}
+      {empty
+        ? <p className="metric-empty">{emptyText}</p>
+        : (contentReady ? children : null)}
     </section>
   );
 }
@@ -270,17 +294,15 @@ export function MetricsView({ now, focusCostNonce }: {
       setPromotePr((p) => ({ ...p, [key]: { error: e instanceof Error ? e.message : String(e) } }));
     }
   };
-  const [section, setSection] = useState<MetricsSection>(() => {
-    try {
-      const s = localStorage.getItem(SECTION_STORAGE_KEY);
-      if (s && METRICS_SECTIONS.some((x) => x.id === s)) return s as MetricsSection;
-    } catch { /* private mode */ }
-    // Default to the ranked Tuning Actions — the one panel that says what to fix
-    // — rather than a data section, when there's no remembered preference (UX-M3).
-    return 'tuning';
-  });
+  const [section, setSection] = useState<MetricsSection>(resolveInitialSection);
+  // Tracks which sections have been activated at least once (lazy-render guard,
+  // issue #179). Initialised with the initial section so its content is ready.
+  const [everActivated, setEverActivated] = useState<ReadonlySet<MetricsSection>>(
+    () => new Set([resolveInitialSection()])
+  );
   const selectSection = (s: MetricsSection) => {
     setSection(s);
+    setEverActivated((prev) => prev.has(s) ? prev : new Set([...prev, s]));
     try { localStorage.setItem(SECTION_STORAGE_KEY, s); } catch { /* ignore */ }
   };
   // Jump from a recommendation to its evidence panel: switch section, then (after
@@ -513,6 +535,7 @@ export function MetricsView({ now, focusCostNonce }: {
       </nav>
 
       <ActiveSectionContext.Provider value={section}>
+      <EverActivatedContext.Provider value={everActivated}>
 
       <Panel title="Tuning actions" section="tuning" empty={recommendations.length === 0}
         emptyText="nothing to tune — every advisor is satisfied">
@@ -1525,6 +1548,7 @@ export function MetricsView({ now, focusCostNonce }: {
         ))}
       </Panel>
 
+      </EverActivatedContext.Provider>
       </ActiveSectionContext.Provider>
     </div>
   );

@@ -1,7 +1,9 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
 import { render, screen, fireEvent } from '@testing-library/react';
-import { PrRow, readyMergeGate } from '../PrRow';
+import * as PrRowMod from '../PrRow';
 import type { PrView, CheckView } from '../types';
+
+const { PrRow, readyMergeGate } = PrRowMod;
 
 const pr = (over: Partial<PrView>): PrView => ({
   repo: 'acme/widgets', number: 8962, title: 'fix: calendar overlap', url: 'https://x/8962',
@@ -548,3 +550,5 @@ describe('PrRow keyboard expand (UX-H1)', () => {
     expect(main).not.toHaveAttribute('tabindex');
   });
 });
+
+// Memoization tests for #178 live in PrRow.memo.test.tsx
