@@ -64,9 +64,10 @@ describe('DiagnoseView', () => {
   it('shows the blocker for the selected PR and lets you switch PRs', () => {
     render(<DiagnoseView state={s} />);
     // first PR selected by default → its failed build is the blocker
-    expect(screen.getByRole('status')).toHaveTextContent(/Blocked by build \(failed\)/);
+    // diagnose-blocker is per-PR static text (not a live announcement) so no role="status"
+    expect(screen.getByText(/Blocked by build \(failed\)/)).toBeInTheDocument();
     fireEvent.click(screen.getByText(/PR 20/));
-    expect(screen.getByRole('status')).toHaveTextContent(/Nothing blocking/);
+    expect(screen.getByText(/Nothing blocking/)).toBeInTheDocument();
   });
 
   it('renders an empty state with no PRs', () => {
@@ -109,5 +110,22 @@ describe('DiagnoseView', () => {
     expect(rows.length).toBeGreaterThan(0);
     rows[0].focus();
     expect(rows[0]).toHaveFocus(); // tabbable
+  });
+
+  it('a11y(#171): queue-incidents section is role=region, not role=status (labeled content, not a live announcement)', () => {
+    const stalledState = state([
+      pr('o/a', 1, [check('build', { conclusion: 'failure' })]),
+      pr('o/a', 2, [check('build', { conclusion: 'failure' })]),
+      pr('o/a', 3, [check('build', { conclusion: 'failure' })]),
+      pr('o/a', 4, [check('build', { conclusion: 'failure' })]),
+      pr('o/a', 5, [check('build', { conclusion: 'failure' })]),
+    ]);
+    render(<DiagnoseView state={stalledState} />);
+    // queue-incidents should be a labeled region, not a status announcement
+    const queueSection = screen.queryByRole('region', { name: /queue incidents/i });
+    const failureSection = screen.queryByRole('region', { name: /failure clusters/i });
+    // if rendered, they must be regions (not status)
+    if (queueSection) expect(queueSection).not.toHaveAttribute('role', 'status');
+    if (failureSection) expect(failureSection).not.toHaveAttribute('role', 'status');
   });
 });

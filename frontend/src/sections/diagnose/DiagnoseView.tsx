@@ -77,7 +77,7 @@ export function DiagnoseView({ state, focusedRepo, api }: DiagnoseViewProps) {
         </section>
       )}
       {incidents.length > 0 && (
-        <section className="queue-incidents" role="status" aria-label="Queue incidents">
+        <section className="queue-incidents" role="region" aria-label="Queue incidents">
           <strong>🚑 Queue stalled</strong> — guided recovery:
           {incidents.map((inc) => (
             <div key={inc.repo} className="queue-incident">
@@ -88,7 +88,7 @@ export function DiagnoseView({ state, focusedRepo, api }: DiagnoseViewProps) {
         </section>
       )}
       {clusters.length > 0 && (
-        <section className="failure-clusters" role="status" aria-label="Failure clusters">
+        <section className="failure-clusters" role="region" aria-label="Failure clusters">
           <strong>⚠ Systemic failures</strong> — likely one incident, not {clusters.reduce((n, c) => n + c.prCount, 0)} separate problems:
           <ul role="list">
             {clusters.map((c) => (
@@ -115,7 +115,7 @@ export function DiagnoseView({ state, focusedRepo, api }: DiagnoseViewProps) {
       </ul>
       {selected && (
         <section className="diagnose-detail" aria-label={`PR #${selected.number} detail`}>
-          <p className="diagnose-blocker" role="status">
+          <p className="diagnose-blocker">
             {blocker
               ? `Blocked by ${blocker.check.name} (${blocker.why === 'failed' ? (blocker.flaky ? 'failed — likely FLAKE' : 'failed') : 'still running'})`
               : 'Nothing blocking — all checks green.'}

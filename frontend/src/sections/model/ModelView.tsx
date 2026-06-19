@@ -87,7 +87,7 @@ export function ModelView({ repo, api }: ModelViewProps) {
         )}
       </div>
       {showGates && (
-        <p className="merge-contract" role="status">required gates: {required.length ? required.join(', ') : 'none detected'}</p>
+        <p className="merge-contract">required gates: {required.length ? required.join(', ') : 'none detected'}</p>
       )}
 
       <p className="matrix-legend" aria-label="Matrix legend">{GLYPH.gate} gate · {GLYPH.conditional} conditional · {GLYPH.advisory} advisory · {GLYPH.absent} absent · ⚠ drift</p>
@@ -117,14 +117,14 @@ export function ModelView({ repo, api }: ModelViewProps) {
 
       {/* Details below the matrix — ruleset specifics + security (roadmap 2.4) */}
       {ruleset && ruleset.readable && !ruleset.inSync && (
-        <p className="model-ruleset-detail mismatch" role="status">
+        <p className="model-ruleset-detail mismatch">
           ⚠ Ruleset mismatch — {ruleset.missingFromModel.length ? `ruleset requires ${ruleset.missingFromModel.join(', ')} not enforced by config` : ''}
           {ruleset.missingFromModel.length && ruleset.extraInModel.length ? '; ' : ''}
           {ruleset.extraInModel.length ? `config gates ${ruleset.extraInModel.join(', ')} the ruleset doesn’t` : ''}
         </p>
       )}
       {ruleset && !ruleset.readable && (
-        <p className="model-ruleset-detail unreadable" role="status">🔐 Ruleset unreadable — grant administration:read to verify required-gate parity</p>
+        <p className="model-ruleset-detail unreadable">🔐 Ruleset unreadable — grant administration:read to verify required-gate parity</p>
       )}
       {security && security.length > 0 && (
         <section className="model-security" aria-label="Security findings">

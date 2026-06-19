@@ -87,7 +87,8 @@ describe('PipelineView (the PR pipeline view, ported into the workspace)', () =>
       prs: [pr('acme/alpha', 1, 'running pr', 'ci')],
       deploy: { envs: [], awaitingQa: 2, awaitingProd: 10, chain: { entries: [], supersededCount: 0, inFlight: null } } }] } as never);
     render(<PipelineView state={st} focusedRepo={null} />);
-    const summary = screen.getByRole('status', { name: /deploy backlog/i });
+    // deploy-backlog is a labeled content region, not a live announcement (#171)
+    const summary = screen.getByRole('region', { name: /deploy backlog/i });
     expect(summary).toHaveTextContent(/2 awaiting QA/);
     expect(summary).toHaveTextContent(/10 awaiting prod/);
   });
@@ -97,7 +98,8 @@ describe('PipelineView (the PR pipeline view, ported into the workspace)', () =>
       prs: [pr('acme/alpha', 1, 'running pr', 'ci')],
       deploy: { envs: [], awaitingQa: 0, awaitingProd: 4, chain: { entries: [], supersededCount: 0, inFlight: null } } }] } as never);
     render(<PipelineView state={st} focusedRepo={null} />);
-    const summary = screen.getByRole('status', { name: /deploy backlog/i });
+    // deploy-backlog is a labeled content region, not a live announcement (#171)
+    const summary = screen.getByRole('region', { name: /deploy backlog/i });
     expect(summary).toHaveTextContent(/4 awaiting prod/);
     expect(summary).not.toHaveTextContent(/awaiting QA/);
   });
@@ -109,7 +111,8 @@ describe('PipelineView (the PR pipeline view, ported into the workspace)', () =>
         entries: [], supersededCount: 1,
         inFlight: { prNumber: 7, sha: 'sha7', stage: 'qa' } } } }] } as never);
     render(<PipelineView state={st} focusedRepo={null} />);
-    const chain = screen.getByRole('status', { name: /deploy chain/i });
+    // deploy-chain is a labeled content region, not a live announcement (#171)
+    const chain = screen.getByRole('region', { name: /deploy chain/i });
     expect(chain).toHaveTextContent(/Deploying #7 — at qa/);
     expect(chain).toHaveTextContent(/1 superseded/);
   });
@@ -119,6 +122,6 @@ describe('PipelineView (the PR pipeline view, ported into the workspace)', () =>
       prs: [pr('acme/alpha', 1, 'running pr', 'ci')],
       deploy: { envs: [], awaitingQa: 0, awaitingProd: 0, chain: { entries: [], supersededCount: 0, inFlight: null } } }] } as never);
     render(<PipelineView state={st} focusedRepo={null} />);
-    expect(screen.queryByRole('status', { name: /deploy chain/i })).not.toBeInTheDocument();
+    expect(screen.queryByRole('region', { name: /deploy chain/i })).not.toBeInTheDocument();
   });
 });

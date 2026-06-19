@@ -66,7 +66,7 @@ export function PipelineView({ state, focusedRepo }: { state: DashboardState | n
                 <>
                   <QueueTrain queue={r.queue} />
                   {r.deploy && (r.deploy.awaitingQa > 0 || r.deploy.awaitingProd > 0) && (
-                    <p className="deploy-backlog" role="status" aria-label="Deploy backlog">
+                    <p className="deploy-backlog" role="region" aria-label="Deploy backlog">
                       📦 Deploy backlog:{' '}
                       {[
                         r.deploy.awaitingQa > 0 ? `${r.deploy.awaitingQa} awaiting QA` : null,
@@ -80,7 +80,7 @@ export function PipelineView({ state, focusedRepo }: { state: DashboardState | n
                     const prs = next.prNumbers.map((n) => `#${n}`).join(', ');
                     const e = eta(next.etaSeconds);
                     return (
-                      <p className="next-to-merge" role="status">
+                      <p className="next-to-merge">
                         ⏭ Merges next: <strong>{prs}</strong>{' '}
                         {next.building ? `building${next.percent != null ? ` ${next.percent}%` : ''}` : 'front of queue'}
                         {e ? ` · ${e}` : ''}
@@ -107,7 +107,7 @@ export function PipelineView({ state, focusedRepo }: { state: DashboardState | n
                     );
                   })()}
                   {r.deploy?.chain && (r.deploy.chain.inFlight || r.deploy.chain.supersededCount > 0) && (
-                    <p className="deploy-chain" role="status" aria-label="Deploy chain">
+                    <p className="deploy-chain" role="region" aria-label="Deploy chain">
                       {r.deploy.chain.inFlight && (
                         <>⤴ Deploying <strong>#{r.deploy.chain.inFlight.prNumber}</strong> — at {r.deploy.chain.inFlight.stage}, flowing to prod</>
                       )}
