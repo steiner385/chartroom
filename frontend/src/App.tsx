@@ -7,14 +7,16 @@ import { QueueTrain } from './QueueTrain';
 import { SettingsPanel } from './SettingsPanel';
 import { LegendPanel } from './LegendPanel';
 import { ProtectionMap } from './ProtectionMap';
-
-const MetricsView = lazy(() =>
-  import('./MetricsView').then((m) => ({ default: m.MetricsView })),
-);
 import { DeliverySpine } from './spine/DeliverySpine';
 import { HealthHeader } from './HealthHeader';
 import { ErrorBoundary } from './ErrorBoundary';
 import type { PrView, LaneStatus } from './types';
+
+// Code-split the heavy MetricsView (its parse + /api/metrics fetch) until the
+// Metrics tab is actually opened. Named export → default adapter for React.lazy.
+const MetricsView = lazy(() =>
+  import('./MetricsView').then((m) => ({ default: m.MetricsView })),
+);
 
 type TabId = 'delivery' | 'pipeline' | 'metrics' | 'designer';
 

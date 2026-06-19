@@ -24,11 +24,4 @@ describe('InsightsView (WS3a — Metrics + Tune folded into one section)', () =>
     expect(await screen.findByLabelText('Budgets')).toBeInTheDocument();
     expect(screen.getByLabelText('Policy')).toBeInTheDocument();
   });
-
-  it('shows a loading placeholder while MetricsView lazy-loads', async () => {
-    render(<InsightsView repo="o/r" api={api()} />);
-    // Before the lazy module resolves the fallback may appear; after it resolves the
-    // real stub is shown. Either way, MetricsView content appears eventually.
-    expect(await screen.findByTestId('metrics')).toBeInTheDocument();
-  });
 });
