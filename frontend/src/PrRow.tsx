@@ -114,7 +114,7 @@ type PrRowProps = {
  * Explicitly checks the three scalar props separately so that a change to any
  * of them still forces a re-render even if `pr` itself is byte-for-byte equal.
  */
-function areEqual(prev: PrRowProps, next: PrRowProps): boolean {
+export function areEqual(prev: PrRowProps, next: PrRowProps): boolean {
   return (
     prev.hasDeploy === next.hasDeploy &&
     prev.queueCulprit === next.queueCulprit &&
