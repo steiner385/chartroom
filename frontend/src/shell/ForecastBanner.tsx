@@ -3,9 +3,11 @@
 // N days." Honest about confidence (low → hedged wording) and silent when there's
 // no series or no rising trend (nothing alarming to say). API injected.
 import { useEffect, useState } from 'react';
+import { useSectionRoute } from '../embed/RouterContext';
 import type { WorkspaceApi, ForecastDto } from './workspaceApi';
 
 export function ForecastBanner({ api, repo, warnWithinDays = 14 }: { api: WorkspaceApi; repo: string | null; warnWithinDays?: number }) {
+  const { go } = useSectionRoute();
   const [f, setF] = useState<ForecastDto | null>(null);
   useEffect(() => {
     if (!repo) { setF(null); return; }
@@ -22,11 +24,12 @@ export function ForecastBanner({ api, repo, warnWithinDays = 14 }: { api: Worksp
   const within = days <= warnWithinDays;
   if (!within) return null; // only surface when the breach is near
 
-  const hedge = f.confidence === 'high' ? '' : f.confidence === 'medium' ? ' (rough estimate)' : ' (low-confidence — sparse/noisy data)';
+  const hedge = f.confidence === 'high' ? '' : f.confidence === 'medium' ? ' (estimate)' : ' (low confidence — not enough data for a reliable forecast)';
   const unit = f.unit ?? 'budget';
   return (
     <div className={`forecast-banner conf-${f.confidence}`} role="status">
-      ⏳ At the current trend you’ll hit the {unit} budget in <strong>~{days} day{days === 1 ? '' : 's'}</strong>{hedge}.
+      At this rate, the {unit} budget runs out in <strong>~{days} day{days === 1 ? '' : 's'}</strong>{hedge}.{' '}
+      <button type="button" className="btn-ghost forecast-cta" onClick={() => go('insights')}>View cost trend →</button>
     </div>
   );
 }

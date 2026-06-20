@@ -19,7 +19,7 @@ import { CommandPalette } from './CommandPalette';
 export function WorkspaceApp() {
   const { state, connected, stale, repos, api, notifySupported, notifyEnabled, toggleNotify } = useWorkspaceData();
   const [focused, focus] = useFocusedRepo({ repos });
-  const { active } = useSectionRoute();
+  const { active, go } = useSectionRoute();
 
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [legendOpen, setLegendOpen] = useState(false);
@@ -80,7 +80,8 @@ export function WorkspaceApp() {
     <>
       <SettingsPanel open={settingsOpen} onClose={() => setSettingsOpen(false)} returnFocusRef={gearRef} connected={connected} />
       <LegendPanel open={legendOpen} onClose={() => setLegendOpen(false)} returnFocusRef={legendRef} />
-      <CommandPalette open={paletteOpen} onClose={() => setPaletteOpen(false)} repos={repos} onFocusRepo={focus} />
+      <CommandPalette open={paletteOpen} onClose={() => setPaletteOpen(false)} repos={repos} onFocusRepo={focus}
+        prs={state?.repos.flatMap((r) => r.prs) ?? []} go={go} />
     </>
   );
 

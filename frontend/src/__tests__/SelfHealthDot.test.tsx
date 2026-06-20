@@ -11,19 +11,19 @@ const api = (self: () => Promise<ToolHealthDto>): WorkspaceApi => ({ self: vi.fn
 describe('SelfHealthDot (Group O spine indicator)', () => {
   it('shows healthy with cache hit-rate in the title', async () => {
     render(<SelfHealthDot api={api(async () => ok)} pollMs={999_999} />);
-    await waitFor(() => expect(screen.getByRole('status')).toHaveAttribute('title', expect.stringContaining('Tool healthy')));
+    await waitFor(() => expect(screen.getByRole('status')).toHaveAttribute('title', expect.stringContaining('Feed healthy')));
     expect(screen.getByRole('status').getAttribute('title')).toMatch(/90% hit/);
   });
 
   it('shows degraded with the reasons on hover', async () => {
     render(<SelfHealthDot api={api(async () => degraded)} pollMs={999_999} />);
-    await waitFor(() => expect(screen.getByRole('status')).toHaveTextContent('⚠ tool'));
+    await waitFor(() => expect(screen.getByRole('status')).toHaveTextContent('⚠ feed'));
     expect(screen.getByRole('status').getAttribute('title')).toMatch(/700s stale/);
   });
 
   it('renders an unknown marker when /self fails (never throws)', async () => {
     render(<SelfHealthDot api={api(async () => { throw new Error('down'); })} pollMs={999_999} />);
-    await waitFor(() => expect(screen.getByTitle(/tool health unknown/i)).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByTitle(/feed health unknown/i)).toBeInTheDocument());
   });
 
   it('surfaces the ingestion-freshness age visibly (roadmap 4.3)', async () => {

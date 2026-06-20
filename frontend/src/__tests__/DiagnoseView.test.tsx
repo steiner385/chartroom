@@ -65,9 +65,9 @@ describe('DiagnoseView', () => {
     render(<DiagnoseView state={s} />);
     // first PR selected by default → its failed build is the blocker
     // diagnose-blocker updates on discrete user click → role="status" is correct
-    expect(screen.getByRole('status')).toHaveTextContent(/Blocked by build \(failed\)/);
+    expect(screen.getByRole('status')).toHaveTextContent(/build failed and is blocking this PR/);
     fireEvent.click(screen.getByText(/PR 20/));
-    expect(screen.getByRole('status')).toHaveTextContent(/Nothing blocking/);
+    expect(screen.getByRole('status')).toHaveTextContent(/nothing blocking/i);
   });
 
   it('renders an empty state with no PRs', () => {

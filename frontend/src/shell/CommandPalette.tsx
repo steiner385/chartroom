@@ -3,14 +3,18 @@
 // global accelerator over the workspace. Combobox pattern: input owns focus + keys
 // (↑↓ move the active command, Enter runs it, Escape closes). Extensible to PRs/checks.
 import { useEffect, useMemo, useRef, useState, type KeyboardEvent } from 'react';
-import { SECTIONS, hashForSection } from './sections';
+import { SECTIONS, hashForSection, type SectionId } from './sections';
 
 interface Command { id: string; label: string; hint: string; run: () => void }
+export interface PalettePr { repo: string; number: number; title: string }
 
 /** Controlled command palette — the shell owns `open` (and the ⌘K shortcut + the
  *  visible trigger), so the palette is both keyboard- and pointer-openable. */
-export function CommandPalette({ open, onClose, repos, onFocusRepo }: {
+export function CommandPalette({ open, onClose, repos, onFocusRepo, prs = [], go }: {
   open: boolean; onClose: () => void; repos: readonly string[]; onFocusRepo: (repo: string) => void;
+  /** Open PRs from the live feed — searchable by #number or title (#190). */
+  prs?: readonly PalettePr[];
+  go?: (id: SectionId) => void;
 }) {
   const [query, setQuery] = useState('');
   const [active, setActive] = useState(0);
@@ -21,8 +25,16 @@ export function CommandPalette({ open, onClose, repos, onFocusRepo }: {
 
   const commands = useMemo<Command[]>(() => [
     ...SECTIONS.map((s) => ({ id: `go:${s.id}`, label: `Go to ${s.label}`, hint: s.blurb, run: () => { location.hash = hashForSection(s.id); } })),
-    ...repos.map((r) => ({ id: `focus:${r}`, label: `Focus ${r}`, hint: 'switch the active pipeline', run: () => onFocusRepo(r) })),
-  ], [repos, onFocusRepo]);
+    ...repos.map((r) => ({ id: `focus:${r}`, label: `Focus ${r}`, hint: 'focus this repo across all sections', run: () => onFocusRepo(r) })),
+    // PR search (#190): jump straight to a PR by #number or title (capped so an
+    // empty query doesn't flood the list).
+    ...prs.slice(0, 30).map((pr) => ({
+      id: `pr:${pr.repo}#${pr.number}`,
+      label: `PR #${pr.number} — ${pr.title}`,
+      hint: pr.repo,
+      run: () => { onFocusRepo(pr.repo); go?.('pipeline'); },
+    })),
+  ], [repos, onFocusRepo, prs, go]);
 
   const matches = useMemo(() => {
     const q = query.trim().toLowerCase();
@@ -49,8 +61,8 @@ export function CommandPalette({ open, onClose, repos, onFocusRepo }: {
           aria-expanded="true"
           aria-controls="cmdk-list"
           aria-activedescendant={matches[active] ? `cmdk-opt-${active}` : undefined}
-          aria-label="Run a command — go to a section or focus a pipeline"
-          placeholder="Jump to a section or pipeline…"
+          aria-label="Run a command — go to a section, focus a pipeline, or open a PR"
+          placeholder="Go to a section, pipeline, or PR — e.g. #1234"
           value={query}
           onChange={(e) => setQuery(e.target.value)}
           onKeyDown={onKeyDown}
@@ -64,7 +76,7 @@ export function CommandPalette({ open, onClose, repos, onFocusRepo }: {
               <span className="cmdk-hint">{c.hint}</span>
             </li>
           ))}
-          {matches.length === 0 && <li className="cmdk-opt empty">no matches</li>}
+          {matches.length === 0 && <li className="cmdk-opt empty">No matches — try a section, repo, or a PR number like #1234.</li>}
         </ul>
       </div>
     </div>
