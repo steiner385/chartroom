@@ -10,7 +10,13 @@ import { groupShards } from './groupShards';
 // Shared protection vocabulary (#183/convergence): the canonical state glyphs and the
 // raw-template stripper, so this matrix and the legacy ProtectionMap can't drift in
 // iconography or leak `${{ … }}` GitHub expressions into check names.
-import { STATE_GLYPH, stripCheckTemplate, type CellState } from '../../protectionModel';
+import { STATE_GLYPH, stripCheckTemplate, heatColor, fmtMin, OVERLAYS, type CellState, type Overlay } from '../../protectionModel';
+
+/** Observed real-failure rate (%) — CellLike carries realFailures + runs, not a
+ *  precomputed failRatePct, so derive it for the Quality overlay. */
+function failRate(o: NonNullable<CellLike['observed']>): number {
+  return o.runs > 0 ? (o.realFailures / o.runs) * 100 : 0;
+}
 
 export function requiredGates(model: DerivedModelLike): string[] {
   return model.checkMeta.filter((m) => m.isRequiredMergeGate).map((m) => m.check);
@@ -39,10 +45,21 @@ export function ModelView({ repo, api }: ModelViewProps) {
 
   const [showGates, setShowGates] = useState(false);
   const [driftOnly, setDriftOnly] = useState(false);
+  const [overlay, setOverlay] = useState<Overlay>('none');
   const [openShards, setOpenShards] = useState<Set<string>>(new Set());
   const required = useMemo(() => (model ? requiredGates(model) : []), [model]);
   const drift = useMemo(() => (model ? driftCells(model) : []), [model]);
   const driftChecks = useMemo(() => new Set(drift.map((c) => c.check)), [drift]);
+  // Heat-overlay maxima: the busiest minutes / highest fail-rate across all cells,
+  // so each cell shades relative to the worst (mirrors the legacy ProtectionMap).
+  const maxima = useMemo(() => {
+    let minutes = 0, fail = 0;
+    for (const c of model?.cells ?? []) if (c.observed) {
+      minutes = Math.max(minutes, c.observed.minutes);
+      fail = Math.max(fail, failRate(c.observed));
+    }
+    return { minutes, fail };
+  }, [model]);
   const cellAt = (check: string, tier: string) => model!.cells.find((c) => c.check === check && c.tierId === tier);
 
   if (!repo) return <div className="model-view empty">Select a pipeline to inspect its model.</div>;
@@ -54,8 +71,18 @@ export function ModelView({ repo, api }: ModelViewProps) {
   const cellTds = (check: string) => model.tiers.map((t) => {
     const cell = cellAt(check, t.id);
     const state = cell?.state ?? 'absent';
+    const o = cell?.observed;
+    const heat = overlay !== 'none' && o
+      ? heatColor(overlay === 'cost' ? o.minutes : failRate(o), overlay === 'cost' ? maxima.minutes : maxima.fail, overlay === 'cost' ? '--amber' : '--fail')
+      : undefined;
+    // Hover evidence (runs · minutes · real fails) — a lightweight read of the data
+    // the legacy ProtectionMap's drill drawer shows, without leaving the matrix.
+    const title = o
+      ? `${state}${cell?.drift ? ' — drift' : ''} · ${o.runs.toLocaleString()} runs · ${fmtMin(o.minutes)}${o.realFailures > 0 ? ` · ${o.realFailures} fails (${Math.round(failRate(o))}%)` : ''}`
+      : `${state}${cell?.drift ? ' — drift' : ''}`;
     return (
-      <td key={t.id} className={`cell state-${state}${cell?.drift ? ' drift' : ''}`} title={`${state}${cell?.drift ? ' — drift' : ''}`}>
+      <td key={t.id} className={`cell state-${state}${cell?.drift ? ' drift' : ''}${heat ? ' heat' : ''}`}
+        style={heat ? { background: heat } : undefined} title={title}>
         {STATE_GLYPH[state as CellState] ?? '·'}{cell?.drift ? '⚠' : ''}
       </td>
     );
@@ -95,6 +122,20 @@ export function ModelView({ repo, api }: ModelViewProps) {
       <p className="matrix-legend" aria-label="Matrix legend">
         <span className="state-gate">{STATE_GLYPH.gate}</span> gate · <span className="state-conditional">{STATE_GLYPH.conditional}</span> conditional · <span className="state-advisory">{STATE_GLYPH.advisory}</span> advisory · {STATE_GLYPH.absent} absent · <span className="state-drift">⚠</span> drift
       </p>
+
+      {/* Heat overlays (parity with the legacy ProtectionMap): shade each cell by
+          runner-minutes (Cost) or real-failure rate (Quality). Default 'States' keeps
+          the glyph-only read. */}
+      <div className="matrix-overlay" role="group" aria-label="Matrix overlay">
+        {OVERLAYS.map((o) => (
+          <button key={o.id} type="button"
+            className={`overlay-btn${overlay === o.id ? ' active' : ''}`}
+            aria-pressed={overlay === o.id} data-testid={`overlay-${o.id}`}
+            onClick={() => setOverlay(o.id)}>{o.label}</button>
+        ))}
+        {overlay === 'cost' && <span className="overlay-caption">hotter = more runner-minutes</span>}
+        {overlay === 'quality' && <span className="overlay-caption">hotter = higher real-failure rate</span>}
+      </div>
 
       <table className="protection-matrix" aria-label="Protection matrix">
         <thead>

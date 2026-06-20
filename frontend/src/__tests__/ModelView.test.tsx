@@ -125,3 +125,55 @@ describe('ModelView (US3)', () => {
     expect(await screen.findByRole('alert')).toHaveTextContent('no derivable model');
   });
 });
+
+describe('ModelView — Cost/Quality heat overlays', () => {
+  // a cell carrying observed cost (minutes) + failures, so the overlay has data to shade
+  const observed = (minutes: number, runs: number, realFailures: number) =>
+    ({ runs, minutes, realFailures, flakeRatePct: 0 });
+  const OBSERVED_MODEL: DerivedModelLike = {
+    tiers: [{ id: 'pr', label: 'PR', event: 'pull_request' }],
+    checks: ['cheap', 'pricey'],
+    cells: [
+      { check: 'cheap', tierId: 'pr', intent: { runs: true, gates: false, conditional: false }, observed: observed(10, 100, 0), state: 'advisory' },
+      { check: 'pricey', tierId: 'pr', intent: { runs: true, gates: true, conditional: false }, observed: observed(500, 100, 40), state: 'gate' },
+    ],
+    checkMeta: [
+      { check: 'cheap', isRequiredMergeGate: false, provenance: [{ file: 'ci.yml', jobId: 'cheap' }] },
+      { check: 'pricey', isRequiredMergeGate: true, provenance: [{ file: 'ci.yml', jobId: 'pricey' }] },
+    ],
+  };
+  const obsApi = api({ getPipeline: vi.fn(async () => ({ repo: 'o/r', sourceSha: 's', model: OBSERVED_MODEL })) });
+
+  const cellFor = (check: string) =>
+    screen.getByRole('rowheader', { name: new RegExp(check) }).closest('tr')!.querySelector('td.cell') as HTMLElement;
+
+  it('defaults to States (no heat) and exposes Cost + Quality toggles', async () => {
+    render(<ModelView repo="o/r" api={obsApi} />);
+    await screen.findByLabelText('Protection matrix');
+    expect(screen.getByTestId('overlay-none')).toHaveAttribute('aria-pressed', 'true');
+    expect(screen.getByTestId('overlay-cost')).toBeInTheDocument();
+    expect(screen.getByTestId('overlay-quality')).toBeInTheDocument();
+    expect(cellFor('pricey')).not.toHaveClass('heat');
+  });
+
+  it('Cost overlay shades the priciest cell hottest (and tooltips the minutes)', async () => {
+    render(<ModelView repo="o/r" api={obsApi} />);
+    await screen.findByLabelText('Protection matrix');
+    fireEvent.click(screen.getByTestId('overlay-cost'));
+    const pricey = cellFor('pricey');
+    expect(pricey).toHaveClass('heat');
+    expect(pricey.style.background).toMatch(/color-mix/);
+    expect(pricey).toHaveAttribute('title', expect.stringContaining('100 runs'));
+    // the max-minutes cell shades at the top of the scale (80%); the cheap one far less
+    expect(pricey.style.background).toContain('80%');
+  });
+
+  it('Quality overlay shades by real-failure rate', async () => {
+    render(<ModelView repo="o/r" api={obsApi} />);
+    await screen.findByLabelText('Protection matrix');
+    fireEvent.click(screen.getByTestId('overlay-quality'));
+    const pricey = cellFor('pricey'); // 40/100 = 40% fail → the only failing cell, hottest
+    expect(pricey).toHaveClass('heat');
+    expect(pricey.style.background).toContain('var(--fail)');
+  });
+});
