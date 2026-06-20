@@ -205,3 +205,24 @@ describe('StatusStrip interactive=false (kiosk)', () => {
     expect(onFilter).not.toHaveBeenCalled();
   });
 });
+
+// ---- Failed-tile delta (#189): a rising failed count is the "something broke" signal ----
+
+describe('StatusStrip — Failed-tile delta (#189)', () => {
+  const failed = (n: number): PrView[] => Array.from({ length: n }, () => pr('queue', 'group-failed'));
+
+  it('shows a rising/falling delta vs the mount baseline, only on the Failed tile', () => {
+    const { rerender } = render(<StatusStrip prs={failed(2)} activeFilter={null} onFilter={() => {}} />);
+    expect(screen.queryByText(/▲|▼/)).toBeNull();              // baseline === current → no delta at mount
+    rerender(<StatusStrip prs={failed(5)} activeFilter={null} onFilter={() => {}} />);
+    expect(screen.getByText('▲3')).toBeInTheDocument();        // 5 − 2 baseline
+    rerender(<StatusStrip prs={failed(1)} activeFilter={null} onFilter={() => {}} />);
+    expect(screen.getByText('▼1')).toBeInTheDocument();        // 1 − 2 baseline
+  });
+
+  it('shows no delta on other buckets even when their counts change', () => {
+    const { rerender } = render(<StatusStrip prs={[pr('ci')]} activeFilter={null} onFilter={() => {}} />);
+    rerender(<StatusStrip prs={[pr('ci'), pr('ci'), pr('ci')]} activeFilter={null} onFilter={() => {}} />);
+    expect(screen.queryByText(/▲|▼/)).toBeNull();              // running count rose 1→3, but no urgency badge
+  });
+});

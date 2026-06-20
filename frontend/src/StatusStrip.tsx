@@ -1,3 +1,4 @@
+import { useEffect, useRef, useState } from 'react';
 import type { PrView } from './types';
 
 export type Bucket = 'running' | 'queued' | 'deploy' | 'failed' | 'idle';
@@ -72,6 +73,26 @@ export function StatusStrip({ prs, activeFilter, onFilter, interactive = true }:
     counts.set(b, (counts.get(b) ?? 0) + 1);
   }
 
+  // #189: a rising failed count is the primary "something just broke" signal.
+  // Show its delta vs a baseline that resets every 5 minutes, so a spike within
+  // the window is visible (up = rising, down = falling). Other tiles get no
+  // delta — a changing queue/deploy/idle count isn't an urgency signal.
+  const failedCount = counts.get('failed') ?? 0;
+  const latestFailed = useRef(failedCount);
+  latestFailed.current = failedCount;
+  const [failedBaseline, setFailedBaseline] = useState(failedCount);
+  useEffect(() => {
+    const id = setInterval(() => setFailedBaseline(latestFailed.current), 5 * 60_000);
+    return () => clearInterval(id);
+  }, []);
+  const failedDelta = failedCount - failedBaseline;
+  const deltaBadge = (bucket: Bucket) =>
+    bucket === 'failed' && failedDelta !== 0 ? (
+      <span className={`tile-delta tile-delta--${failedDelta > 0 ? 'up' : 'down'}`} aria-hidden="true">
+        {failedDelta > 0 ? `▲${failedDelta}` : `▼${-failedDelta}`}
+      </span>
+    ) : null;
+
   return (
     <div className="status-strip" role="group" aria-label="Status overview">
       {TILES.map(({ bucket, label, cssClass, title }) => {
@@ -85,6 +106,7 @@ export function StatusStrip({ prs, activeFilter, onFilter, interactive = true }:
               title={title}>
               <b>{count}</b>
               <span>{label}</span>
+              {deltaBadge(bucket)}
             </div>
           );
         }
@@ -104,6 +126,7 @@ export function StatusStrip({ prs, activeFilter, onFilter, interactive = true }:
           >
             <b>{count}</b>
             <span>{label}</span>
+            {deltaBadge(bucket)}
           </button>
         );
       })}
