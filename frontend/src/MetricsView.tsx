@@ -3,6 +3,7 @@ import { useApiBase } from './embed/ApiBaseContext';
 import { scrollBehavior } from './motion';
 import type { HeadlineStat, MetricsBucket, MetricsPayload, MetricsWindow, DemotionCandidate, PromotionCandidate } from './types';
 import { RunnerRouting } from './RunnerRouting';
+import { Skeleton } from './shell/Skeleton';
 import { LEAD_TIME_SEGMENTS } from './leadtime';
 import {
   AreaSeries, BandSeries, MultiLine, ScatterPlot, SignedLine,
@@ -150,7 +151,9 @@ function Panel({ id, title, empty, emptyText = 'no data yet', section, children 
       <h2 tabIndex={id ? -1 : undefined}>{title}</h2>
       {empty
         ? <p className="metric-empty">{emptyText}</p>
-        : (contentReady ? children : null)}
+        /* #188: a never-activated panel reserves height with a skeleton instead
+           of collapsing to 0, so first activation doesn't jump the layout. */
+        : (contentReady ? children : <Skeleton height={200} />)}
     </section>
   );
 }
