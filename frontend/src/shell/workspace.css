@@ -104,6 +104,8 @@
 .remediation-action { margin: 4px 0 0; font-weight: 600; }
 .remediation-where { font-weight: 400; color: var(--muted); }
 .forecast-banner { background: color-mix(in srgb, var(--amber) 14%, var(--surface)); border: 1px solid var(--amber); margin-bottom: 12px; }
+/* #190: inline CTA to the cost analytics (sizing for the shared .btn-ghost). */
+.forecast-cta { border-radius: 6px; padding: 2px 8px; font-size: 12px; white-space: nowrap; }
 .failure-clusters, .queue-incidents { background: color-mix(in srgb, var(--fail) 10%, var(--surface)); border: 1px solid var(--fail); margin-bottom: 12px; }
 .queue-incidents ol { margin: 6px 0 0 18px; padding: 0; }
 .failure-clusters ul { margin: 6px 0 0 18px; }

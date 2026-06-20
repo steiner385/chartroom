@@ -15,7 +15,7 @@ export function SelfHealthDot({ api, pollMs = 30_000 }: { api: WorkspaceApi; pol
     return () => { alive = false; clearInterval(t); };
   }, [api, pollMs]);
 
-  if (!health) return <span className="self-health unknown" title="tool health unknown">◌</span>;
+  if (!health) return <span className="self-health unknown" title="feed health unknown">◌</span>;
 
   // Surface ingestion freshness visibly (roadmap 4.3) — stale data degrades trust
   // even when the tool itself reports ok (e.g. the poller lags but the API is up).
@@ -29,14 +29,14 @@ export function SelfHealthDot({ api, pollMs = 30_000 }: { api: WorkspaceApi; pol
   const effStatus: 'ok' | 'degraded' = stale || health.status !== 'ok' ? 'degraded' : 'ok';
 
   const title = health.status !== 'ok'
-    ? `Tool degraded — ${health.reasons.join('; ')}`
+    ? `Feed degraded — ${health.reasons.join('; ')}`
     : stale
-      ? `Data is stale — last ingested ${age} ago (the poller may be lagging)`
-      : `Tool healthy · data ${age} fresh · cache ${Math.round(health.derivationCache.hitRate * 100)}% hit`;
+      ? `Data is ${age} old — the poller may be lagging`
+      : `Feed healthy — data ${age} fresh, cache ${Math.round(health.derivationCache.hitRate * 100)}% hit`;
 
   return (
     <span className={`self-health ${effStatus}${stale ? ' stale' : ''}`} role="status" title={title} aria-label={title}>
-      {effStatus === 'ok' ? '●' : '⚠'} tool{age != null && <span className="self-health-age"> · {stale ? `stale ${age}` : age}</span>}
+      {effStatus === 'ok' ? '●' : '⚠'} feed{age != null && <span className="self-health-age"> · {stale ? `stale ${age}` : age}</span>}
     </span>
   );
 }

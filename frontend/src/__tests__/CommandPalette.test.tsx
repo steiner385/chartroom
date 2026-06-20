@@ -40,4 +40,18 @@ describe('CommandPalette (controlled — jump to any section or repo)', () => {
     fireEvent.keyDown(screen.getByRole('combobox'), { key: 'Enter' });
     expect(onFocusRepo).toHaveBeenCalledWith('acme/beta');
   });
+
+  it('searches PRs by number and jumps to the pipeline on Enter (#190)', () => {
+    const onFocusRepo = vi.fn();
+    const go = vi.fn();
+    render(<CommandPalette open onClose={vi.fn()} repos={['acme/a']} onFocusRepo={onFocusRepo}
+      prs={[{ repo: 'acme/a', number: 1234, title: 'fix the thing' }]} go={go} />);
+    fireEvent.change(screen.getByRole('combobox'), { target: { value: '#1234' } });
+    const opts = screen.getAllByRole('option');
+    expect(opts[0]).toHaveTextContent(/PR #1234 — fix the thing/);
+    fireEvent.keyDown(screen.getByRole('combobox'), { key: 'ArrowDown' });
+    fireEvent.keyDown(screen.getByRole('combobox'), { key: 'Enter' });
+    expect(onFocusRepo).toHaveBeenCalledWith('acme/a');
+    expect(go).toHaveBeenCalledWith('pipeline');
+  });
 });

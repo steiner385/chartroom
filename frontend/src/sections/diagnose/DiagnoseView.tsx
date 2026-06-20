@@ -116,9 +116,17 @@ export function DiagnoseView({ state, focusedRepo, api }: DiagnoseViewProps) {
       {selected && (
         <section className="diagnose-detail" aria-label={`PR #${selected.number} detail`}>
           <p className="diagnose-blocker" role="status">
-            {blocker
-              ? `Blocked by ${blocker.check.name} (${blocker.why === 'failed' ? (blocker.flaky ? 'failed — likely FLAKE' : 'failed') : 'still running'})`
-              : 'Nothing blocking — all checks green.'}
+            {blocker ? (
+              <>
+                {/* #190: active voice + a link straight to the failing run */}
+                {blocker.why === 'failed'
+                  ? `${blocker.check.name} ${blocker.flaky ? 'is failing — likely a flake.' : 'failed and is blocking this PR.'}`
+                  : `Waiting on ${blocker.check.name} to finish.`}
+                {blocker.check.url && (
+                  <> <a href={blocker.check.url} target="_blank" rel="noopener noreferrer">View check run →</a></>
+                )}
+              </>
+            ) : 'All checks passed — nothing blocking.'}
           </p>
           <CheckGantt checks={selected.checks} stage={selected.stage.stage} showLegend />
         </section>
