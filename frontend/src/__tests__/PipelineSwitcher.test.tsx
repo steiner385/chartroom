@@ -18,7 +18,7 @@ describe('filterRepos (pure)', () => {
 });
 
 describe('useFocusedPipeline (sticky focus)', () => {
-  beforeEach(() => localStorage.clear());
+  beforeEach(() => { localStorage.clear(); history.replaceState(null, '', '/'); });
   it('defaults to the first repo when nothing stored', () => {
     const { result } = renderHook(() => useFocusedPipeline(REPOS));
     expect(result.current[0]).toBe('cairnea/KinDash');
@@ -33,6 +33,26 @@ describe('useFocusedPipeline (sticky focus)', () => {
     localStorage.setItem('workspace.focusedPipeline', 'steiner385/pr-dashboard');
     const { result } = renderHook(() => useFocusedPipeline(REPOS));
     expect(result.current[0]).toBe('steiner385/pr-dashboard');
+  });
+
+  it('a ?pipeline= deep link wins over localStorage (#191)', () => {
+    localStorage.setItem('workspace.focusedPipeline', 'cairnea/KinDash');
+    history.replaceState(null, '', '/?pipeline=cairnea%2Finfra');
+    const { result } = renderHook(() => useFocusedPipeline(REPOS));
+    expect(result.current[0]).toBe('cairnea/infra');
+  });
+
+  it('focus() mirrors the choice into the ?pipeline= param (#191)', () => {
+    const { result } = renderHook(() => useFocusedPipeline(REPOS));
+    act(() => result.current[1]('cairnea/infra'));
+    expect(new URLSearchParams(location.search).get('pipeline')).toBe('cairnea/infra');
+  });
+
+  it('useUrl=false ignores the URL param (host opts out)', () => {
+    localStorage.setItem('workspace.focusedPipeline', 'cairnea/KinDash');
+    history.replaceState(null, '', '/?pipeline=cairnea%2Finfra');
+    const { result } = renderHook(() => useFocusedPipeline(REPOS, true, false));
+    expect(result.current[0]).toBe('cairnea/KinDash'); // URL ignored → localStorage
   });
 
   it('adopts the first repo when repos arrive AFTER mount (live-browser bug regression)', () => {

@@ -17,6 +17,9 @@ export interface PrDashboardProps {
   /** Controlled focused repo; omit for the in-content sticky switcher. */
   focusedRepo?: string;
   onFocusChange?: (repo: string) => void;
+  /** Uncontrolled only: mirror the focused pipeline in a ?pipeline= query param for
+   *  shareable deep links (#191). Default true; set false if the host owns the URL. */
+  allowPipelineInUrl?: boolean;
   /** Appended to the `.prdash-root` wrapper. */
   className?: string;
   /** Send credentials on the SSE (cookie-proxy hosts). Default false. */
@@ -24,10 +27,10 @@ export interface PrDashboardProps {
 }
 
 function PrDashboardInner(
-  { focusedRepo, onFocusChange }: Pick<PrDashboardProps, 'focusedRepo' | 'onFocusChange'>,
+  { focusedRepo, onFocusChange, allowPipelineInUrl }: Pick<PrDashboardProps, 'focusedRepo' | 'onFocusChange' | 'allowPipelineInUrl'>,
 ) {
   const { state, connected, stale, repos, api } = useWorkspaceData();
-  const [focused, focus] = useFocusedRepo({ controlled: focusedRepo, onChange: onFocusChange, repos });
+  const [focused, focus] = useFocusedRepo({ controlled: focusedRepo, onChange: onFocusChange, repos, allowPipelineInUrl });
   const { active } = useSectionRoute();
   return (
     <>
@@ -39,13 +42,13 @@ function PrDashboardInner(
 
 /** Content-only embeddable dashboard. The host owns chrome, routing shell, and auth. */
 export function PrDashboard(
-  { apiBase = '/api', basename = '', routerMode = 'path', focusedRepo, onFocusChange, className, withCredentials = false }: PrDashboardProps,
+  { apiBase = '/api', basename = '', routerMode = 'path', focusedRepo, onFocusChange, className, withCredentials = false, allowPipelineInUrl = true }: PrDashboardProps,
 ) {
   return (
     <ApiBaseProvider base={apiBase} withCredentials={withCredentials}>
       <RouterProvider mode={routerMode} basename={basename}>
         <div className={className ? `prdash-root ${className}` : 'prdash-root'}>
-          <PrDashboardInner focusedRepo={focusedRepo} onFocusChange={onFocusChange} />
+          <PrDashboardInner focusedRepo={focusedRepo} onFocusChange={onFocusChange} allowPipelineInUrl={allowPipelineInUrl} />
         </div>
       </RouterProvider>
     </ApiBaseProvider>
