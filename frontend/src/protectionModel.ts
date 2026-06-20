@@ -87,14 +87,18 @@ export type Overlay = 'none' | 'cost' | 'quality';
 export const OVERLAYS: { id: Overlay; label: string }[] = [
   { id: 'none', label: 'States' }, { id: 'cost', label: 'Cost' }, { id: 'quality', label: 'Quality' },
 ];
+/** Heat tint for a value relative to a max: a 0–80% mix of `cssVar` into
+ *  transparent. The single source for matrix heat shading so the legacy
+ *  ProtectionMap (via cellHeat) and the workspace ModelView overlay agree. */
+export function heatColor(value: number, max: number, cssVar: string): string {
+  const pct = max ? Math.round((value / max) * 80) : 0;
+  return `color-mix(in srgb, var(${cssVar}) ${pct}%, transparent)`;
+}
 export function cellHeat(c: Cell | undefined, overlay: Overlay, max: { minutes: number; fail: number }): string | undefined {
   if (overlay === 'none' || !c?.observed) return undefined;
-  if (overlay === 'cost') {
-    const pct = max.minutes ? Math.round((c.observed.minutes / max.minutes) * 80) : 0;
-    return `color-mix(in srgb, var(--amber) ${pct}%, transparent)`;
-  }
-  const pct = max.fail ? Math.round((c.observed.failRatePct / max.fail) * 80) : 0;
-  return `color-mix(in srgb, var(--fail) ${pct}%, transparent)`;
+  return overlay === 'cost'
+    ? heatColor(c.observed.minutes, max.minutes, '--amber')
+    : heatColor(c.observed.failRatePct, max.fail, '--fail');
 }
 export function cellTitle(c: Cell): string {
   const parts = [`${c.check} — ${c.tierId}: ${STATE_WORD[c.state]}`];
