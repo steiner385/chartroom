@@ -220,6 +220,10 @@ section h2 { font-size: 14px; margin: 18px 0 8px; color: var(--muted); }
 
 /* --- Status overview strip (V2) --- */
 .status-strip { display: flex; gap: 8px; margin-bottom: 14px; flex-wrap: wrap; }
+/* #189: rising/falling delta badge on the Failed tile (tiles are white-on-color,
+   so the badge sits on a translucent chip for legibility on any tile colour). */
+.tile-delta { font-size: 10px; font-weight: 700; line-height: 1; padding: 1px 4px;
+  border-radius: 6px; background: rgba(0, 0, 0, 0.22); }
 .status-tile {
   flex: 1; min-width: 90px; border-radius: 10px; padding: 10px 12px;
   color: #fff; text-align: center; border: none; cursor: pointer;
