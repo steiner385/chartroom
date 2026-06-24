@@ -95,6 +95,7 @@ export interface PrTimeline {
   mergedAt: string;
   qaLiveAt: string | null;
   prodLiveAt: string | null;
+  envLive: Record<string, string>;
 }
 
 export interface PrView {
@@ -1296,13 +1297,16 @@ export class Poller extends EventEmitter {
     for (const [repo, dc] of Object.entries(this.effectiveDeploy())) {
       // clones exist only in clone mode — api mode never creates one (issue #18)
       if (config.ancestrySource === 'clone') await deploy.ensureClone(repo, dc.cloneUrl).catch(() => {});
+      const envOrder = dc.order ?? dc.environments.map((e) => e.name);
+      const firstEnv = envOrder[0] ?? null;
+      const terminalEnv = envOrder.at(-1) ?? null;
       for (const env of dc.environments) {
         const sha = await deploy.health(env.healthUrl, env.shaKey);
         this.envShas.set(`${repo}/${env.name}`, sha);
         if (!sha) continue;
         for (const rec of history.listTrackedMerged(config.retentionDays, now)) {
           if (rec.repo !== repo || !rec.mergeCommitSha) continue;
-          const liveAt = env.name === 'qa' ? rec.qaLiveAt : rec.prodLiveAt;
+          const liveAt = rec.envLive[env.name] ?? null;
           if (liveAt) continue;
           // Throttle per (sha, deployedSha), transport-agnostic: clone-mode
           // 'missing' answers trigger a git fetch inside isAncestor (fetch
@@ -1320,15 +1324,15 @@ export class Poller extends EventEmitter {
           if (anc === 'no') this.seenNotLive.add(envKey);
           if (anc === 'yes') {
             history.markEnvLive(repo, rec.number, env.name, now.toISOString());
-            // "shipped" signal (issue #19): the merge commit just became prod
+            // "shipped" signal (issue #19): the merge commit just became terminal-env
             // ancestry — markEnvLive's liveAt guard makes this a true edge.
-            if (env.name === 'prod') this.deps.notifier?.prodLive(repo, rec.number, rec.title);
+            if (env.name === terminalEnv) this.deps.notifier?.prodLive(repo, rec.number, rec.title);
             // Record a deploy-gap sample only when THIS instance previously observed the
             // PR not-live on this env. A PR found already live at first observation has
             // an unknowable merged→live wall-clock gap (e.g. process started hours after
             // the deploy) — recording now-mergedAt would poison the median (~31h vs ~10m).
-            if (env.name === 'qa' && this.seenNotLive.has(envKey)) {
-              history.recordDeployGap(repo, 'qa', (now.getTime() - Date.parse(rec.mergedAt)) / 1000);
+            if (env.name === firstEnv && this.seenNotLive.has(envKey)) {
+              history.recordDeployGap(repo, env.name, (now.getTime() - Date.parse(rec.mergedAt)) / 1000);
             }
             this.seenNotLive.delete(envKey);
           }
@@ -2198,24 +2202,30 @@ export class Poller extends EventEmitter {
       if (view) push(pr.repo, view);
     }
     const trackedMerged = history.listTrackedMerged(config.retentionDays, now);
-    // #205: newest prod-live merge per repo. An older merge not yet on prod is
-    // superseded (its SHA was rolled up into that deploy) and must not show as
-    // 'awaiting/overdue' — its content already shipped via the newer merge.
+    const deployMap = this.effectiveDeploy();
+    // #205: newest terminal-live merge per repo. An older merge not yet on the
+    // terminal env is superseded (its SHA was rolled up into that deploy) and
+    // must not show as 'awaiting/overdue' — its content already shipped via the newer merge.
     const newestProdMergedAt = new Map<string, string>();
     for (const rec of trackedMerged) {
-      if (rec.prodLiveAt == null) continue;
+      const dc = deployMap[rec.repo];
+      const te = dc ? (dc.order ?? dc.environments.map((e) => e.name)).at(-1) ?? null : null;
+      const terminalLive = !!(te && rec.envLive[te]);
+      if (!terminalLive) continue;
       const cur = newestProdMergedAt.get(rec.repo);
       if (cur == null || rec.mergedAt > cur) newestProdMergedAt.set(rec.repo, rec.mergedAt);
     }
     for (const rec of trackedMerged) {
       if (config.exclude.includes(rec.repo)) continue; // exclude applies on reconfigure too
       const np = newestProdMergedAt.get(rec.repo);
-      const superseded = rec.prodLiveAt == null && np != null && rec.mergedAt < np;
+      const dc = deployMap[rec.repo];
+      const te = dc ? (dc.order ?? dc.environments.map((e) => e.name)).at(-1) ?? null : null;
+      const terminalLive = !!(te && rec.envLive[te]);
+      const superseded = !terminalLive && np != null && rec.mergedAt < np;
       const view = this.viewForMergedPr(rec, now, superseded);
       if (view) push(rec.repo, view);
     }
 
-    const deployMap = this.effectiveDeploy();
     const repos = [...byRepo.entries()]
       .map(([repo, prs]) => {
         const queue = this.buildQueueView(repo, repoGroupProgress.get(repo) ?? [], now);
@@ -2629,7 +2639,7 @@ export class Poller extends EventEmitter {
     const prevStage = this.stages.get(key) ?? null;
     const rawStage = classify({
       pr, prev: prevStage, ciProgress, queueProgress,
-      deploy: { hasDeploy: pr.repo in this.effectiveDeploy(), qaLive: null, prodLive: null, propagating: false, deployProgress: null },
+      deploy: { hasDeploy: pr.repo in this.effectiveDeploy(), firstLive: null, terminalLive: null, firstEnv: null, terminalEnv: null, propagating: false, deployProgress: null },
       retentionDays: config.retentionDays, now, requiredCheckPrefixes: prefixes,
       rollupWorkflowName: rollupWf,
     });
@@ -2691,24 +2701,29 @@ export class Poller extends EventEmitter {
   private viewForMergedPr(rec: MergedPrRecord, now: Date, superseded = false): PrView | null {
     const { history, config } = this.deps;
     const dc = this.effectiveDeploy()[rec.repo];
-    const qaSha = this.envShas.get(`${rec.repo}/qa`);
-    const prodSha = this.envShas.get(`${rec.repo}/prod`);
-    // #205: a superseded merge (its SHA rolled up into a newer prod deploy — a
+    const dcOrder = dc ? (dc.order ?? dc.environments.map((e) => e.name)) : null;
+    const firstEnv = dcOrder?.[0] ?? null;
+    const terminalEnv = dcOrder?.at(-1) ?? null;
+    const firstSha = firstEnv ? this.envShas.get(`${rec.repo}/${firstEnv}`) : undefined;
+    const terminalSha = terminalEnv ? this.envShas.get(`${rec.repo}/${terminalEnv}`) : undefined;
+    // #205: a superseded merge (its SHA rolled up into a newer terminal-env deploy — a
     // sub-PR merged to a feature branch, or a squash artifact) has effectively
-    // shipped to QA+prod. Treat it as live so it never sits 'qa-deploying
+    // shipped to all envs. Treat it as live so it never sits 'qa-deploying
     // overdue' waiting for a SHA that will never deploy on its own.
     const deploy: DeployInfo = superseded
-      ? { hasDeploy: !!dc, qaLive: true, prodLive: true, propagating: false, deployProgress: null }
+      ? { hasDeploy: !!dc, firstLive: true, terminalLive: true, firstEnv, terminalEnv, propagating: false, deployProgress: null }
       : {
           hasDeploy: !!dc,
-          qaLive: rec.qaLiveAt ? true : (qaSha == null ? null : false),
-          prodLive: rec.prodLiveAt ? true : (prodSha == null ? null : false),
+          firstLive: (firstEnv && rec.envLive[firstEnv]) ? true : (firstSha == null ? null : false),
+          terminalLive: (terminalEnv && rec.envLive[terminalEnv]) ? true : (terminalSha == null ? null : false),
+          firstEnv,
+          terminalEnv,
           // no squash sha yet, or sha not visible in the clone even after fetch
           propagating: !rec.mergeCommitSha || this.propagating.has(`${rec.repo}#${rec.number}`),
           deployProgress: null,
         };
-    if (dc && !rec.qaLiveAt && deploy.qaLive === false) {
-      const gap = history.medianDeployGap(rec.repo, 'qa') ?? 600;
+    if (dc && firstEnv && !rec.envLive[firstEnv] && deploy.firstLive === false) {
+      const gap = history.medianDeployGap(rec.repo, firstEnv) ?? 600;
       const elapsed = (now.getTime() - Date.parse(rec.mergedAt)) / 1000;
       deploy.deployProgress = {
         percent: Math.min(Math.round((elapsed / gap) * 100), 97),
@@ -2741,7 +2756,8 @@ export class Poller extends EventEmitter {
       // missing waypoints stay null, the UI omits those segments
       timeline: { createdAt: rec.createdAt, firstGreenAt: rec.firstGreenAt,
         enqueuedAt: rec.enqueuedAt, mergedAt: rec.mergedAt,
-        qaLiveAt: rec.qaLiveAt, prodLiveAt: rec.prodLiveAt },
+        qaLiveAt: rec.qaLiveAt, prodLiveAt: rec.prodLiveAt,
+        envLive: rec.envLive },
       touchesWorkflows: false, workflowImpact: null,
       groupChecks: null, mergeEtaSim: null, costMinutes: null, costDollars: null,
       costDollarsPartial: false };

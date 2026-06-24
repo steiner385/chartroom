@@ -5243,6 +5243,7 @@ describe('PrView.timeline (issue #50)', () => {
       createdAt: '2026-06-09T08:00:00Z', firstGreenAt: '2026-06-09T09:00:00Z',
       enqueuedAt: '2026-06-09T09:30:00Z', mergedAt: '2026-06-10T10:00:00Z',
       qaLiveAt: '2026-06-10T10:20:00Z', prodLiveAt: null,
+      envLive: { qa: '2026-06-10T10:20:00Z' },
     });
   });
 
@@ -5256,6 +5257,7 @@ describe('PrView.timeline (issue #50)', () => {
     expect(pr.timeline).toEqual({
       createdAt: null, firstGreenAt: null, enqueuedAt: null,
       mergedAt: '2026-06-10T10:00:00Z', qaLiveAt: null, prodLiveAt: null,
+      envLive: {},
     });
   });
 
