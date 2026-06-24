@@ -146,6 +146,9 @@ export interface RepoQueueView {
   trainsPerHour?: number;
   batchSuccessRatePct?: number | null;
   ejects24h?: number;
+  /** Queue-wait p50 over the recent 7d vs the prior 7d (#258) — drives the live
+   *  queue-wait trend arrow in the ops strip. Absent on pre-#258 payloads. */
+  queueWaitP50?: { value: number | null; prev: number | null } | null;
 }
 export interface DashboardState {
   generatedAt: string; staleSince: string | null;
