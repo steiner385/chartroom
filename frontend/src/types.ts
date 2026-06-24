@@ -3,6 +3,7 @@
 // re-exported so existing frontend importers are unchanged.
 import type { NotificationEventType, NotificationKind } from '../../shared/notification-events';
 export type { NotificationEventType, NotificationKind };
+import type { Trend } from './lib/trend';
 
 export type StageId = 'ci' | 'parked' | 'ready' | 'queue' | 'qa-deploy' | 'awaiting-prod' | 'merged';
 export interface StageResult {
@@ -596,6 +597,9 @@ export interface LaneView {
   summary: string;            // ≤200 chars, truncated '…'
   costChip?: { dollars: number; days: number } | null;
   efficiencyChip?: string | null;
+  /** Delta-vs-baseline trend for the lane (#258); rendered as the shared arrow
+   *  next to the summary. Currently the main lane's degrading-green signal. */
+  trend?: Trend;
   wiredness: 'wired' | 'not-wired';
   gating: boolean;
 }
