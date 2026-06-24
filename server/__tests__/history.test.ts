@@ -204,10 +204,35 @@ describe('lead-time timestamps on merged_prs (issue #44)', () => {
     expect(rows.map((r) => r.mergedAt).sort()).toEqual(
       ['2026-06-01T12:00:00Z', '2026-06-10T12:00:00Z']);
     const full = rows.find((r) => r.mergedAt === '2026-06-10T12:00:00Z')!;
-    expect(full).toEqual({ repo: REPO, createdAt: '2026-06-10T09:00:00Z',
+    expect(full).toEqual({ repo: REPO, number: 1, createdAt: '2026-06-10T09:00:00Z',
       firstGreenAt: '2026-06-10T10:00:00Z', enqueuedAt: '2026-06-10T11:00:00Z',
       mergedAt: '2026-06-10T12:00:00Z', qaLiveAt: '2026-06-10T12:10:00Z',
-      prodLiveAt: '2026-06-10T18:00:00Z' });
+      prodLiveAt: '2026-06-10T18:00:00Z',
+      envLive: { qa: '2026-06-10T12:10:00Z', prod: '2026-06-10T18:00:00Z' } });
+  });
+
+  it('leadTimeRowsSince: each row carries number and envLive map (task 8b)', () => {
+    h.upsertMergedPr({ repo: REPO, number: 42, title: 't', url: 'u',
+      mergedAt: '2026-06-10T12:00:00Z', mergeCommitSha: 'sha' });
+    h.markEnvLive(REPO, 42, 'staging', '2026-06-10T12:10:00Z');
+    h.markEnvLive(REPO, 42, 'production', '2026-06-10T18:00:00Z');
+    const rows = h.leadTimeRowsSince('2026-06-10T00:00:00Z');
+    const row = rows.find((r) => r.mergedAt === '2026-06-10T12:00:00Z')!;
+    expect(row.number).toBe(42);
+    expect(row.envLive).toEqual({
+      staging: '2026-06-10T12:10:00Z',
+      production: '2026-06-10T18:00:00Z',
+    });
+  });
+
+  it('mergedSince: each row carries number and envLive map (task 8b)', () => {
+    h.upsertMergedPr({ repo: REPO, number: 55, title: 't', url: 'u',
+      mergedAt: '2026-06-10T12:00:00Z', mergeCommitSha: 'sha' });
+    h.markEnvLive(REPO, 55, 'staging', '2026-06-10T13:00:00Z');
+    const rows = h.mergedSince('2026-06-10T00:00:00Z');
+    const row = rows.find((r) => r.repo === REPO)!;
+    expect(row.number).toBe(55);
+    expect(row.envLive).toEqual({ staging: '2026-06-10T13:00:00Z' });
   });
 });
 

@@ -1446,6 +1446,18 @@ export class Poller extends EventEmitter {
     return effectiveDeployMap(this.deps.config, this.repoFileConfigs);
   }
 
+  /**
+   * Returns the first and terminal env names for a deploy-configured repo.
+   * Returns null when `repo` has no deploy config.
+   * Single-env repos return the same name for both firstEnv and terminalEnv.
+   */
+  deployEnvsFor(repo: string): { firstEnv: string | null; terminalEnv: string | null } | null {
+    const dc = this.effectiveDeploy()[repo];
+    if (!dc) return null;
+    const order = this.envOrder(dc);
+    return { firstEnv: order[0] ?? null, terminalEnv: order.at(-1) ?? null };
+  }
+
   /** Parsed in-repo config for a repo (Z2 source attribution); undefined when absent. */
   repoFileConfigFor(repo: string): RepoFileConfig | undefined {
     return this.repoFileConfigs.get(repo);

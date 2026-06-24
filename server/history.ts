@@ -38,8 +38,12 @@ export interface MergedPrRecord extends MergedPrInput {
 /** One merged_prs row projected for the lead-time decomposition (issue #44). */
 export interface LeadTimeRow {
   repo: string;
+  /** PR number — needed to look up envLive (task 8b). */
+  number: number;
   createdAt: string | null; firstGreenAt: string | null; enqueuedAt: string | null;
   mergedAt: string; qaLiveAt: string | null; prodLiveAt: string | null;
+  /** Generic per-env liveness map (env → live_at ISO string) — task 8b. */
+  envLive: Record<string, string>;
 }
 
 /** Per-repo dashboard-state counts captured by the poller (metrics trends panel). */
@@ -592,7 +596,7 @@ export class HistoryStore {
        FROM group_runs WHERE completed_at >= ? ORDER BY repo, completed_at`
     );
     this.stmtSelectMergedSince = this.db.prepare(
-      `SELECT repo, merged_at, created_at, qa_live_at, merged_by, enqueued_at
+      `SELECT repo, number, merged_at, created_at, qa_live_at, merged_by, enqueued_at
        FROM merged_prs WHERE merged_at >= ? ORDER BY repo, merged_at`
     );
     // Trains/hour (queue ops): per-repo merge timestamps for train clustering.
@@ -604,7 +608,7 @@ export class HistoryStore {
     // (deployment frequency counts prod-live EVENTS, and manual prod deploys
     // often ship merges older than the window).
     this.stmtSelectLeadTimeRows = this.db.prepare(
-      `SELECT repo, created_at, first_green_at, enqueued_at, merged_at, qa_live_at, prod_live_at
+      `SELECT repo, number, created_at, first_green_at, enqueued_at, merged_at, qa_live_at, prod_live_at
        FROM merged_prs WHERE merged_at >= ? OR (prod_live_at IS NOT NULL AND prod_live_at >= ?)
        ORDER BY repo, merged_at`
     );
@@ -1602,12 +1606,20 @@ export class HistoryStore {
   }
 
   /** Merged PRs at/after `since` (full timestamps — bucketing happens in metrics). */
-  mergedSince(since: string): { repo: string; mergedAt: string; createdAt: string | null;
-    qaLiveAt: string | null; mergedBy: string | null; enqueuedAt: string | null }[] {
+  mergedSince(since: string): { repo: string; number: number; mergedAt: string; createdAt: string | null;
+    qaLiveAt: string | null; mergedBy: string | null; enqueuedAt: string | null;
+    envLive: Record<string, string> }[] {
     const rows = this.stmtSelectMergedSince.all(since) as Record<string, unknown>[];
-    return rows.map((r) => ({ repo: r.repo as string, mergedAt: r.merged_at as string,
-      createdAt: (r.created_at as string) ?? null, qaLiveAt: (r.qa_live_at as string) ?? null,
-      mergedBy: (r.merged_by as string) ?? null, enqueuedAt: (r.enqueued_at as string) ?? null }));
+    return rows.map((r) => {
+      const repo = r.repo as string;
+      const number = r.number as number;
+      return {
+        repo, number, mergedAt: r.merged_at as string,
+        createdAt: (r.created_at as string) ?? null, qaLiveAt: (r.qa_live_at as string) ?? null,
+        mergedBy: (r.merged_by as string) ?? null, enqueuedAt: (r.enqueued_at as string) ?? null,
+        envLive: this.envLiveFor(repo, number),
+      };
+    });
   }
 
   /** Lead-time decomposition rows (issue #44): merged_prs rows merged at/after
@@ -1616,15 +1628,21 @@ export class HistoryStore {
    *  in metrics. */
   leadTimeRowsSince(since: string): LeadTimeRow[] {
     const rows = this.stmtSelectLeadTimeRows.all(since, since) as Record<string, unknown>[];
-    return rows.map((r) => ({
-      repo: r.repo as string,
-      createdAt: (r.created_at as string) ?? null,
-      firstGreenAt: (r.first_green_at as string) ?? null,
-      enqueuedAt: (r.enqueued_at as string) ?? null,
-      mergedAt: r.merged_at as string,
-      qaLiveAt: (r.qa_live_at as string) ?? null,
-      prodLiveAt: (r.prod_live_at as string) ?? null,
-    }));
+    return rows.map((r) => {
+      const repo = r.repo as string;
+      const number = r.number as number;
+      return {
+        repo,
+        number,
+        createdAt: (r.created_at as string) ?? null,
+        firstGreenAt: (r.first_green_at as string) ?? null,
+        enqueuedAt: (r.enqueued_at as string) ?? null,
+        mergedAt: r.merged_at as string,
+        qaLiveAt: (r.qa_live_at as string) ?? null,
+        prodLiveAt: (r.prod_live_at as string) ?? null,
+        envLive: this.envLiveFor(repo, number),
+      };
+    });
   }
 
   /** Every repo that has left any trace in history (durations, merged PRs,

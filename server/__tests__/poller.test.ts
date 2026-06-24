@@ -6051,3 +6051,56 @@ describe('Poller env-order generalization (non-qa/prod names + single-env)', () 
     expect(terminalLiveSpy).toHaveBeenCalledWith('acme/widgets', 8951, 'feat: allowance', 'production');
   });
 });
+
+describe('Poller.deployEnvsFor (task 8b)', () => {
+  it('returns firstEnv/terminalEnv for a configured multi-env repo', () => {
+    const config: AppConfig = {
+      ...DEFAULTS,
+      ancestrySource: 'clone',
+      owners: ['acme'],
+      deploy: {
+        'acme/widgets': {
+          cloneUrl: 'https://github.com/acme/widgets.git',
+          defaultBranch: 'main',
+          order: ['staging', 'production'],
+          environments: [
+            { name: 'staging', healthUrl: 'https://staging.example.com/health', auto: true, shaKey: 'commitSha' },
+            { name: 'production', healthUrl: 'https://prod.example.com/health', auto: false, shaKey: 'commitSha' },
+          ],
+        },
+      },
+    };
+    const p = new Poller({ router: asRouter(fakeClient()), history, deploy: noDeploy(), config, now: () => NOW });
+    expect(p.deployEnvsFor('acme/widgets')).toEqual({ firstEnv: 'staging', terminalEnv: 'production' });
+  });
+
+  it('returns null for a repo not in the deploy map', () => {
+    const config: AppConfig = { ...DEFAULTS, ancestrySource: 'clone', owners: ['acme'] };
+    const p = new Poller({ router: asRouter(fakeClient()), history, deploy: noDeploy(), config, now: () => NOW });
+    expect(p.deployEnvsFor('acme/widgets')).toBeNull();
+  });
+
+  it('single-env repo: firstEnv === terminalEnv', () => {
+    const config: AppConfig = {
+      ...DEFAULTS,
+      ancestrySource: 'clone',
+      owners: ['acme'],
+      deploy: {
+        'acme/widgets': {
+          cloneUrl: 'https://github.com/acme/widgets.git',
+          defaultBranch: 'main',
+          order: ['production'],
+          environments: [
+            { name: 'production', healthUrl: 'https://prod.example.com/health', auto: true, shaKey: 'commitSha' },
+          ],
+        },
+      },
+    };
+    const p = new Poller({ router: asRouter(fakeClient()), history, deploy: noDeploy(), config, now: () => NOW });
+    const result = p.deployEnvsFor('acme/widgets');
+    expect(result).not.toBeNull();
+    expect(result!.firstEnv).toBe('production');
+    expect(result!.terminalEnv).toBe('production');
+    expect(result!.firstEnv).toBe(result!.terminalEnv);
+  });
+});
