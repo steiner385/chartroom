@@ -60,6 +60,8 @@ export interface PrTimeline {
   mergedAt: string;
   qaLiveAt: string | null;
   prodLiveAt: string | null;
+  /** Per-env live timestamps keyed by env name (arbitrary-env repos). */
+  envLive?: Record<string, string>;
 }
 
 export interface PrView {
@@ -155,9 +157,13 @@ export interface DashboardState {
      *  deploy config. Mirror of server estimator/deploy-status.ts. */
     deploy?: { envs: { name: string; liveSha: string | null; reachable: boolean }[];
       awaitingQa: number; awaitingProd: number;
-      /** QA→prod chain with SHA supersession (roadmap 4.4c). */
+      /** The first (QA-equivalent) env name; null when no envs configured. */
+      firstEnv: string | null;
+      /** The terminal (prod-equivalent) env name; null when only one env. */
+      terminalEnv: string | null;
+      /** Deploy chain with SHA supersession (roadmap 4.4c). */
       chain?: { entries: { prNumber: number; sha: string | null; mergedAt: string;
-        stage: 'merged' | 'qa' | 'prod'; qaLiveAt: string | null; prodLiveAt: string | null; superseded: boolean }[];
+        stage: 'merged' | 'first' | 'terminal'; firstLiveAt: string | null; terminalLiveAt: string | null; superseded: boolean }[];
         inFlight: { prNumber: number; sha: string | null; stage: string } | null; supersededCount: number } };
     /** Advisory Scheduled-lane snapshot (Spec 4): the newest run per
      *  cron-scheduled workflow + the discovered-workflow count. Absent for
