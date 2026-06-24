@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { Poller, RetryThrottle, describeError, ingestCheckSet, ingestGroupFailures, maxPlausibleSuccessSecs, rerunInProgressFor, computePrCost, type DashboardState } from '../poller';
+import { Poller, RetryThrottle, describeError, ingestCheckSet, ingestGroupFailures, maxPlausibleSuccessSecs, rerunInProgressFor, computePrCost, DEPLOY_DISCOVERY_INTERVAL_MS, type DashboardState } from '../poller';
 import { HistoryStore } from '../history';
 import { deriveCiGraph } from '../required-checks';
 import type { CheckRun } from '../types';
@@ -6104,5 +6104,213 @@ describe('Poller.deployEnvsFor (task 8b)', () => {
     expect(result!.firstEnv).toBe('production');
     expect(result!.terminalEnv).toBe('production');
     expect(result!.firstEnv).toBe(result!.terminalEnv);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Task 13: auto-discover deploy config from GitHub (autoDiscoverDeploy)
+// ---------------------------------------------------------------------------
+
+/**
+ * Fake REST client for deploy-discovery: dispatches on path prefix to return
+ * canned /environments, /deployments, and /deployments/{id}/statuses responses.
+ * Extends the existing fakeClient() pattern by adding `restGet`.
+ */
+function fakeDiscoveryClient(
+  envNames: string[],
+  deployments: Array<{ id: number; environment: string; sha: string; created_at: string }>,
+  statuses: Record<number, { state: string; created_at: string } | null>,
+) {
+  const base = fakeClient();
+  const restGet = vi.fn(async (path: string) => {
+    if (path.includes('/environments')) {
+      return { environments: envNames.map((name) => ({ name })) };
+    }
+    if (path.includes('/deployments?')) {
+      return deployments;
+    }
+    // /repos/{owner}/{name}/deployments/{id}/statuses?per_page=1
+    const m = path.match(/\/deployments\/(\d+)\/statuses/);
+    if (m) {
+      const id = Number(m[1]);
+      const s = statuses[id];
+      if (s == null) return [];
+      return [s];
+    }
+    throw new Error(`unexpected restGet path: ${path}`);
+  });
+  return { ...base, restGet };
+}
+
+describe('Poller auto-discover deploy (task 13)', () => {
+  // A config where acme/widgets has autoDiscoverDeploy=true but NO hand-written
+  // deploy block.  The sweep will discover the repo; deploy discovery then reads
+  // environments + deployments + statuses from GitHub and synthesises a DeployConfig.
+  const DISCOVER_CONFIG: AppConfig = {
+    ...DEFAULTS,
+    ancestrySource: 'clone',
+    owners: ['acme', 'octo'],
+    repos: { 'acme/widgets': { autoDiscoverDeploy: true } },
+    deploy: {},  // no hand-written deploy config
+  };
+
+  // A deployment to 'production' whose status is 'success'
+  const DEPLOY_ID = 42;
+  const LIVE_SHA = 'sha9abc';
+  const DEPLOY_TIME = '2026-06-10T10:00:00Z';
+
+  it('DEPLOY_DISCOVERY_INTERVAL_MS is exported and equals 6 hours', () => {
+    expect(DEPLOY_DISCOVERY_INTERVAL_MS).toBe(6 * 3600_000);
+  });
+
+  it('after sweepOnce + deployOnce: opted-in repo appears in effectiveDeploy with correct order', async () => {
+    const client = fakeDiscoveryClient(
+      ['production'],
+      [{ id: DEPLOY_ID, environment: 'production', sha: LIVE_SHA, created_at: DEPLOY_TIME }],
+      { [DEPLOY_ID]: { state: 'success', created_at: DEPLOY_TIME } },
+    );
+    const p = new Poller({
+      router: asRouter(client as unknown as GithubClient),
+      history,
+      deploy: noDeploy(),
+      config: DISCOVER_CONFIG,
+      now: () => NOW,
+    });
+    await p.sweepOnce();
+    await p.deployOnce();
+    const deployMap = p.effectiveDeploy();
+    expect(deployMap['acme/widgets']).toBeDefined();
+    expect(deployMap['acme/widgets'].order).toEqual(['production']);
+  });
+
+  it('after sweepOnce + deployOnce: hasDeploy is true in buildState for the auto-discovered repo', async () => {
+    const client = fakeDiscoveryClient(
+      ['production'],
+      [{ id: DEPLOY_ID, environment: 'production', sha: LIVE_SHA, created_at: DEPLOY_TIME }],
+      { [DEPLOY_ID]: { state: 'success', created_at: DEPLOY_TIME } },
+    );
+    const p = new Poller({
+      router: asRouter(client as unknown as GithubClient),
+      history,
+      deploy: noDeploy(),
+      config: DISCOVER_CONFIG,
+      now: () => NOW,
+    });
+    await p.sweepOnce();
+    await p.deployOnce();
+    const state = p.buildState();
+    const repoState = state.repos.find((r) => r.repo === 'acme/widgets');
+    expect(repoState?.hasDeploy).toBe(true);
+  });
+
+  it('merged PR whose mergeCommitSha is an ancestor of the live sha gets marked live and leaves the board', async () => {
+    // The sweep discovers PR 8951 as merged (mergeCommit.oid = 'squash8951').
+    // The discovery sets LIVE_SHA to 'sha9abc'. isAncestor('squash8951', 'sha9abc') = 'yes'.
+    const client = fakeDiscoveryClient(
+      ['production'],
+      [{ id: DEPLOY_ID, environment: 'production', sha: LIVE_SHA, created_at: DEPLOY_TIME }],
+      { [DEPLOY_ID]: { state: 'success', created_at: DEPLOY_TIME } },
+    );
+    const deploy = fakeDeploy(
+      {}, // no healthUrl probes — the synthesised env has empty healthUrl
+      { [LIVE_SHA]: 'yes' },
+    );
+    const p = new Poller({
+      router: asRouter(client as unknown as GithubClient),
+      history,
+      deploy,
+      config: DISCOVER_CONFIG,
+      now: () => NOW,
+    });
+    await p.sweepOnce();   // discovers PR 8951 merged w/ mergeCommitSha='squash8951'
+    await p.deployOnce();  // discovers production live at LIVE_SHA; squash8951 is ancestor → markEnvLive
+    // PR 8951 is the terminal env so it leaves the board
+    const prs = p.buildState().repos.find((r) => r.repo === 'acme/widgets')!.prs;
+    expect(prs.find((x) => x.number === 8951)).toBeUndefined();
+  });
+
+  it('repo WITHOUT autoDiscoverDeploy is NOT auto-discovered even when GitHub returns environments', async () => {
+    // acme/widgets NOT in repos config (defaults to autoDiscoverDeploy: false)
+    const configNoDiscover: AppConfig = {
+      ...DEFAULTS,
+      ancestrySource: 'clone',
+      owners: ['acme', 'octo'],
+      deploy: {},
+      // no repos override → autoDiscoverDeploy defaults false
+    };
+    const client = fakeDiscoveryClient(
+      ['production'],
+      [{ id: DEPLOY_ID, environment: 'production', sha: LIVE_SHA, created_at: DEPLOY_TIME }],
+      { [DEPLOY_ID]: { state: 'success', created_at: DEPLOY_TIME } },
+    );
+    const p = new Poller({
+      router: asRouter(client as unknown as GithubClient),
+      history,
+      deploy: noDeploy(),
+      config: configNoDiscover,
+      now: () => NOW,
+    });
+    await p.sweepOnce();
+    await p.deployOnce();
+    const deployMap = p.effectiveDeploy();
+    expect(deployMap['acme/widgets']).toBeUndefined();
+  });
+
+  it('hand-written deploy config overrides an auto-discovered one for the same repo', async () => {
+    // Both autoDiscoverDeploy (would synthesize 'production') AND a hand-written
+    // config with 'qa' + 'prod' exist. The hand-written config must win.
+    const configWithBoth: AppConfig = {
+      ...DEFAULTS,
+      ancestrySource: 'clone',
+      owners: ['acme', 'octo'],
+      repos: { 'acme/widgets': { autoDiscoverDeploy: true } },
+      deploy: {
+        'acme/widgets': {
+          cloneUrl: 'https://github.com/acme/widgets.git',
+          defaultBranch: 'main',
+          order: ['qa', 'prod'],
+          environments: [
+            { name: 'qa', healthUrl: 'https://qa.widgets.example.com/health', auto: true, shaKey: 'commitSha' },
+            { name: 'prod', healthUrl: 'https://widgets.example.com/health', auto: false, shaKey: 'commitSha' },
+          ],
+        },
+      },
+    };
+    const client = fakeDiscoveryClient(
+      ['production'],
+      [{ id: DEPLOY_ID, environment: 'production', sha: LIVE_SHA, created_at: DEPLOY_TIME }],
+      { [DEPLOY_ID]: { state: 'success', created_at: DEPLOY_TIME } },
+    );
+    const p = new Poller({
+      router: asRouter(client as unknown as GithubClient),
+      history,
+      deploy: noDeploy(),
+      config: configWithBoth,
+      now: () => NOW,
+    });
+    await p.sweepOnce();
+    await p.deployOnce();
+    const deployMap = p.effectiveDeploy();
+    // Hand-written config wins: order should be ['qa', 'prod'], not ['production']
+    expect(deployMap['acme/widgets'].order).toEqual(['qa', 'prod']);
+  });
+
+  it('repo with no GitHub environments does not end up in discoveredDeploy', async () => {
+    const client = fakeDiscoveryClient(
+      [], // no environments
+      [],
+      {},
+    );
+    const p = new Poller({
+      router: asRouter(client as unknown as GithubClient),
+      history,
+      deploy: noDeploy(),
+      config: DISCOVER_CONFIG,
+      now: () => NOW,
+    });
+    await p.sweepOnce();
+    await p.deployOnce();
+    const deployMap = p.effectiveDeploy();
+    expect(deployMap['acme/widgets']).toBeUndefined();
   });
 });

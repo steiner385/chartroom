@@ -38,6 +38,7 @@ import { computeCostSummary, type CostSummary } from './metrics';
 import { RUNNER_JOB_KEYS, type RunnerJobInput } from './estimator/runner-plan';
 import { projectInputs, reclaimWindowMs } from './estimator/routing-inputs';
 import { parseScheduledWorkflows, scheduledRunsApiPath, type ScheduledRunsApiResponse } from './scheduled';
+import { fetchEnvironments, fetchRecentDeployments, fetchDeploymentState, inferDeployTopology } from './github-deploy';
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
@@ -503,6 +504,9 @@ const SCHEDULED_DISCOVERY_INTERVAL_MS = 24 * 3600_000;
  *  keeps the cost trivial (nightly/weekly cadence moves far slower). */
 const SCHEDULED_RUNS_INTERVAL_MS = 3600_000;
 
+/** Re-run deploy auto-discovery (environments + deployments) at most this often per repo. */
+export const DEPLOY_DISCOVERY_INTERVAL_MS = 6 * 3600_000;
+
 /** Stages whose first ETA prediction is scored against the actual stage duration —
  *  the same set the conformal-lite range calibration applies to (single source
  *  of truth in estimator/calibrate.ts). */
@@ -615,6 +619,9 @@ export class Poller extends EventEmitter {
   private discoveredScheduled = new Map<string, string[]>();              // repo → discovered scheduled workflow file basenames (Spec 4)
   private scheduledDiscoveryThrottle = new RetryThrottle(SCHEDULED_DISCOVERY_INTERVAL_MS); // 24h on success, backoff on failure
   private scheduledRunsThrottle = new RetryThrottle(SCHEDULED_RUNS_INTERVAL_MS);           // ~1h per repo on success, backoff on failure
+  private discoveredDeploy = new Map<string, DeployConfig>();                              // repo → auto-synthesised DeployConfig (task 13)
+  private deployDiscoveryThrottle = new RetryThrottle(DEPLOY_DISCOVERY_INTERVAL_MS);      // 6h on success, backoff on failure
+  private discoveredDeployLogged = new Set<string>();                                      // repos whose first discovery was logged
   private costSummaryCache: CostSummary | undefined;                     // global per-stage cost (Cost lane, Spec 3); buildState reads this (spec §15)
   private costSummaryAt = 0;                                              // epoch ms of the last cost recompute (throttled — cost moves slowly)
   private routingInputsCache: { jobs: RunnerJobInput[]; reclaimRate: number | null } | undefined; // runner-routing inputs (feature/runner-routing); throttled like costSummary
@@ -1297,6 +1304,9 @@ export class Poller extends EventEmitter {
     // Scheduled-lane discovery + run polling shares this SLOW cycle (Scheduled
     // lane, Spec 4) — 24h discovery / ~1h run-poll per-repo throttles inside.
     await this.refreshScheduled();
+    // Deploy auto-discovery (task 13): synthesise DeployConfig from GitHub for
+    // repos that opt in via autoDiscoverDeploy, before the env loop runs.
+    await this.refreshDiscoveredDeploy();
     const now = this.now();
     // expire old throttle entries so the map stays bounded
     for (const [k, at] of this.ancestryCheckedAt) {
@@ -1309,8 +1319,16 @@ export class Poller extends EventEmitter {
       const firstEnv = envOrder[0] ?? null;
       const terminalEnv = envOrder.at(-1) ?? null;
       for (const env of dc.environments) {
-        const sha = await deploy.health(env.healthUrl, env.shaKey);
-        this.envShas.set(`${repo}/${env.name}`, sha);
+        // Synthesised (auto-discovered) envs have an empty healthUrl — their live
+        // SHA was already set in envShas by refreshDiscoveredDeploy; skip the probe
+        // so we don't clobber it with a null. Configured envs probe as before.
+        let sha: string | null;
+        if (env.healthUrl) {
+          sha = await deploy.health(env.healthUrl, env.shaKey);
+          this.envShas.set(`${repo}/${env.name}`, sha);
+        } else {
+          sha = this.envShas.get(`${repo}/${env.name}`) ?? null;
+        }
         if (!sha) continue;
         for (const rec of history.listTrackedMerged(config.retentionDays, now)) {
           if (rec.repo !== repo || !rec.mergeCommitSha) continue;
@@ -1441,9 +1459,10 @@ export class Poller extends EventEmitter {
     return effectiveRepoSettings(repo, this.deps.config, this.repoFileConfigs.get(repo));
   }
 
-  /** Effective deploy map (instance `deploy.*` override > in-repo file). */
+  /** Effective deploy map: discovered < in-repo file < instance override.
+   *  Auto-discovered configs fill in repos that have no hand-written deploy block. */
   effectiveDeploy(): Record<string, DeployConfig> {
-    return effectiveDeployMap(this.deps.config, this.repoFileConfigs);
+    return { ...Object.fromEntries(this.discoveredDeploy), ...effectiveDeployMap(this.deps.config, this.repoFileConfigs) };
   }
 
   /**
@@ -1909,6 +1928,88 @@ export class Poller extends EventEmitter {
         runs: this.deps.history.latestScheduledRuns(repo, this.deps.config.retentionDays, now),
         discovered: discovered.length,
       });
+    }
+  }
+
+  /**
+   * Deploy auto-discovery (task 13): for every repo in `discovered` that opts in
+   * via `autoDiscoverDeploy: true` and has no hand-written deploy config, query
+   * GitHub for its environments + recent deployments, infer a promotion topology,
+   * and synthesise a DeployConfig whose env entries have an empty `healthUrl` (the
+   * env-loop will skip health probes for those and use the already-set envShas).
+   *
+   * Best-effort + failure-aware (RetryThrottle pattern): a failed guard arms the
+   * capped backoff so the next eligible deploy cycle retries.
+   */
+  private async refreshDiscoveredDeploy(): Promise<void> {
+    const { config } = this.deps;
+    const nowMs = this.now().getTime();
+    const configFileDeployMap = effectiveDeployMap(config, this.repoFileConfigs);
+
+    for (const repo of [...this.discovered].sort()) {
+      if (config.exclude.includes(repo)) continue;
+      // Skip repos already covered by a hand-written deploy config
+      if (repo in configFileDeployMap) continue;
+      if (!this.settingsFor(repo).autoDiscoverDeploy) continue;
+      if (!this.deployDiscoveryThrottle.due(repo, nowMs)) continue;
+
+      const client = this.routedClient(repo.split('/')[0] ?? '');
+      if (!client) continue; // routedClient already logged the skip
+
+      // 1) Environments
+      const envs = await this.guard(() => fetchEnvironments(client, repo));
+      if (envs === null) { this.deployDiscoveryThrottle.failure(repo, nowMs); continue; }
+      if (envs.length === 0) { this.deployDiscoveryThrottle.success(repo, nowMs); continue; }
+
+      // 2) Recent deployments
+      const deps = await this.guard(() => fetchRecentDeployments(client, repo));
+      if (deps === null) { this.deployDiscoveryThrottle.failure(repo, nowMs); continue; }
+
+      // 3) Fetch state for each deployment.
+      // fetchDeploymentState returns null (no statuses) without throwing → guard wraps
+      // that null and also returns null on error, so we can't distinguish using guard alone.
+      // Use a sentinel: wrap to return a "missing" marker when there are no statuses.
+      const MISSING = Symbol('missing');
+      const withState: Array<{ environment: string; sha: string; createdAt: string; state: string }> = [];
+      let stateFetchFailed = false;
+      for (const d of deps) {
+        const stateOrNull = await this.guard(async () => {
+          const s = await fetchDeploymentState(client, repo, d.id);
+          return s ?? MISSING;
+        });
+        if (stateOrNull === null) { stateFetchFailed = true; break; } // guard caught an error
+        if (stateOrNull === MISSING) continue; // no status for this deployment → skip
+        const stateResult = stateOrNull as { state: string; createdAt: string };
+        withState.push({ environment: d.environment, sha: d.sha, createdAt: stateResult.createdAt, state: stateResult.state });
+      }
+      if (stateFetchFailed) { this.deployDiscoveryThrottle.failure(repo, nowMs); continue; }
+
+      // 4) Infer topology
+      const topo = inferDeployTopology(withState);
+      if (topo.order.length === 0) { this.deployDiscoveryThrottle.success(repo, nowMs); continue; }
+
+      // 5) Build synthesised DeployConfig
+      const dc: DeployConfig = {
+        order: topo.order,
+        cloneUrl: `https://github.com/${repo}.git`,
+        defaultBranch: 'main',
+        environments: topo.order.map((name) => ({ name, healthUrl: '', auto: false, shaKey: 'commitSha' })),
+      };
+      this.discoveredDeploy.set(repo, dc);
+
+      // 6) Populate live SHAs from topo
+      for (const [env, sha] of Object.entries(topo.liveSha)) {
+        this.envShas.set(`${repo}/${env}`, sha);
+      }
+
+      this.deployDiscoveryThrottle.success(repo, nowMs);
+
+      // 7) Log once per repo on first (or changed) discovery
+      const orderKey = topo.order.join(' → ');
+      if (!this.discoveredDeployLogged.has(`${repo}::${orderKey}`)) {
+        this.discoveredDeployLogged.add(`${repo}::${orderKey}`);
+        console.log(`[poller] auto-discovered deploy envs for ${repo}: ${orderKey}`);
+      }
     }
   }
 
