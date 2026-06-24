@@ -26,7 +26,12 @@ export interface MergedPrInput {
 export interface MergedPrRecord extends MergedPrInput {
   createdAt: string | null;
   firstGreenAt: string | null; enqueuedAt: string | null;
-  qaLiveAt: string | null; prodLiveAt: string | null;
+  /** Generic per-env liveness map (env → live_at ISO string). */
+  envLive: Record<string, string>;
+  /** Derived from envLive.qa for backward compatibility. */
+  qaLiveAt: string | null;
+  /** Derived from envLive.prod for backward compatibility. */
+  prodLiveAt: string | null;
   mergedBy: string | null;
 }
 
@@ -939,16 +944,23 @@ export class HistoryStore {
   listTrackedMerged(retentionDays: number, now: Date): MergedPrRecord[] {
     const cutoff = new Date(now.getTime() - retentionDays * 86400_000).toISOString();
     const rows = this.stmtListTracked.all(cutoff) as Record<string, unknown>[];
-    return rows.map((r) => ({
-      repo: r.repo as string, number: r.number as number, title: r.title as string,
-      url: r.url as string, mergedAt: r.merged_at as string,
-      mergeCommitSha: (r.merge_commit_sha as string) ?? null,
-      createdAt: (r.created_at as string) ?? null,
-      firstGreenAt: (r.first_green_at as string) ?? null,
-      enqueuedAt: (r.enqueued_at as string) ?? null,
-      qaLiveAt: (r.qa_live_at as string) ?? null, prodLiveAt: (r.prod_live_at as string) ?? null,
-      mergedBy: (r.merged_by as string) ?? null,
-    }));
+    return rows.map((r) => {
+      const repo = r.repo as string;
+      const number = r.number as number;
+      const envLive = this.envLiveFor(repo, number);
+      return {
+        repo, number, title: r.title as string,
+        url: r.url as string, mergedAt: r.merged_at as string,
+        mergeCommitSha: (r.merge_commit_sha as string) ?? null,
+        createdAt: (r.created_at as string) ?? null,
+        firstGreenAt: (r.first_green_at as string) ?? null,
+        enqueuedAt: (r.enqueued_at as string) ?? null,
+        envLive,
+        qaLiveAt: envLive.qa ?? null,
+        prodLiveAt: envLive.prod ?? null,
+        mergedBy: (r.merged_by as string) ?? null,
+      };
+    });
   }
 
   recordDeployGap(repo: string, env: string, gapSecs: number): void {
