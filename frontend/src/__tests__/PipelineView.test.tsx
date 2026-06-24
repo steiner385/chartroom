@@ -142,13 +142,17 @@ describe('PipelineView (the PR pipeline view, ported into the workspace)', () =>
   it('surfaces the deploy chain: the in-flight SHA + superseded count (roadmap 4.4c)', () => {
     const st = state({ repos: [{ repo: 'acme/alpha', hasDeploy: true, queue: null,
       prs: [pr('acme/alpha', 1, 'running pr', 'ci')],
-      deploy: { envs: [], awaitingQa: 0, awaitingProd: 2, chain: {
-        entries: [], supersededCount: 1,
-        inFlight: { prNumber: 7, sha: 'sha7', stage: 'qa' } } } }] } as never);
+      deploy: { envs: [], awaitingQa: 0, awaitingProd: 2, firstEnv: 'staging', terminalEnv: 'production',
+        chain: {
+          entries: [], supersededCount: 1,
+          inFlight: { prNumber: 7, sha: 'sha7', stage: 'first' } } } }] } as never);
     render(<PipelineView state={st} focusedRepo={null} />);
     // deploy-chain is a labeled content region, not a live announcement (#171)
     const chain = screen.getByRole('region', { name: /deploy chain/i });
-    expect(chain).toHaveTextContent(/Deploying #7 — at qa/);
+    // the in-flight stage renders the real first-env name (not the internal 'first'),
+    // and "flowing to" names the real terminal env — no hardcoded qa/prod
+    expect(chain).toHaveTextContent(/Deploying #7 — at staging, flowing to production/);
+    expect(chain).not.toHaveTextContent(/flowing to prod\b/);
     expect(chain).toHaveTextContent(/1 superseded/);
   });
 

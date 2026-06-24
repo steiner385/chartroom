@@ -119,7 +119,7 @@ export function PipelineView({ state, focusedRepo }: { state: DashboardState | n
                   {r.deploy?.chain && (r.deploy.chain.inFlight || r.deploy.chain.supersededCount > 0) && (
                     <p className="deploy-chain" role="region" aria-label="Deploy chain">
                       {r.deploy.chain.inFlight && (
-                        <>⤴ Deploying <strong>#{r.deploy.chain.inFlight.prNumber}</strong> — at {r.deploy.chain.inFlight.stage}, flowing to prod</>
+                        <>⤴ Deploying <strong>#{r.deploy.chain.inFlight.prNumber}</strong> — at {r.deploy.chain.inFlight.stage === 'first' ? (r.deploy.firstEnv ?? 'first') : r.deploy.chain.inFlight.stage}, flowing to {r.deploy.terminalEnv ?? 'prod'}</>
                       )}
                       {r.deploy.chain.supersededCount > 0 && (
                         <span className="deploy-superseded">
